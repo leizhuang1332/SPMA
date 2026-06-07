@@ -13,9 +13,7 @@ build/
 venv/
 env/
 
-# uv
-uv.lock
-
+# uv.lock intentionally tracked for reproducible builds
 # IDE
 .vscode/
 .idea/
