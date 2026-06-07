@@ -190,11 +190,29 @@ async def code_search(
     )
     
     if not ripgrep_results:
-        return SearchResult(
-            primary=[],
-            note="ripgrep 未匹配到关键词。建议提供文件名、函数名或需求ID。",
-            suggestions=generate_query_suggestions(query, entities)
+        # ===== 渐进式回退：不直接返回空（最多 ~470ms，见 2.2.1 节）=====
+        fallback_results = await progressive_fallback_search(
+            original_patterns=search_terms.all_terms()[:10],
+            candidate_repos=candidate_repos,
+            file_patterns=infer_file_patterns(search_terms, entities),
+            original_query=query
         )
+        
+        if fallback_results:
+            ripgrep_results = fallback_results
+            # 继续走 Phase 2 上下文补全...
+        else:
+            return SearchResult(
+                primary=[],
+                note=(
+                    f"在 {len(candidate_repos)} 个候选仓库中均未找到匹配。\n"
+                    f"已尝试: 精确搜索 → 单字拆分 → 扩大仓库范围 → 模糊匹配。\n"
+                    f"搜索词: {search_terms.all_terms()[:10]}\n"
+                    f"建议: 提供文件名、函数名或需求ID以获得精确结果。"
+                ),
+                suggestions=generate_query_suggestions(query, entities),
+                method="all_fallbacks_exhausted"
+            )
     
     # ===== Phase 2: 上下文补全（~50ms）=====
     # read_file 完整文件 + glob 关联文件 + AST 调用图扩展
@@ -252,6 +270,245 @@ async def parallel_ripgrep(
     
     results = await asyncio.gather(*tasks)  # 并行执行
     return aggregate_results(results, max_results_per_repo)
+```
+
+### 2.2.1 Phase 1 零命中的渐进式回退策略
+
+ripgrep 精确搜索零命中时，不直接返回空结果——逐层降低搜索精度，换取召回。四层递进，任一层命中就停：
+
+```
+Layer F1: 词干拆分搜索（~20ms）
+  把 "credit_limit_validator" → ["credit", "limit", "validator"] → 分别搜
+  任何一个词干匹配到的文件可能就是目标
+
+Layer F2: 扩大候选仓库范围（~50ms）
+  文件路径路由可能漏了仓库 → 用仓库注册表补充更多候选仓库
+
+Layer F3: 编辑距离模糊匹配（~100ms）
+  后缀替换: validator↔validation, refresh↔refreshing
+  字符交换: refresh↔refersh
+
+Layer F4: LLM 重新解释搜索意图（~300ms）
+  让 LLM 基于原始 query 构造完全不同的搜索方向
+```
+
+```python
+async def progressive_fallback_search(
+    original_patterns: list[str],
+    candidate_repos: list[str],
+    file_patterns: list[str] | None = None,
+    original_query: str = ""
+) -> RipgrepResults | None:
+    """
+    Phase 1 ripgrep 零命中时，走四层渐进式回退。
+    
+    每层代价递增、精度递减。任一层命中就停止。
+    最坏情况总延迟: ~470ms（仍在可接受范围）。
+    """
+    
+    # ===== Layer F1: 词干拆分搜索（~20ms）=====
+    stems = _extract_stems_from_patterns(original_patterns)
+    stems = {s for s in stems if len(s) >= 3}
+    
+    if stems:
+        stem_pattern = '|'.join(stems)
+        stem_results = await parallel_ripgrep(
+            repos=candidate_repos,
+            patterns=[stem_pattern],
+            file_patterns=file_patterns,
+            max_results_per_repo=30
+        )
+        
+        if stem_results:
+            stem_results.method = "fallback_stem_split"
+            stem_results.note = (
+                f"精确搜索无结果，已自动扩展为单字搜索。"
+                f"原始搜索词: {original_patterns[:5]}"
+            )
+            stem_results.confidence = 0.75
+            return stem_results
+    
+    # ===== Layer F2: 扩大候选仓库范围（~50ms）=====
+    expanded_repos = await query_repo_registry(
+        keywords=list(stems) if stems else original_patterns,
+        exclude=candidate_repos
+    )
+    
+    expanded_candidates = list(dict.fromkeys(
+        candidate_repos + [r.name for r in expanded_repos[:5]]
+    ))
+    
+    if len(expanded_candidates) > len(candidate_repos):
+        search_pattern = '|'.join(stems) if stems else '|'.join(original_patterns)
+        expanded_results = await parallel_ripgrep(
+            repos=expanded_candidates,
+            patterns=[search_pattern],
+            file_patterns=file_patterns,
+            max_results_per_repo=20
+        )
+        
+        if expanded_results:
+            expanded_results.method = "fallback_expanded_repos"
+            expanded_results.note = (
+                f"在更多仓库中找到匹配。"
+                f"新增搜索仓库: {set(expanded_candidates) - set(candidate_repos)}"
+            )
+            expanded_results.confidence = 0.65
+            return expanded_results
+    
+    # ===== Layer F3: 编辑距离模糊匹配（~100ms）=====
+    fuzzy_patterns = _generate_fuzzy_variants(
+        original_patterns,
+        max_variants=20
+    )
+    
+    if fuzzy_patterns:
+        fuzzy_results = await parallel_ripgrep(
+            repos=expanded_candidates,
+            patterns=fuzzy_patterns[:10],
+            file_patterns=file_patterns,
+            max_results_per_repo=15
+        )
+        
+        if fuzzy_results:
+            fuzzy_results.method = "fallback_fuzzy_match"
+            fuzzy_results.note = (
+                f"精确搜索无结果，尝试了模糊匹配。"
+                f"可能匹配: {fuzzy_patterns[:5]}"
+            )
+            fuzzy_results.confidence = 0.55
+            return fuzzy_results
+    
+    # ===== Layer F4: LLM 重新解释搜索意图（~300ms）=====
+    if original_query:
+        alternative_terms = await _llm_alternative_search_terms(
+            original_query=original_query,
+            failed_terms=original_patterns
+        )
+        
+        alt_results = await parallel_ripgrep(
+            repos=expanded_candidates,
+            patterns=alternative_terms[:10],
+            file_patterns=file_patterns,
+            max_results_per_repo=20
+        )
+        
+        if alt_results:
+            alt_results.method = "fallback_llm_retry"
+            alt_results.note = (
+                f"尝试了替代搜索方向: {alternative_terms[:5]}"
+            )
+            alt_results.confidence = 0.45
+            return alt_results
+    
+    return None
+
+
+def _extract_stems_from_patterns(patterns: list[str]) -> set[str]:
+    """
+    将搜索模式拆分为独立词干。
+    
+    ["credit_limit", "quota_check", "limit_validation"]
+    → {"credit", "limit", "quota", "check", "validation"}
+    """
+    stems = set()
+    for p in patterns:
+        parts = re.split(r'[_-]', p)
+        for part in parts:
+            sub_parts = re.findall(
+                r'[A-Z]?[a-z]+|[A-Z]+(?=[A-Z][a-z]|\d|\b)', part
+            )
+            stems.update(s.lower() for s in sub_parts if len(s) >= 3)
+    return stems
+
+
+def _generate_fuzzy_variants(
+    patterns: list[str],
+    max_variants: int = 20
+) -> list[str]:
+    """
+    生成搜索词的编辑距离变体。
+    
+    只做两种安全变换，不生成随机变体（会引入噪音）：
+    1. 后缀替换: validator↔validation↔validate
+    2. 常见字符交换: refresh↔refersh
+    """
+    SUFFIX_VARIANTS = {
+        'er':   ['ing', 'ion', 'ed', 'ement'],
+        'ing':  ['er', 'ed', 'ion'],
+        'ion':  ['e', 'ing', 'ed'],
+        'ed':   ['ing', 'er', 'ion'],
+        'ment': ['e', 'ing'],
+    }
+    
+    variants = []
+    for p in patterns:
+        for suffix, replacements in SUFFIX_VARIANTS.items():
+            if p.endswith(suffix):
+                base = p[:-len(suffix)]
+                for repl in replacements:
+                    variants.append(base + repl)
+        
+        # 相邻字符交换
+        for i in range(len(p) - 1):
+            swapped = list(p)
+            swapped[i], swapped[i+1] = swapped[i+1], swapped[i]
+            variants.append(''.join(swapped))
+    
+    return list(dict.fromkeys(v for v in variants if v not in patterns))[:max_variants]
+
+
+async def _llm_alternative_search_terms(
+    original_query: str,
+    failed_terms: list[str]
+) -> list[str]:
+    """
+    当所有搜索策略都失败时，让 LLM 重新理解用户意图，
+    构造完全不同的搜索方向。
+    """
+    PROMPT = f"""用户的搜索查询是："{original_query}"
+
+我们尝试了以下英文标识符，但在代码库中全部找不到：
+{chr(10).join(f'  ✗ {t}' for t in failed_terms[:5])}
+
+请分析用户的真实意图，提出完全不同的搜索思路：
+1. 用户可能想问什么具体的技术概念？
+2. 这些概念在代码中可能用什么其他命名？
+3. 有没有更通用的关键词可以先定位到相关模块？
+
+输出：5 个新的英文标识符，用逗号分隔。"""
+
+    response = await llm.invoke(PROMPT)
+    return [t.strip() for t in response.split(",") if t.strip()]
+```
+
+**回退结果的透明度：** 回退命中的结果必须标注降级策略，让用户知道"这不是精确匹配，但可能是你要的"：
+
+```python
+# RipgrepResults 的附加元数据
+class RipgrepResults:
+    files: list[FileMatch]
+    method: str       # "ripgrep" | "fallback_stem_split" | "fallback_expanded_repos" | ...
+    note: str         # 给用户的说明
+    confidence: float # 1.0（精确）→ 0.3（四层兜底），UI 据此做视觉区分
+```
+
+**典型效果：**
+
+```
+场景: 用户搜 "额度校验" → 翻译为 ["credit_limit", "quota_check", "limit_validation"]
+实际代码: src/credit/credit_limit_validator.py::validate_credit_limit()
+
+原方案:
+  ripgrep("credit_limit|quota_check|limit_validation")
+  → 零命中（validator ≠ validation）
+  → 返回空结果 ❌
+
+新方案:
+  Layer F1: 词干拆分 → ["credit", "limit", "quota", "check", "validation"]
+  → ripgrep("credit|limit|quota|check|validation")
+  → 命中 credit_limit_validator.py（"credit"+"limit"两个词干同时命中）✓
+  → 标注 "fallback_stem_split"，confidence=0.75
 ```
 
 ### 2.3 搜索词构造策略（入口）
@@ -2011,6 +2268,142 @@ async def llm_translate_to_identifiers(query: str) -> list[Term]:
     return [Term(t, weight=0.5, source="llm_translate") for t in terms]
 ```
 
+### 6.7.2 翻译结果的存在性验证
+
+LLM 翻译的标识符可能"合理但不存在"——LLM 不知道代码库的实际命名。例如用户问"削峰填谷"，LLM 翻译为 `peak_shaving`，但实际代码用的是 `traffic_smoothing`。
+
+**方案：翻译后做一次极轻量的 ripgrep 存在性预检。**
+
+不是完整搜索——只统计匹配文件数（`rg -c --max-count 1`），不返回内容。10 个词并行检查，延迟预算 ~50ms。
+
+```python
+async def validate_translation_existence(
+    terms: list[Term],
+    candidate_repos: list[str],
+    timeout_ms: int = 50
+) -> list[Term]:
+    """
+    对翻译结果做轻量 ripgrep 存在性检查。
+    
+    rg -c --max-count 1 只输出匹配计数，不返回内容，IO 最小。
+    延迟预算：10 个词 × 并行 × 50ms = ~50ms 总延迟。
+    """
+    
+    async def check_term(term: Term) -> Term:
+        pattern = term.text
+        cmd = f"rg -c --max-count 1 '{pattern}' {' '.join(candidate_repos)}"
+        
+        try:
+            result = await run_ripgrep(cmd, timeout_ms=timeout_ms)
+            match_count = sum(1 for line in result.stdout.splitlines() if line.strip())
+            
+            if match_count > 0:
+                term.weight *= 1.05       # 确认存在，微升权重
+                term.existence_verified = True
+                term.match_file_count = match_count
+            else:
+                term.weight *= 0.15       # 不存在，大幅降权
+                term.existence_verified = False
+                term.match_file_count = 0
+        except TimeoutError:
+            term.existence_verified = None  # 超时，保持原权重
+        
+        return term
+    
+    verified = await asyncio.gather(*[check_term(t) for t in terms])
+    verified.sort(key=lambda t: t.weight, reverse=True)
+    return verified
+```
+
+**全部翻译词都不存在时的重翻译闭环：**
+
+```python
+async def llm_translate_with_validation(
+    query: str,
+    candidate_repos: list[str]
+) -> list[Term]:
+    """
+    LLM 翻译 + 存在性验证的联合流程。
+    
+    如果所有翻译词在代码库中都不存在 → 把"这些词不存在"反馈给 LLM，
+    让它换一种翻译思路。这是存在性验证的核心价值——
+    "翻译 → 验证 → 反馈 → 重翻译"的闭环，而非"翻译 → 搜索"的单向流程。
+    """
+    raw_terms = await llm_translate_to_identifiers(query)
+    
+    if not raw_terms:
+        return []
+    
+    verified = await validate_translation_existence(raw_terms, candidate_repos)
+    
+    existing = [t for t in verified if t.existence_verified is True]
+    unverified = [t for t in verified if t.existence_verified is None]
+    nonexistent = [t for t in verified if t.existence_verified is False]
+    
+    if len(existing) >= 2:
+        return existing[:8]
+    
+    if len(existing) == 1:
+        return (existing + unverified)[:8]
+    
+    # 全部不存在 → 重翻译
+    if nonexistent:
+        retry_terms = await llm_retranslate_with_feedback(
+            query=query,
+            failed_terms=[t.text for t in nonexistent],
+            repo_context=candidate_repos
+        )
+        return retry_terms[:8]
+    
+    return raw_terms[:8]
+
+
+RETRANSLATE_PROMPT = """将以下中文业务描述翻译为可能的代码标识符。
+
+重要提示：上一轮翻译的以下标识符在代码库中**不存在**，请更换翻译思路：
+{dont_use}
+
+目标代码仓库为：{repos}（请考虑这些仓库的命名风格）
+
+要求：
+- 考虑不同的英文同义词和命名习惯
+- 考虑缩写形式（如 limit→lim, validator→valid, amount→amt）
+- 如果中文描述涉及多个概念，为每个概念给出独立的标识符
+- 最多输出 6 个
+
+中文: "{query}"
+
+英文标识符:"""
+
+
+async def llm_retranslate_with_feedback(
+    query: str,
+    failed_terms: list[str],
+    repo_context: list[str]
+) -> list[Term]:
+    """告知 LLM 之前的翻译不存在，要求重新翻译。"""
+    prompt = RETRANSLATE_PROMPT.format(
+        dont_use='\n'.join(f"  ✗ {t}" for t in failed_terms),
+        repos=', '.join(repo_context[:10]),
+        query=query
+    )
+    response = await llm.invoke(prompt)
+    terms = [t.strip() for t in response.split(",") if t.strip()]
+    return [Term(t, weight=0.4, source="llm_retranslate") for t in terms]
+```
+
+**延迟分析：**
+
+| 路径 | 延迟 | 发生率 |
+|------|------|--------|
+| 缓存命中 + 全部存在 | ~55ms（+50ms vs 原方案） | ~60% |
+| 首次翻译 + 全部存在 | ~350ms（+50ms vs 原方案） | ~35% |
+| 全部不存在 → 重翻译 | ~650ms | ~5% × 10% = 0.5% |
+
+15% 的延迟增加换来"不搜不存在的词"——一个不存在的搜索词浪费的不止 50ms：它浪费 ripgrep 时间、占用搜索词位、挤掉可能存在的高价值词。
+
+**与搜索词构造管线的集成：** 6.4 节第三层 LLM 翻译调用 `llm_translate_with_validation` 替代原 `llm_translate_to_identifiers`。存在性验证需要候选仓库列表（Phase 0 路由结果）——如果路由也失败（无候选仓库），跳过验证，直接返回 LLM 翻译结果做全量搜索。
+
 ### 6.8 不依赖翻译的快速路径
 
 以下路径不需要任何跨语言映射，直接在 6.1 的 Query Type Detection 中分流：`code_refs` 精确匹配、`req_ids` git log 搜索、`person` + `time_range` git log 过滤、中英混合输入直接提取英文部分。这四类覆盖了估计 60%+ 的中文查询场景。
@@ -2082,6 +2475,215 @@ class SearchTermFeedbackLoop:
         # 权重衰减：已有映射项，连续 3 周未被点击 → 降权 0.1
         await self.decay_stale_mappings()
 ```
+
+### 6.9.2 被动学习通道：从代码仓库自动挖掘中英映射
+
+现有反馈闭环（6.9）依赖用户点击行为来学习新映射。但上线初期存在**冷启动死循环**：映射表不准确 → 搜索结果差 → 用户不点击 → 反馈信号弱 → 映射表无法改进。
+
+**核心洞察：代码仓库本身就是一个巨大的中英对照语料库。** 不需要等用户来点击——commit message、repo 元数据、代码注释中天然包含了大量"中文语义 ↔ 英文标识符"的对照信息。这些信息是**白捡的**，不需要任何用户交互。
+
+#### 管道 P1：commit message 挖掘（信号最强）
+
+开发者写 commit message 时用中文描述"做了什么"，而 changed files 列表天然给出了对应的英文标识符。这是三条管道中信号最强、噪音最低的——commit message 本质上是人类做的"意图→代码"映射标注。
+
+```python
+class CommitMessageMiner:
+    """
+    从 git log 的 commit message 中挖掘 中文→英文标识符 映射。
+    
+    延迟：离线批处理，每天凌晨跑一次。
+    覆盖：500 仓库的团队，日均 ~200 条 commit，每月 ~6000 条候选。
+    """
+
+    async def mine_from_commits(
+        self,
+        repos: list[str],
+        since: str = "7 days ago"
+    ) -> list[DiscoveredMapping]:
+        """扫描最近 N 天的 commit，提取中英对照。"""
+        mappings = []
+        
+        for repo in repos:
+            commits = await git_log(repo, since=since, format="%H|%s", name_only=True)
+            
+            for commit in commits:
+                chinese_spans = self._extract_action_spans(commit.message)
+                # "修复额度校验超时问题" → ["额度校验", "超时"]
+                
+                if not chinese_spans:
+                    continue
+                
+                identifiers = set()
+                for f in commit.changed_files:
+                    identifiers.update(self._extract_stems(f))
+                    # credit_limit_validator.py → credit, limit, validator
+                
+                for span in chinese_spans:
+                    for ident in identifiers:
+                        if len(ident) >= 4:  # 太短区分度低
+                            mappings.append(DiscoveredMapping(
+                                chinese=span, english=ident,
+                                source="commit_message", repo=repo,
+                                confidence=0.0,  # 聚合后计算
+                                discovered_at=datetime.now()
+                            ))
+        
+        return self._aggregate_and_filter(mappings)
+
+    def _extract_action_spans(self, message: str) -> list[str]:
+        """
+        从 commit message 中提取有意义的动作/对象中文片段。
+        
+        "修复额度校验超时问题，优化了缓存策略"
+        → ["额度校验", "超时", "缓存"]
+        
+        用 jieba 分词 + 停用词过滤。虚词（修复、优化、问题、的、了）去掉。
+        """
+        words = jieba.cut(message)
+        stopwords = {'修复', '优化', '新增', '删除', '修改', '重构', '调整',
+                     '问题', '逻辑', '代码', '的', '了', '和', '与', '及'}
+        return [w for w in words if len(w) >= 2 and w not in stopwords]
+
+    def _extract_stems(self, file_path: str) -> list[str]:
+        """
+        从文件路径中提取语义词干。
+        
+        src/credit/credit_limit_validator.py → ["credit", "limit", "validator"]
+        src/auth/oauth_token_refresh.py       → ["auth", "oauth", "token", "refresh"]
+        """
+        stem = Path(file_path).stem
+        parts = re.split(r'[_-]', stem)
+        result = []
+        for p in parts:
+            result.extend(re.findall(r'[A-Z]?[a-z]+|[A-Z]+(?=[A-Z][a-z]|\d|\b)', p))
+        return [r.lower() for r in result if len(r) >= 3]
+
+    def _aggregate_and_filter(
+        self,
+        raw: list[DiscoveredMapping]
+    ) -> list[DiscoveredMapping]:
+        """
+        聚合 + 去噪 + 置信度打分。
+        
+        一个映射被多个 commit / 多个仓库独立发现 → 置信度高。
+        只出现一次 → 可能是巧合，过滤掉。
+        """
+        groups = defaultdict(list)
+        for m in raw:
+            key = (m.chinese, m.english)
+            groups[key].append(m)
+        
+        filtered = []
+        for (cn, en), items in groups.items():
+            # 规则1：至少出现 2 次
+            if len(items) < 2:
+                continue
+            # 规则2：中文 ≥ 2 字，英文 ≥ 4 字符
+            if len(cn) < 2 or len(en) < 4:
+                continue
+            # 规则3：过滤通用英文词
+            if en.lower() in {'test', 'main', 'index', 'init', 'config',
+                              'util', 'helper', 'common', 'base', 'model',
+                              'service', 'controller', 'handler', 'manager'}:
+                continue
+            
+            unique_repos = len(set(i.repo for i in items))
+            confidence = min(0.9, 0.3 + 0.1 * len(items) + 0.1 * unique_repos)
+            
+            filtered.append(DiscoveredMapping(
+                chinese=cn, english=en,
+                source="commit_message",
+                confidence=confidence,
+                occurrence_count=len(items),
+                unique_repos=unique_repos
+            ))
+        
+        return sorted(filtered, key=lambda m: m.confidence, reverse=True)
+```
+
+**映射生效路径：** CommitMessageMiner 每日凌晨产出候选映射 → 置信度 ≥ 0.7 的自动写入 `CODE_SYNONYM_MAP`（weight=confidence × 0.7，source="commit_mined"）→ 不需要人工审核。每月汇总邮件通知新增映射。
+
+#### 管道 P2：仓库元数据挖掘
+
+利用 3.6 节 `repo_registry` 表自带的 display_name、description、tags：
+
+```python
+class RepoMetadataMiner:
+    """
+    从 repo_registry 提取中文→英文映射。
+    
+    display_name="额度校验服务" + repo_name="credit-service"
+    → "额度校验" ↔ credit
+    
+    tags=["认证", "OAuth", "登录"] + repo_name="auth-service"
+    → "认证" ↔ auth, "登录" ↔ auth
+    """
+
+    async def mine_from_registry(self) -> list[DiscoveredMapping]:
+        repos = await db.fetch("""
+            SELECT repo_name, display_name, description, tags
+            FROM repo_registry
+        """)
+        
+        mappings = []
+        for r in repos:
+            repo_stems = self._extract_stems(r['repo_name'])
+            
+            cn_words = jieba.cut(
+                (r['display_name'] or '') + ' ' + (r['description'] or '')
+            )
+            cn_words = [w for w in cn_words if len(w) >= 2]
+            
+            for cn in cn_words:
+                for stem in repo_stems:
+                    if len(stem) >= 3:
+                        mappings.append(DiscoveredMapping(
+                            chinese=cn, english=stem,
+                            source="repo_metadata", confidence=0.5
+                        ))
+            
+            for tag in (r['tags'] or []):
+                if re.search(r'[一-鿿]', tag):
+                    for stem in repo_stems:
+                        if len(stem) >= 3:
+                            mappings.append(DiscoveredMapping(
+                                chinese=tag, english=stem,
+                                source="repo_tag", confidence=0.6
+                            ))
+        
+        return self._aggregate(mappings)
+```
+
+#### 管道 P3：代码注释挖掘（Phase 2+，可选）
+
+```python
+class CodeCommentMiner:
+    """
+    从代码注释中挖掘 中文→函数名 映射。
+    
+    # 额度校验：检查单笔金额是否超出用户授信额度
+    def check_credit_limit(user_id: str, amount: float) -> bool:
+    
+    → "额度校验" ↔ check_credit_limit
+    
+    只对 docstring 中文占比 > 50% 的函数做提取，避免英文 docstring 被误解析。
+    """
+    # 实现逻辑与管道 P1 类似，只是语料来源为 TreeSitter 提取的 docstring
+```
+
+#### 预期效果
+
+| 指标 | 仅反馈闭环 | + 被动学习通道 |
+|------|-----------|-------------|
+| 冷启动映射数 | ~50 条 | ~50 + 首日 ~30 条 |
+| 上线 1 周 | ~55 条 | ~120 条 |
+| 上线 1 月 | ~80 条 | ~300 条 |
+| 覆盖率达 85% | ~3 个月 | ~1 个月 |
+| 覆盖率达 90% | ~6 个月 | ~2 个月 |
+
+**关键：** 被动管道不需要等用户交互。代码仓库每天在 commit，每天就有新的中英对照数据。第一天跑就能从历史 commit 中挖出 ~30-50 条高置信度映射，直接跨越冷启动死循环。
+
+> **反馈闭环 vs 被动学习的分工：** 反馈闭环（6.9）覆盖"用户用的口语/简称"（如"挂了"→"服务不可用"），这些词不会出现在 commit message 中。被动学习覆盖"开发者用的业务术语"（如"额度校验"→credit_limit），这些词不会出现在用户口语中但大量存在于工程记录中。两者互补，不是替代。
 
 ### 6.10 完整管线
 
