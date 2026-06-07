@@ -133,53 +133,81 @@ T=4.2s   返回回答 (P50 < 5s ✓)
 
 Supervisor 的收敛依赖 Worker 评分——这是编排循环的核心决策逻辑。
 
-```python
-def evaluate_worker_quality(output: WorkerOutput, query_type: str) -> float:
-    """评估单个Worker返回质量，返回0-1分数。维度权重按query_type动态调整。"""
-    dims = {}
+### 质量评分流程
 
-    # 维度1: 结果数量 (0-0.3分)
-    if output.result_count == 0:       dims['count'] = 0.0
-    elif output.result_count < 3:      dims['count'] = 0.1
-    elif output.result_count < 10:     dims['count'] = 0.2
-    else:                              dims['count'] = 0.3
-
-    # 维度2: Worker自评置信度 (0-0.3分)
-    dims['confidence'] = output.confidence * 0.3
-
-    # 维度3: 是否命中精确匹配实体 (0-0.4分)
-    # req_ids/table_names/code_refs命中→确定性检索路径→最高质量
-    if output.has_exact_match:         dims['exact_match'] = 0.4
-    else:                              dims['exact_match'] = 0.0
-
-    weights = {
-        'data_query': {'count': 0.3, 'confidence': 0.3, 'exact_match': 0.4},
-        'search':     {'count': 0.4, 'confidence': 0.4, 'exact_match': 0.2},
-        'trace':      {'count': 0.2, 'confidence': 0.3, 'exact_match': 0.5},
-    }
-    w = weights.get(query_type, weights['search'])
-    return sum(dims[k] * w[k] for k in dims)
-
-def should_reschedule(worker_outputs: list[WorkerOutput], round: int) -> bool:
-    """判断是否需要重新调度"""
-    low_quality = [w for w in worker_outputs if evaluate_worker_quality(w) < 0.6]
-    if not low_quality: return False     # 所有Worker达标
-    if round >= 2: return False          # 已重调度2次
-    return True
-
-def adjust_params(failed_worker: WorkerOutput, all_results: list) -> dict:
-    """用成功Worker的结果补充失败Worker的检索词"""
-    context_entities = extract_entities_from(all_results)
-    return {
-        'expanded_query': f"{failed_worker.original_query} {context_entities}",
-        'additional_filters': context_entities,
-    }
+```
+                      ┌──────────────────────────────┐
+                      │ 收集所有 Worker 返回结果       │
+                      └──────────────┬───────────────┘
+                                     │
+                                     ▼
+                      ┌──────────────────────────────┐
+                      │ 对每个 Worker 输出做三维评分    │
+                      │                              │
+                      │ 维度1: 结果数量 (0-0.3)        │
+                      │   0条→0.0  <3条→0.1          │
+                      │   <10条→0.2  ≥10条→0.3       │
+                      │                              │
+                      │ 维度2: Worker自评置信度(0-0.3) │
+                      │   output.confidence × 0.3     │
+                      │                              │
+                      │ 维度3: 精确匹配命中 (0-0.4)    │
+                      │   命中req_ids/table_names/    │
+                      │   code_refs → 0.4             │
+                      │   否则 → 0.0                  │
+                      └──────────────┬───────────────┘
+                                     │
+                                     ▼
+                      ┌──────────────────────────────┐
+                      │ 按 query_type 查权重矩阵       │
+                      │ 加权求和 → 每个Worker的最终分  │
+                      └──────────────┬───────────────┘
+                                     │
+                                     ▼
+                      ┌──────────────────────────────┐
+                      │ 所有Worker评分 ≥ 0.6?          │
+                      └──────┬───────────┬───────────┘
+                             │ YES       │ NO
+                             ▼           ▼
+                      ┌──────────┐ ┌─────────────────┐
+                      │ 收敛 ✓    │ │ 重调度次数 < 2?   │
+                      │ → Synth  │ └────┬────────┬───┘
+                      └──────────┘      │ YES    │ NO
+                                        ▼        ▼
+                                   ┌────────┐ ┌──────────┐
+                                   │调整参数 │ │强制收敛   │
+                                   │重新派发 │ │→ Synth   │
+                                   └────────┘ └──────────┘
 ```
 
-**调整参数的具体内容：**
-- 调整检索 query：将其他 Worker 找到的实体（req_ids、table_names、module）注入失败 Worker
-- 调整检索范围：扩展/收缩时间窗口、放宽 doc_type 过滤
-- 不调整：Worker 类型选择（不新增/移除 Worker）
+### 三维评分细则
+
+**维度1 — 结果数量（0-0.3 分）：** 纯计数打分。0 条结果 → 0.0 分；不足 3 条 → 0.1 分；不足 10 条 → 0.2 分；10 条及以上 → 满分 0.3。过少的结果量意味着检索覆盖不足。
+
+**维度2 — Worker 自评置信度（0-0.3 分）：** Worker 返回的 `confidence` 字段线性映射——Worker 对自己的检索结果有多大把握。这个值是 Worker 内部完备度判断的输出（确定性收敛 → confidence≥0.85；LLM 判断充足 → 0.6-0.85；LLM 判断不足但被 max_rounds 截断 → <0.6）。
+
+**维度3 — 精确匹配命中（0-0.4 分）：** 这是权重最高的维度，也是区分"模糊语义搜索"和"确定性精确检索"的关键信号。如果 Worker 命中了精确实体（Doc Agent 命中 req_ids 精确过滤、SQL Agent 命中 table_names 精确 DDL 查询、Code Agent 命中 code_refs 精确 grep），表明走的是确定性检索路径，质量天然高于纯语义搜索。
+
+### query_type 权重矩阵
+
+维度权重不是固定的——不同的查询类型对三个维度的倚重不同：
+
+| query_type | count 权重 | confidence 权重 | exact_match 权重 | 设计原理 |
+|-----------|-----------|----------------|-----------------|---------|
+| **data_query** | 0.3 | 0.3 | 0.4 | 数据查询最看重表名精确匹配——选对表比返回多少行更重要 |
+| **search** | 0.4 | 0.4 | 0.2 | 搜索类查询重视召回量和 Worker 自评——用户期望"尽量多找" |
+| **trace** | 0.2 | 0.3 | 0.5 | 溯源查询（"这个需求影响了哪些代码"）以 req_ids 精确匹配为核心——需求 ID 是最强锚点 |
+
+### 重调度决策逻辑
+
+当任一 Worker 评分 < 0.6 且当前编排轮次 < 2（即尚未重调度过 2 次）时，触发重调度。所有 Worker ≥ 0.6 或已达 2 轮重调度 → 不再重调度，强制收敛。
+
+### 参数调整策略（重调度时）
+
+从成功的 Worker 结果中提取上下文实体（req_ids、table_names、module），注入失败 Worker 的检索参数中：
+- **调整检索 query：** 将其他 Worker 找到的实体追加到失败 Worker 的原始 query 后，形成扩展检索词
+- **调整检索范围：** 扩展/收缩时间窗口、放宽 doc_type 过滤条件
+- **不调整：** Worker 类型选择——不新增或移除 Worker
 
 ---
 
@@ -201,34 +229,39 @@ Supervisor ──Send API──▶ Doc Agent    ──┐
 
 ### Worker 输出格式
 
-```python
-class WorkerOutput:
-    worker_type: str           # "doc" | "code" | "sql"
-    result_count: int          # 返回结果数
-    results: list[dict]        # 检索/SQL结果
-    citations: list[Citation]  # 每条结果的引用元数据
-    confidence: float          # Worker自评信心 (0-1)
-    has_exact_match: bool      # 是否命中精确匹配实体
-    rounds_used: int           # 使用的轮数
-    original_query: str        # 原始检索query
+所有 Worker Agent 返回给 Supervisor 的输出遵循统一的字段规范：
 
-class Citation:
-    source_type: str           # "prd" | "code" | "sql"
-    source_id: str             # doc_id, file_path:line, table.column
-    snippet: str               # 引用原文片段（≤200 chars）
-```
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `worker_type` | `"doc"` / `"code"` / `"sql"` | 标识来源 Agent 类型 |
+| `result_count` | int | 返回结果数量 |
+| `results` | list[dict] | 检索/SQL 结果列表 |
+| `citations` | list[Citation] | 每条结果的引用元数据 |
+| `confidence` | float (0-1) | Worker 自评信心 |
+| `has_exact_match` | bool | 是否命中精确匹配实体（req_ids / table_names / code_refs） |
+| `rounds_used` | int | 内部消耗的检索轮数 |
+| `original_query` | str | 原始检索 query |
+
+**Citation 字段规范：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `source_type` | `"prd"` / `"code"` / `"sql"` | 来源数据源类型 |
+| `source_id` | str | 来源标识：doc_id、`file_path:line` 或 `table.column` |
+| `snippet` | str | 引用原文片段，≤200 字符 |
+
+各 Agent 可在标准字段基础上追加 Agent 特有字段（如 SQL Agent 追加 `execution_sql` 供用户复制复现）。
 
 ### Synthesis Agent 输出格式
 
-```python
-class SynthesisOutput:
-    answer: str                # 最终回答（Markdown）
-    citations_verified: int    # 已验证的引用数
-    citations_unverified: int  # 无法验证的引用数
-    contradictions: list[str]  # 跨源矛盾列表 ("Doc说A，Code说B")
-    coverage_gaps: list[str]   # 用户问题中未被回答的部分
-    audit_trail: str           # 自检过程简述
-```
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `answer` | str | 最终回答（Markdown 格式） |
+| `citations_verified` | int | 已验证的引用数量 |
+| `citations_unverified` | int | 无法验证的引用数量 |
+| `contradictions` | list[str] | 跨源矛盾列表（如 "Doc 说 A，Code 说 B"） |
+| `coverage_gaps` | list[str] | 用户问题中未被回答的部分 |
+| `audit_trail` | str | 自检过程简述 |
 
 ---
 
@@ -236,17 +269,18 @@ class SynthesisOutput:
 
 ### Agent 状态数据模型
 
-```python
-class AgentRoundState:
-    round: int                    # 当前轮次
-    query: str                    # 本轮检索query（可能被改写）
-    action: str                   # "bm25_vector_search" | "ripgrep" | "schema_rag" | ...
-    results: list[dict]           # 本轮检索结果摘要 {id, source, snippet, score}
-    assessment: str               # LLM完备度判断 ("sufficient" | "insufficient: missing X")
-    confidence: float             # LLM自评信心 0-1
-    llm_calls: int                # 本轮LLM调用次数
-    latency_ms: int               # 本轮延迟
-```
+每个 Agent 在每一轮循环中维护以下状态字段：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `round` | int | 当前轮次编号（从 1 开始） |
+| `query` | str | 本轮检索 query（可能经历改写） |
+| `action` | str | 本轮执行的检索动作（`"bm25_vector_search"` / `"ripgrep"` / `"schema_rag"` 等） |
+| `results` | list[dict] | 本轮检索结果摘要，每条含 `{id, source, snippet, score}` |
+| `assessment` | str | 完备度判断结论（`"sufficient"` 或 `"insufficient: missing X"`） |
+| `confidence` | float (0-1) | 本轮自评信心 |
+| `llm_calls` | int | 本轮 LLM 调用次数 |
+| `latency_ms` | int | 本轮耗时（毫秒） |
 
 ### 存储层级
 
@@ -266,14 +300,7 @@ Redis不可用 ──→ Agent降级为单轮pipeline模式（退化为当前非
 
 ### Checkpointer 隔离
 
-每个 Agent 子图使用独立 LangGraph checkpointer namespace，避免并发冲突：
-
-```python
-# Supervisor Send API 注入 namespace 到子图 config
-Send("doc_agent", state, config={"configurable": {"namespace": f"{query_id}:doc"}})
-Send("code_agent", state, config={"configurable": {"namespace": f"{query_id}:code"}})
-Send("sql_agent", state, config={"configurable": {"namespace": f"{query_id}:sql"}})
-```
+每个 Agent 子图使用独立 LangGraph checkpointer namespace，避免并发冲突。Supervisor 通过 Send API 派发任务时，在子图的 config 参数中注入 namespace，格式为 `{query_id}:{agent_type}`（如 `uuid-xxx:doc`、`uuid-xxx:code`、`uuid-xxx:sql`）。LangGraph Checkpointer 自动将不同 namespace 的状态写入独立的存储 key，同一 query 下不同 Agent 的子图状态互不干扰。
 
 ---
 
@@ -281,41 +308,64 @@ Send("sql_agent", state, config={"configurable": {"namespace": f"{query_id}:sql"
 
 采用"状态共享 + 循环独立"的抽象层次：
 
-```python
-class AgentState(TypedDict):
-    """所有Agent共享的状态字段"""
-    round: int
-    confidence: float
-    results: list[dict]
-    token_used: int
-    assessment_history: list[str]
+### 共享状态基类
 
-class AgentInfrastructure:
-    """共享方法——每个Agent通过mixin使用"""
-    def check_convergence(self, state: AgentState) -> bool: ...
-    def consume_budget(self, tokens: int) -> bool: ...
-    def save_checkpoint(self, state: AgentState) -> None: ...
+所有 Agent 共享一个基础状态模型，包含 `round`（当前轮次）、`confidence`（自评信心）、`results`（结果列表）、`token_used`（已消耗 token）、`assessment_history`（完备度判断历史）五个字段。每个 Agent 在此基础上追加自己特有的字段（如 Code Agent 追加 `call_depth` 和 `new_files_this_round`）。
+
+### 共享基础设施方法
+
+三个跨 Agent 通用方法，通过 mixin 提供给每个 Agent：
+
+| 方法 | 功能 | 调用时机 |
+|------|------|---------|
+| `check_convergence(state)` | 检查当前 Agent 是否满足收敛条件（确定性优先，LLM 兜底） | 每轮结束后 |
+| `consume_budget(tokens)` | 从 Token 预算中扣减，返回是否有剩余额度 | 每次 LLM 调用前 |
+| `save_checkpoint(state)` | 将 Agent 状态写入 LangGraph Checkpointer | 每轮状态变更后（由 LangGraph 自动管理） |
+
+### Agent 循环图构建模式
+
+每个 Agent 作为独立的 LangGraph StateGraph 构建，遵循统一的 **"搜索 → 评估 → 条件分支"** 模式：
+
+```
+                     ┌──────────────────────┐
+                     │    search 节点        │
+                     │  执行本轮检索动作       │
+                     │  (bm25+向量/ripgrep/   │
+                     │   schema_rag/...)     │
+                     └───────────┬──────────┘
+                                 │
+                                 ▼
+                     ┌──────────────────────┐
+                     │   assess 节点         │
+                     │  完备度判断            │
+                     │  (确定性优先 → LLM兜底)│
+                     └───────────┬──────────┘
+                                 │
+                    ┌────────────┼────────────┐
+                    │ 不满足      │            │ 满足
+                    ▼             │            ▼
+           ┌──────────────┐      │     ┌──────────┐
+           │ expand/retry  │      │     │   END    │
+           │ (线索扩展/     │      │     │ 返回结果  │
+           │  重生成/...)  │      │     └──────────┘
+           └──────┬───────┘      │
+                  │              │
+                  └──────────────┘
+                  回到 search 节点
 ```
 
-每个 Agent 的循环图独立构建：
+**以 Doc Agent 为例的具体构建：**
+- **search 节点** → 执行 BM25 + 向量混合检索，每轮可能使用不同的扩展线索
+- **assess 节点** → 完备度判断：`结果≥5 AND req_ids命中` → 自动收敛；否则 Haiku 判断是否充足
+- **条件边** → 不满足收敛条件时携带新线索回到 search（最多 3 轮）；满足则 END
 
-```python
-# Doc Agent 独立构建
-doc_graph = StateGraph(DocAgentState)  # 继承 AgentState
-doc_graph.add_node("search", bm25_vector_search)
-doc_graph.add_node("assess", completeness_check)
-doc_graph.add_conditional_edges("assess", should_continue, {
-    "retry": "search",
-    "done": END,
-})
-
-# SQL Agent 独立构建
-sql_graph = StateGraph(SQLAgentState)
-sql_graph.add_node("generate", llm_sql_generate)
-sql_graph.add_node("guard", sql_guard_check)
-sql_graph.add_node("execute", execute_readonly)
-sql_graph.add_node("verify", semantic_verify)
-```
+**以 SQL Agent 为例的具体构建：**
+- **generate 节点** → LLM 根据 Schema RAG 结果 + 业务元数据生成 SQL
+- **guard 节点** → SQLGlot 语法校验 + DDL/DML 拦截 + 表/列存在性验证
+- **条件边** → guard 失败则带错误信息回到 generate（最多 5 轮）
+- **execute 节点** → 只读副本执行 SQL
+- **verify 节点** → 语义验证：`执行成功 AND 行数正常` → 自动收敛；否则 Haiku 语义验证
+- **条件边** → verify 不通过则带异常信息回到 generate；通过则 END
 
 ---
 
@@ -323,44 +373,41 @@ sql_graph.add_node("verify", semantic_verify)
 
 ### Agent Action Guard
 
-每个 Agent 可调用的工具受白名单限制：
+每个 Agent 可调用的工具受白名单限制——这是一个纯确定性检查，不依赖 LLM。每次 Agent 尝试调用工具时，系统检查该 Agent 类型的白名单，不在白名单内的操作被拦截并记录 `BLOCKED` 日志：
 
-```python
-ALLOWED_ACTIONS = {
-    'doc':  ['bm25_search', 'vector_search', 'metadata_filter', 'return_results'],
-    'code': ['ripgrep', 'read_file', 'glob', 'ast_expand', 'return_results'],
-    'sql':  ['schema_rag', 'generate_sql', 'validate_sql', 'execute_readonly',
-             'verify_results'],
-}
-
-class AgentActionGuard:
-    def validate(self, agent_type: str, proposed_action: str) -> bool:
-        if proposed_action not in ALLOWED_ACTIONS.get(agent_type, set()):
-            logger.error(f"BLOCKED: {agent_type} attempted {proposed_action}")
-            return False
-        return True
-```
+| Agent | 允许的工具 |
+|-------|-----------|
+| **Doc Agent** | `bm25_search`, `vector_search`, `metadata_filter`, `completeness_check`, `expand_clues`, `return_results` |
+| **Code Agent** | `ripgrep`, `read_file`, `glob`, `ast_expand`, `completeness_check`, `return_results` |
+| **SQL Agent** | `schema_rag`, `generate_sql`, `validate_sql`, `execute_readonly`, `verify_results`, `semantic_verify`, `return_results` |
+| **Supervisor** | `classify_intent`, `extract_entities`, `rewrite_query`, `send_to_worker`, `collect_results`, `evaluate_quality`, `reschedule`, `finalize` |
+| **Synthesis** | `rrf_fusion`, `llm_generate`, `citation_check`, `cross_source_check`, `return_results` |
 
 ### LLM 并发与退避
 
-```python
-from tenacity import retry, stop_after_attempt, wait_exponential
+LLM API 调用使用指数退避重试策略（tenacity 库）：
 
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=0.5, max=2),
-    retry=lambda e: isinstance(e, RateLimitError),
-)
-async def call_llm_with_retry(prompt: str):
-    try:
-        return await haiku_api.generate(prompt)
-    except RateLimitError:
-        raise  # tenacity 自动重试
-    except Exception:
-        return await local_qwen.generate(prompt)  # 降级本地模型
+```
+LLM 调用
+    │
+    ▼
+┌─────────────────────────────────────┐
+│ 尝试调用 Haiku/Sonnet API            │
+└──────────────┬──────────────────────┘
+               │
+    ┌──────────┼──────────┐
+    │ 成功     │ 429      │ 其他异常
+    ▼          ▼          ▼
+  返回结果  自动重试   降级到本地 Qwen3-8B
+            (最多3次,      (非限流错误不重试)
+             指数退避:
+             multiplier=0.5,
+             max_wait=2s)
 ```
 
-> 429 不计入 Agent 轮次计数——这是基础设施问题，不是搜索质量问题。
+- **退避参数：** multiplier=0.5s, max_wait=2s, 最多 3 次重试
+- **触发条件：** 仅 `RateLimitError`（429）触发重试；非限流错误直接降级到本地模型
+- **429 不计入 Agent 轮次计数** — 这是基础设施问题，不是搜索质量问题
 
 ---
 
@@ -502,27 +549,17 @@ agents:
 
 ### LLM Mock 策略
 
-```python
-@pytest.fixture
-def mock_llm_converges_round3():
-    """模拟第3轮才收敛的LLM"""
-    return MockLLM(responses=[
-        {"sufficient": False, "missing": "缺少性能数据"},    # round 1
-        {"sufficient": False, "missing": "缺少历史版本"},    # round 2
-        {"sufficient": True, "confidence": 0.85},             # round 3
-    ])
+Agent 循环测试使用 MockLLM 替代真实 LLM 调用。MockLLM 按预先编排的响应序列逐轮返回结果——每轮返回一个 JSON 对象，控制该轮的完备度判断结论（`sufficient`/`insufficient`）、缺失信息描述（`missing`）和置信度（`confidence`）。
 
-@pytest.mark.parametrize("mock_llm,expected_rounds", [
-    ("mock_llm_converges_round1", 1),
-    ("mock_llm_converges_round3", 3),
-    ("mock_llm_never_converges", 3),  # 达到 max_rounds 强制停止
-])
-def test_agent_convergence(mock_llm, expected_rounds, request):
-    mock = request.getfixturevalue(mock_llm)
-    agent = DocAgent(llm=mock)
-    result = await agent.search("用户登录为什么变慢了")
-    assert result.rounds_used == expected_rounds
-```
+测试覆盖三种典型收敛模式：
+
+| 收敛模式 | MockLLM 行为 | 断言 |
+|---------|-------------|------|
+| **第 1 轮收敛** | 首轮返回 `sufficient=True, confidence=0.9` | `rounds_used == 1` — 验证单轮快速收敛路径 |
+| **第 3 轮收敛** | 前两轮返回 `sufficient=False`，第三轮返回 `sufficient=True` | `rounds_used == 3` — 验证多轮扩展检索后收敛 |
+| **永不收敛（强制停止）** | 每轮返回 `sufficient=False` | `rounds_used == max_rounds` — 验证达到上限后强制收敛并返回当前最佳结果 |
+
+通过 pytest 参数化（`pytest.mark.parametrize`）对以上三种场景注入不同的 MockLLM fixture，断言 Agent 的实际收敛轮次。
 
 ### Agent Eval Dataset
 
