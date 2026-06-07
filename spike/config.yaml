@@ -1,0 +1,33 @@
+# Spike 配置文件
+api:
+  provider: anthropic
+  model: claude-haiku-4-5-20251001
+  max_tokens: 512
+  temperature: 0.0
+
+retrieval:
+  embedding_model: all-MiniLM-L6-v2
+  # 中文备选: BAAI/bge-small-zh-v1.5
+  bm25_weight: 0.3
+  embedding_weight: 0.7
+  top_k: 10
+
+simulation:
+  max_rounds: 3
+  doc_top_k_per_round: [5, 8, 10]
+  code_top_k_per_round: [3, 5, 7]
+  sql_top_k_per_round: [3, 5, 7]
+  golden_injection_ratio: 0.6
+  sufficiency_coverage_threshold: 0.8
+
+evaluation:
+  folds: 5
+  random_seed: 42
+  precision_threshold: 0.80
+
+paths:
+  corpus_dir: data/corpus
+  queries_dir: data/queries
+  golden_dataset: data/golden_eval_dataset.json
+  prompts_dir: prompts
+  reports_dir: reports
