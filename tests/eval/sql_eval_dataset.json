@@ -1,0 +1,42 @@
+[
+  {
+    "query": "过去7天各状态的订单数",
+    "query_type": "data_query",
+    "golden_sql": "SELECT status, COUNT(*) FROM orders WHERE created_at >= NOW() - INTERVAL '7 days' GROUP BY status",
+    "golden_tables": ["orders"],
+    "golden_columns": ["status", "created_at"],
+    "expected_row_count_range": [1, 10]
+  },
+  {
+    "query": "用户总数",
+    "query_type": "data_query",
+    "golden_sql": "SELECT COUNT(*) FROM users",
+    "golden_tables": ["users"],
+    "golden_columns": [],
+    "expected_row_count_range": [1, 1]
+  },
+  {
+    "query": "每个用户的订单总额",
+    "query_type": "data_query",
+    "golden_sql": "SELECT u.name, SUM(o.amount) FROM users u JOIN orders o ON u.id = o.user_id WHERE o.status = 'paid' GROUP BY u.name",
+    "golden_tables": ["users", "orders"],
+    "golden_columns": ["name", "amount", "status", "user_id"],
+    "expected_row_count_range": [1, 50]
+  },
+  {
+    "query": "上个月每天的订单数量",
+    "query_type": "data_query",
+    "golden_sql": "SELECT DATE(created_at) as date, COUNT(*) FROM orders WHERE created_at >= DATE_TRUNC('month', NOW()) - INTERVAL '1 month' AND created_at < DATE_TRUNC('month', NOW()) GROUP BY DATE(created_at) ORDER BY date",
+    "golden_tables": ["orders"],
+    "golden_columns": ["created_at"],
+    "expected_row_count_range": [1, 31]
+  },
+  {
+    "query": "价格最高的5个产品",
+    "query_type": "data_query",
+    "golden_sql": "SELECT name, price FROM products ORDER BY price DESC LIMIT 5",
+    "golden_tables": ["products"],
+    "golden_columns": ["name", "price"],
+    "expected_row_count_range": [1, 5]
+  }
+]
