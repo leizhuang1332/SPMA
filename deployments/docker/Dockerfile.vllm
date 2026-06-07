@@ -1,0 +1,19 @@
+# vLLM 推理服务镜像
+FROM vllm/vllm-openai:latest
+
+ARG MODEL_NAME=BAAI/bge-m3
+ARG HF_HUB_ENABLE_HF_TRANSFER=1
+
+RUN python -c "from huggingface_hub import snapshot_download; \
+    snapshot_download('BAAI/bge-m3')"
+
+RUN python -c "from huggingface_hub import snapshot_download; \
+    snapshot_download('Qwen/Qwen3-8B')"
+
+ENV VLLM_ENGINE=v1
+ENV GPU_MEMORY_UTILIZATION=0.90
+ENV MAX_MODEL_LEN=8192
+
+EXPOSE 8000
+
+CMD ["--model", "BAAI/bge-m3", "--enable-prefix-caching"]

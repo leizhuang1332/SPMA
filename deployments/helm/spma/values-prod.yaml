@@ -1,0 +1,31 @@
+api:
+  replicaCount: 3
+  hpa:
+    maxReplicas: 10
+
+agent:
+  replicaCount: 3
+
+vllm:
+  replicaCount: 2
+  gpu:
+    count: 1
+
+redis:
+  architecture: replication
+  auth:
+    enabled: true
+
+postgresql:
+  primary:
+    persistence:
+      size: 500Gi
+    resources:
+      limits:
+        cpu: "16"
+        memory: 64Gi
+      requests:
+        cpu: "8"
+        memory: 32Gi
+  readReplicas:
+    replicaCount: 2

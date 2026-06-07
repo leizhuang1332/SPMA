@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "spma.fullname" . }}-api
+  labels:
+    {{- include "spma.labels" . | nindent 4 }}
+    component: api
+spec:
+  replicas: {{ .Values.api.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "spma.selectorLabels" . | nindent 6 }}
+      component: api
+  template:
+    metadata:
+      labels:
+        {{- include "spma.selectorLabels" . | nindent 8 }}
+        component: api
+    spec:
+      containers:
+      - name: api
+        image: {{ .Values.global.imageRegistry }}/{{ .Values.api.image.repository }}:{{ .Values.api.image.tag }}
+        ports:
+        - containerPort: {{ .Values.api.service.port }}
+        resources:
+          {{- toYaml .Values.api.resources | nindent 10 }}
+        envFrom:
+        - configMapRef:
+            name: {{ include "spma.fullname" . }}-config
+        - secretRef:
+            name: {{ include "spma.fullname" . }}-secrets

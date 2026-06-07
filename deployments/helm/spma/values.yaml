@@ -1,0 +1,125 @@
+global:
+  imageRegistry: ""
+  imagePullSecrets: []
+  storageClass: ""
+
+api:
+  replicaCount: 2
+  image:
+    repository: spma-api
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 8000
+  resources:
+    limits:
+      cpu: "4"
+      memory: 8Gi
+    requests:
+      cpu: "2"
+      memory: 4Gi
+  hpa:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+
+agent:
+  replicaCount: 2
+  image:
+    repository: spma-agent
+    tag: "0.1.0"
+  service:
+    type: ClusterIP
+    port: 9000
+  resources:
+    limits:
+      cpu: "4"
+      memory: 8Gi
+    requests:
+      cpu: "2"
+      memory: 4Gi
+
+ingestion:
+  replicaCount: 1
+  image:
+    repository: spma-ingestion
+    tag: "0.1.0"
+  resources:
+    limits:
+      cpu: "2"
+      memory: 4Gi
+    requests:
+      cpu: "1"
+      memory: 2Gi
+
+vllm:
+  replicaCount: 2
+  image:
+    repository: spma-vllm
+    tag: "0.1.0"
+  gpu:
+    enabled: true
+    count: 1
+    type: "nvidia.com/gpu"
+  resources:
+    limits:
+      nvidia.com/gpu: 1
+      memory: 80Gi
+    requests:
+      nvidia.com/gpu: 1
+      memory: 80Gi
+
+redis:
+  enabled: true
+  architecture: standalone
+  auth:
+    enabled: false
+  master:
+    persistence:
+      enabled: true
+      size: 8Gi
+    resources:
+      limits:
+        memory: 8Gi
+      requests:
+        memory: 8Gi
+
+postgresql:
+  enabled: true
+  image:
+    tag: "16"
+  auth:
+    database: spma
+  primary:
+    persistence:
+      enabled: true
+      size: 100Gi
+    resources:
+      limits:
+        cpu: "8"
+        memory: 32Gi
+      requests:
+        cpu: "4"
+        memory: 16Gi
+  readReplicas:
+    replicaCount: 1
+
+external:
+  llmApi:
+    anthropicApiKey: ""
+    anthropicBaseUrl: "https://api.anthropic.com"
+  postgres:
+    readonlyReplicaUrl: ""
+  redis:
+    url: ""
+
+featureFlags:
+  sql_agentic: false
+  doc_agentic: false
+  code_agentic: false
+  supervisor_agentic: false
+  synth_agentic: false
+  query_normalization: true
+  query_expansion: true

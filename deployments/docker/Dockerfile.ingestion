@@ -1,0 +1,18 @@
+# SPMA 数据摄入管道镜像
+FROM python:3.13-slim
+
+WORKDIR /app
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --extra all
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ripgrep git && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY src/ src/
+COPY config/ config/
+
+CMD ["uv", "run", "spma-ingest"]

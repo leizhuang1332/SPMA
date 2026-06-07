@@ -1,0 +1,18 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "spma.fullname" . }}
+  labels:
+    {{- include "spma.labels" . | nindent 4 }}
+spec:
+  rules:
+  - host: spma.internal.company.com
+    http:
+      paths:
+      - path: /api/v1
+        pathType: Prefix
+        backend:
+          service:
+            name: {{ include "spma.fullname" . }}-api
+            port:
+              number: {{ .Values.api.service.port }}

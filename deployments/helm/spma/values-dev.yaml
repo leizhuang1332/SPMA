@@ -1,0 +1,59 @@
+global:
+  imageRegistry: "localhost:5000"
+
+api:
+  replicaCount: 1
+  resources:
+    limits:
+      cpu: "1"
+      memory: 2Gi
+    requests:
+      cpu: "500m"
+      memory: 1Gi
+  hpa:
+    enabled: false
+
+agent:
+  replicaCount: 1
+  resources:
+    limits:
+      cpu: "1"
+      memory: 2Gi
+    requests:
+      cpu: "500m"
+      memory: 1Gi
+
+ingestion:
+  replicaCount: 1
+  resources:
+    limits:
+      cpu: "1"
+      memory: 2Gi
+    requests:
+      cpu: "500m"
+      memory: 1Gi
+
+vllm:
+  replicaCount: 1
+
+redis:
+  master:
+    persistence:
+      size: 2Gi
+    resources:
+      limits:
+        memory: 2Gi
+      requests:
+        memory: 2Gi
+
+postgresql:
+  primary:
+    persistence:
+      size: 20Gi
+    resources:
+      limits:
+        cpu: "2"
+        memory: 8Gi
+      requests:
+        cpu: "1"
+        memory: 4Gi
