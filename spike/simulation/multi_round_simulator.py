@@ -7,11 +7,9 @@
 不写真实 Agent 代码，不依赖 src/spma。
 """
 
-import copy
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 import yaml
 

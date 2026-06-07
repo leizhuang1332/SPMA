@@ -14,15 +14,15 @@
 import argparse
 import json
 import sys
-from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 import yaml
 
 from spike.eval.fold_splitter import FoldSplitter, save_folds
+from spike.eval.fp_analyzer import analyze_fp_cases, print_fp_summary
 from spike.eval.llm_judge import LLMJudge
 from spike.eval.metrics import ClassificationMetrics, compute_fold_metrics, compute_metrics
+from spike.eval.report_generator import generate_report, stratified_analysis
 
 
 def load_config(config_path: str = "config.yaml") -> dict:
@@ -175,7 +175,7 @@ def main() -> None:
 
     if args.mode == "ablation":
         results = run_ablation(config, ["A", "B", "C"])
-        output_path = config["paths"]["prompts_dir"] + "/ablation_results.json"
+        output_path = str(Path(config["paths"]["prompts_dir"]) / "ablation_results.json")
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(results, f, ensure_ascii=False, indent=2)
         print(f"\n消融结果已保存: {output_path}")
@@ -198,6 +198,27 @@ def main() -> None:
         print(f"\n最终评估结果:")
         print(f"  精确率: {aggregated['precision']['mean']:.4f} ± {aggregated['precision']['std']:.4f}")
         print(f"  召回率: {aggregated['recall']['mean']:.4f} ± {aggregated['recall']['std']:.4f}")
+
+        # 收集所有 fold 的已判断点用于分层分析和 FP 分析
+        all_judged = []
+        for fold in folds:
+            test_points = fold["test"]
+            judged = judge.judge_batch(test_points, args.prompt_version)
+            all_judged.extend(judged)
+
+        # FP 分析
+        reports_dir = Path(config["paths"]["reports_dir"])
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        fp_analysis = analyze_fp_cases(all_judged, output_path=str(reports_dir / "fp_analysis.json"))
+        print_fp_summary(fp_analysis)
+
+        # 分层分析 + 报告生成
+        stratified = stratified_analysis(all_judged)
+        report_path = reports_dir / "evaluation_report.md"
+        generate_report(fold_metrics, stratified, fp_analysis, args.prompt_version, report_path)
+
+        print(f"\n评估报告已保存: {report_path}")
+        print(f"FP 分析已保存: {reports_dir / 'fp_analysis.json'}")
 
 
 if __name__ == "__main__":
