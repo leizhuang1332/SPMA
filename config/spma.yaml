@@ -1,0 +1,100 @@
+# SPMA 主配置文件
+# 配置来源优先级: env var > K8s ConfigMap > 本文件 > DB flags > 代码默认值
+
+spma:
+  version: "0.1.0"
+
+  agents:
+    supervisor:
+      max_rounds: 5
+      timeout_ms: 5000
+      reschedule_max_attempts: 2
+      quality_threshold: 0.6
+    doc:
+      max_rounds: 3
+      timeout_ms: 2000
+      convergence_min_results: 5
+      max_clue_expansion_rounds: 2
+    code:
+      max_rounds: 3
+      timeout_ms: 2000
+      convergence_min_results: 3
+      max_call_depth: 2
+    sql:
+      max_rounds: 5
+      timeout_ms: 3000
+      convergence_row_min: 1
+      convergence_row_max: 10000
+      execution_timeout_ms: 2000
+    synthesis:
+      max_rounds: 2
+      timeout_ms: 2000
+      min_citation_coverage: 0.8
+
+  hard_timeout_ms: 10000
+
+  llm:
+    classification_model: "claude-haiku-4-5-20251001"
+    generation_model: "claude-sonnet-4-6"
+    completeness_model: "claude-haiku-4-5-20251001"
+    fallback_model: "qwen3-8b-local"
+    local_model_endpoint: "http://vllm.internal:8000/v1"
+    max_retries: 3
+    retry_multiplier_seconds: 0.5
+    max_wait_seconds: 2.0
+
+  token_budget:
+    single_source_simple: 8
+    single_source_complex: 12
+    cross_source: 20
+    three_source_full: 25
+
+  retrieval:
+    embedding_model: "BAAI/bge-m3"
+    embedding_dim: 1024
+    pgvector:
+      index_type: "hnsw"
+      m: 16
+      ef_construction: 200
+      ef_search: 100
+      distance_metric: "cosine"
+    bm25:
+      engine: "pg_tsvector"
+      zh_parser: "zhparser"
+    rrf:
+      k: 60
+      default_weights:
+        doc: 1.0
+        code: 1.0
+        sql: 1.0
+
+  connections:
+    postgres:
+      readonly_replica: "${POSTGRES_READONLY_URL}"
+      vector_db: "${PGVECTOR_URL}"
+    redis:
+      url: "${REDIS_URL}"
+      db: 0
+      ttl_seconds: 300
+    llm_api:
+      anthropic_api_key: "${ANTHROPIC_API_KEY}"
+      anthropic_base_url: "https://api.anthropic.com"
+
+  rate_limits:
+    per_user_per_minute: 30
+    per_ip_per_minute: 60
+    global_per_minute: 1000
+
+  latency_slo:
+    single_source:
+      p50_ms: 3000
+      p95_ms: 6000
+      p99_ms: 8000
+    cross_source:
+      p50_ms: 6000
+      p95_ms: 12000
+      p99_ms: 15000
+
+  availability:
+    target: 0.999
+    measurement_period_days: 30

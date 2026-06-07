@@ -1,0 +1,57 @@
+# Prometheus 告警规则
+
+alerts:
+  agent_rounds_p99:
+    threshold: "> max_rounds"
+    severity: warning
+    action: "调整收敛参数"
+
+  agent_false_confidence_rate:
+    threshold: "> 0.15"
+    severity: critical
+    action: "触发回滚 → pipeline 模式"
+
+  agent_early_stop_rate:
+    threshold: "> 0.30"
+    severity: warning
+    action: "检查收敛条件是否过严"
+
+  agent_degradation_rate:
+    threshold: "> 0.10"
+    severity: critical
+    action: "检查基础设施（Redis/LLM）"
+
+  agent_loop_efficiency:
+    threshold: "< 0.3"
+    severity: info
+    action: "边际收益递减，考虑收紧 max_rounds"
+
+  supervisor_reschedule_rate:
+    threshold: "> 0.30"
+    severity: warning
+    action: "检查分类/实体抽取质量或 Worker 检索质量"
+
+  supervisor_timeout_rate:
+    threshold: "> 0.05"
+    severity: warning
+    action: "检查 5s 超时设置或 Worker 延迟"
+
+  supervisor_quality_score_p50:
+    threshold: "< 0.5"
+    severity: warning
+    action: "Worker 整体质量不足"
+
+  llm_error_rate:
+    threshold: "> 0.10"
+    severity: critical
+    action: "触发 L1 降级"
+
+  p99_latency_single_source:
+    threshold: "> 8000ms"
+    severity: warning
+    action: "检查 Worker 检索延迟"
+
+  p99_latency_cross_source:
+    threshold: "> 15000ms"
+    severity: warning
+    action: "检查跨源编排效率"

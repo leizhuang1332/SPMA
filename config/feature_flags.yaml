@@ -1,0 +1,27 @@
+# Feature Flags——运行时动态开关，秒级生效
+
+agents:
+  sql_agentic: false
+  doc_agentic: false
+  code_agentic: false
+  supervisor_agentic: false
+  synth_agentic: false
+
+  query_normalization: true
+  query_expansion: true
+  query_decomposition: false
+  query_hyde: false
+  query_step_back: false
+  query_context_aware: false
+
+  hybrid_search_weighted: false
+  code_fallback: true
+  sql_user_confirmation: true
+  cross_reranker: false
+
+  degradation_auto_recovery: true
+
+rollback_triggers:
+  false_confidence_rate_threshold: 0.15
+  p99_latency_degradation_threshold: 0.30
+  token_cost_degradation_threshold: 0.50

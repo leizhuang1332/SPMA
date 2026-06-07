@@ -1,0 +1,45 @@
+# 数据摄入调度配置
+
+ingestion:
+  doc:
+    webhook_enabled: true
+    webhook_debounce_seconds: 30
+    full_sync_schedule: "0 2 * * *"
+    parser: "docling"
+    chunk_size_tokens: 500
+    overlap_tokens: 50
+    embedding_model: "BAAI/bge-m3"
+    embedding_batch_size: 32
+
+  code:
+    webhook_enabled: true
+    webhook_debounce_seconds: 10
+    repos: []
+    update_file_path_cache: true
+    update_code_metadata: true
+    ast_languages: ["python", "typescript", "java", "go"]
+    max_repos_parallel: 5
+
+  sql:
+    polling_enabled: true
+    polling_interval_seconds: 600
+    databases: []
+    include_table_data_samples: false
+    refresh_few_shot_examples: false
+    refresh_enum_definitions: true
+
+  synonym_map:
+    auto_update_enabled: true
+    auto_apply_confidence_threshold: 0.9
+    decay_check_days: 30
+    sources:
+      - information_schema
+      - prd_titles
+      - git_dirs
+
+  max_concurrent_ingestions: 3
+  embedding_rate_limit_per_minute: 1000
+  freshness_slo:
+    doc_incremental_minutes: 5
+    code_incremental_minutes: 5
+    sql_polling_minutes: 10
