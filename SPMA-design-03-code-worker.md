@@ -2,7 +2,7 @@
 
 > 所属项目：[SPMA 全局概览](SPMA-design-00-global-overview.md)
 > 相关模块：[Supervisor Agent](SPMA-design-01-supervisor-agent.md) — 负责下发检索参数给本 Worker
-> 模块职责：通过 glob + grep + read_file 三工具协同，结合全局符号索引和 AST 调用图，对数百个代码仓库执行"发现→定位→理解"三阶段检索
+> 模块职责：通过 glob + grep + read_file 三工具协同 + AST 调用图扩展，对数百个代码仓库执行"路由→搜索→上下文补全"三阶段检索
 
 ---
 
@@ -18,13 +18,11 @@ Supervisor Agent（实体抽取 + 意图分类）
     │   ├─ Phase 0: 文件路径路由（文件路径缓存匹配 500→5 候选仓库）
     │   ├─ Phase 1: 实时 ripgrep 搜索（候选仓库内并行 grep，始终最新代码）
     │   │
-    │   ├─ Phase 2: 候选仓库深度搜索
-    │   │   ├─ grep 精确符号匹配（B-tree 索引 + 实时 ripgrep）
-    │   │   ├─ glob 关联文件发现（test、config、schema、migration）
-    │   │   ├─ read_file 完整文件上下文（import 链、模块级代码）
-    │   │   └─ AST 调用图扩展（调用链上下文补全）
-    │   │
-    │   └─ Phase 3: 跨仓库结果去重排序 + 上下文理解
+    │   └─ Phase 2: 上下文补全
+    │       ├─ read_file 完整文件上下文（import 链、模块级代码）
+    │       ├─ glob 关联文件发现（test、config、schema、migration）
+    │       ├─ AST 调用图扩展（调用链上下文补全）
+    │       └─ 跨仓库结果去重排序
     │
     └── SQL Worker
 ```
@@ -222,7 +220,7 @@ async def code_search(
         expand_imports=True
     )
     related_files = await glob_related_files(ripgrep_results, candidate_repos)
-    ast_expanded = await expand_via_call_graph(ripgrep_results, direction="both")
+    ast_expanded = await expand_via_call_graph(ripgrep_results.files, direction="both")
     
     ranked = rank_and_deduplicate(
         ripgrep_results, file_contexts, related_files, ast_expanded,
@@ -569,36 +567,41 @@ CODE_TERM_MAP = {
 grep 找到目标函数后，沿 AST 调用图扩展上下文——这是"不用 embedding 但仍能补全相关代码"的关键机制：
 
 ```python
-def expand_via_call_graph(
-    seeds: list[CodeChunk],
+async def expand_via_call_graph(
+    seeds: list[FileMatch],
     direction: str,  # "upstream" | "downstream" | "both"
     max_depth: int = 2
-) -> list[CodeChunk]:
+) -> list[CodeMetadata]:
     """
-    从 grep 命中的种子函数出发，沿调用图扩展。
+    从 ripgrep 命中的种子文件/函数出发，沿 code_metadata 调用图扩展。
     
-    seeds = grep 找到的 token_refresh()
-    direction="upstream"  → 谁调用了 token_refresh()？
-    direction="downstream" → token_refresh() 调用了谁？
+    seeds = Phase 1 ripgrep 找到的匹配
+    → 查 code_metadata 获取 calls/called_by
+    → BFS 扩展调用链
+    
+    direction="upstream"  → 谁调用了它？
+    direction="downstream" → 它调用了谁？
     direction="both"      → 双向扩展
     max_depth=2           → 最多扩展 2 层调用链
     """
     expanded = set()
-    frontier = list(seeds)
+    # Step 1: 从 ripgrep 匹配查 code_metadata 获取调用图
+    seed_metas = await lookup_code_metadata(seeds)
+    frontier = list(seed_metas)
     
     for depth in range(max_depth):
         next_frontier = []
-        for chunk in frontier:
+        for meta in frontier:
             if direction in ("upstream", "both"):
-                for caller in chunk.called_by:
+                for caller in meta.called_by:
                     if caller not in expanded:
                         expanded.add(caller)
-                        next_frontier.append(lookup_chunk(caller))
+                        next_frontier.append(await lookup_code_metadata_by_name(caller))
             if direction in ("downstream", "both"):
-                for callee in chunk.calls:
+                for callee in meta.calls:
                     if callee not in expanded:
                         expanded.add(callee)
-                        next_frontier.append(lookup_chunk(callee))
+                        next_frontier.append(await lookup_code_metadata_by_name(callee))
         frontier = next_frontier
     
     return list(expanded)
@@ -701,7 +704,7 @@ async def glob_file_discovery(
 
 #### 2.6.2 read_file：完整文件上下文
 
-**解决的核心问题：** `code_chunks` 表按函数/类分块存储。但以下信息不在任何函数/类内部，`code_chunks` 存不到：
+**解决的核心问题：** ripgrep 只返回匹配行，但代码理解需要完整的文件级上下文。以下信息不在任何函数/类内部，仅靠行匹配无法获取：
 
 - `import` 语句和依赖关系
 - 模块级常量、配置变量
@@ -711,22 +714,22 @@ async def glob_file_discovery(
 
 ```python
 async def read_file_context(
-    seed_chunks: list[CodeChunk],
+    seed_files: list[FileMatch],
     candidate_repos: list[str],
     expand_imports: bool = True,
     max_files: int = 10
 ) -> list[FileContext]:
     """
-    从 grep 命中的 chunk 出发，读取完整文件获取上下文。
+    从 ripgrep 命中的文件出发，读取完整文件获取上下文。
     
-    seed_chunks: grep 找到的 code_chunks
-    → 读取每个 chunk 所属的完整文件
+    seed_files: Phase 1 ripgrep 找到的文件匹配
+    → 读取每个命中文件的完整内容
     → 可选：追踪 import 链，读取被 import 的模块
     """
     files_to_read = set()
     
-    for chunk in seed_chunks:
-        files_to_read.add((chunk.repo, chunk.file_path))
+    for fm in seed_files:
+        files_to_read.add((fm.repo, fm.file_path))
     
     # 去重，限制数量
     files_to_read = list(files_to_read)[:max_files]
@@ -759,16 +762,11 @@ async def read_file_context(
     return results
 ```
 
-**read_file vs code_chunks 的分工：**
+**read_file 的价值：**
 
-| | `code_chunks`（已有） | `read_file`（新增） |
-|---|---|---|
-| **粒度** | 单个函数/类 | 完整文件 |
-| **内容** | 函数体 + docstring | import + 模块常量 + 所有函数/类 |
-| **速度** | ~5ms（B-tree） | ~5ms（文件系统 read） |
-| **适用** | 精确符号定位后的快速返回 | 需要完整上下文的理解型查询 |
+`read_file` 获取的是完整文件内容，补足 ripgrep 单行匹配所缺失的上下文——`import` 语句、模块常量、装饰器、文件级 docstring 等。这些信息决定了对代码的**理解质量**，而不仅仅是定位准确度。
 
-**使用准则：** 当用户只问"token_refresh 逻辑是什么"→ 返回 code_chunks 即可。当用户问"oauth 模块的认证流程是怎么设计的"→ 需要 read_file 获取完整文件上下文。
+**使用准则：** 当用户只问"token_refresh 逻辑是什么"→ ripgrep 匹配行 + AST 调用图通常足够。当用户问"oauth 模块的认证流程是怎么设计的"→ 需要 read_file 获取完整文件上下文。
 
 #### 2.6.3 三工具协同的典型链路
 
@@ -1367,275 +1365,55 @@ patterns = build_path_patterns(search_terms, entities)
 
 #### 模拟 A：精确引用 — "oauth.py 的 token_refresh 函数逻辑是什么"
 
-```
-┌─ Step 0: Supervisor 实体抽取 ─────────────────────────────┐
-│ entities.code_refs = ["oauth.py", "token_refresh"]         │
-│ entities.module = None                                     │
-│ query_type = EXACT_REFS                                    │
-└────────────────────────────────────────────────────────────┘
-    │
-    ▼
-┌─ Step 1: 搜索词构造（第六章） ─────────────────────────────┐
-│ exact_terms:  ["token_refresh", "oauth.py"]                │
-│ fuzzy_terms:  ["token", "refresh", "oauth"]  (形态扩展)    │
-│ tag_terms:    []                                           │
-└────────────────────────────────────────────────────────────┘
-    │
-    ▼
-┌─ Step 2: 文件路径模式构造（3.3） ──────────────────────────┐
-│ 目录结构 (1.0):  %/oauth/%, %/token/%, %/refresh/%        │
-│ 文件名   (0.9):  %/oauth.%, %/token_refresh%              │
-│ 域模板   (0.8):  (module 为空，跳过)                       │
-│ 工程约定 (0.5):  %/test%oauth%, %/test%token_refresh%    │
-│                                                            │
-│ 共生成 12 个 LIKE 模式                                     │
-└────────────────────────────────────────────────────────────┘
-    │
-    ▼
-┌─ Step 3: SQL 查询（3.4） ─────────────────────────────────┐
-│ SELECT repo_name, SUM(weight) * (1+(types-1)*0.3) AS score│
-│ FROM file_path_cache JOIN patterns                         │
-│ GROUP BY repo_name ORDER BY score DESC LIMIT 15            │
-│                                                            │
-│ 实际执行结果:                                              │
-│ ┌──────────────────┬───────┬───────┬────────┬───────────┐ │
-│ │ repo_name        │ score │ files │ types  │ top_match │ │
-│ ├──────────────────┼───────┼───────┼────────┼───────────┤ │
-│ │ auth-service     │ 387.2 │   312 │   4    │ dir(1.0)  │ │
-│ │ auth-gateway     │  12.4 │     9 │   2    │ file(0.9) │ │
-│ │ sso-service      │   3.1 │     3 │   1    │ dir(1.0)  │ │
-│ │ user-service     │   1.8 │     2 │   1    │ conv(0.5) │ │
-│ │ monitor-service  │   0.5 │     1 │   1    │ conv(0.5) │ │
-│ └──────────────────┴───────┴───────┴────────┴───────────┘ │
-└────────────────────────────────────────────────────────────┘
-    │
-    ▼
-┌─ Step 4: 候选截断（3.5） ─────────────────────────────────┐
-│ 断崖检测:                                                  │
-│   auth-service(387.2) → auth-gateway(12.4)                │
-│   gap_ratio = (387.2-12.4)/387.2 = 96.8% > 60% → 截断!   │
-│                                                            │
-│ 结果: 只保留 auth-service                                 │
-│ confidence = HIGH（断崖极深 + 精确引用）                   │
-└────────────────────────────────────────────────────────────┘
-    │
-    ▼
-┌─ Step 5: 输出 ────────────────────────────────────────────┐
-│ Phase 1 候选仓库: ["auth-service"]                         │
-│ Phase 1 ripgrep 命令:                                     │
-│   rg --json 'token_refresh|oauth' -g '*.py'              │
-│      /repos/auth-service/                                 │
-│                                                            │
-│ 路由方法: file_path_cache                                  │
-│ 置信度: HIGH                                               │
-│ 总延迟: ~35ms (模式构造 2ms + SQL 28ms + 截断 1ms)        │
-└────────────────────────────────────────────────────────────┘
-```
+| 步骤 | 内容 |
+|------|------|
+| **实体抽取** | `code_refs=["oauth.py","token_refresh"]`, module=None, type=EXACT_REFS |
+| **搜索词构造** | exact=["token_refresh","oauth.py"], fuzzy=["token","refresh","oauth"]（形态扩展），共 3+3=6 个词 |
+| **路径模式构造** | dir: `%/oauth/%`, `%/token/%`, `%/refresh/%`; file: `%/oauth.%`, `%/token_refresh%`; convention: `%/test%oauth%` 等，共 12 个 LIKE 模式 |
+| **SQL 查询** | **auth-service**: score=387.2, files=312, types=4（dir+file+conv）；auth-gateway: 12.4；sso-service: 3.1；user-service: 1.8；monitor-service: 0.5 |
+| **候选截断** | 断崖检测: auth-service(387.2)→auth-gateway(12.4)，gap=96.8% > 60% → **截断**，只保留 auth-service |
+| **输出** | 候选: `["auth-service"]`，方法: file_path_cache，置信度: HIGH，延迟: ~35ms |
 
 #### 模拟 B：中英混合 — "用户登录的 OAuth token 刷新逻辑在哪"
 
-```
-┌─ Step 0: Supervisor 实体抽取 ─────────────────────────────┐
-│ entities.code_refs = []                                    │
-│ entities.module = "用户登录"                               │
-│ query_type = MIXED_CN_EN                                   │
-└────────────────────────────────────────────────────────────┘
-    │
-    ▼
-┌─ Step 1: 搜索词构造（第六章） ─────────────────────────────┐
-│ 英文直提:    "OAuth"(0.95), "token"(0.95)                 │
-│ 中文→同义词: "用户登录"→login,auth,authenticate,oauth,sso │
-│ 中文→同义词: "刷新"→refresh,renew,rotate                  │
-│ 共现加分:    "OAuth"+"token"→refresh_token(+0.3)          │
-│                                                            │
-│ exact_terms:  []                                           │
-│ fuzzy_terms:  ["OAuth","token","login","auth",            │
-│                "authenticate","refresh","sso"]             │
-│ tag_terms:    ["认证","OAuth","Token"]                     │
-└────────────────────────────────────────────────────────────┘
-    │
-    ▼
-┌─ Step 2: 文件路径模式构造（3.3） ──────────────────────────┐
-│ 目录结构 (1.0):  /oauth/, /auth/, /login/, /token/,       │
-│                  /sso/, /authenticate/, /refresh/          │
-│ 文件名   (0.9):  /oauth%, /auth%, /login%, /token%        │
-│ 域模板   (0.8):  module="用户登录"→auth,login,sso,oauth   │
-│ 工程约定 (0.5):  test*oauth*, test*auth*, oauth*config*   │
-│                  oauth*migration*                          │
-│                                                            │
-│ 共生成 28 个 LIKE 模式                                     │
-└────────────────────────────────────────────────────────────┘
-    │
-    ▼
-┌─ Step 3: SQL 查询（3.4） ─────────────────────────────────┐
-│ 28 个 LIKE 条件，UNION ALL + GROUP BY                      │
-│ pg_trgm GIN 索引加速，每个 LIKE 走 Bitmap Index Scan      │
-│                                                            │
-│ 实际执行结果:                                              │
-│ ┌──────────────────┬───────┬───────┬────────┬───────────┐ │
-│ │ repo_name        │ score │ files │ types  │ top_match │ │
-│ ├──────────────────┼───────┼───────┼────────┼───────────┤ │
-│ │ auth-service     │ 452.8 │   385 │   4    │ dir(1.0)  │ │
-│ │ auth-gateway     │ 218.6 │   172 │   3    │ dir(1.0)  │ │
-│ │ sso-service      │ 185.3 │   140 │   3    │ dir(1.0)  │ │
-│ │ user-service     │ 162.4 │   118 │   3    │ dir(1.0)  │ │
-│ │ login-guard      │  58.2 │    45 │   2    │ file(0.9) │ │
-│ │ session-service  │  42.1 │    32 │   2    │ file(0.9) │ │
-│ │ captcha-service  │  15.3 │    12 │   1    │ conv(0.5) │ │
-│ └──────────────────┴───────┴───────┴────────┴───────────┘ │
-└────────────────────────────────────────────────────────────┘
-    │
-    ▼
-┌─ Step 4: 候选截断（3.5） ─────────────────────────────────┐
-│ 断崖检测:                                                  │
-│   auth-service(452.8) → auth-gateway(218.6) gap=52%       │
-│   auth-gateway(218.6) → sso-service(185.3) gap=15%        │
-│   sso-service(185.3) → user-service(162.4) gap=12%        │
-│   user-service(162.4) → login-guard(58.2) gap=64% → 截断! │
-│                                                            │
-│ 分数绝对值: 全部 > 15% × 452.8 = 67.9?                    │
-│   login-guard: 58.2 < 67.9 → 额外排除                     │
-│                                                            │
-│ 结果: [auth-service, auth-gateway, sso-service,           │
-│        user-service] 共 4 个仓库                           │
-│ confidence = HIGH（分数聚集 + 4 种匹配类型）               │
-└────────────────────────────────────────────────────────────┘
-    │
-    ▼
-┌─ Step 5: 输出 ────────────────────────────────────────────┐
-│ Phase 1 候选仓库:                                          │
-│   ["auth-service","auth-gateway","sso-service","user-service"]
-│ Phase 1 ripgrep 命令 (并行 4 路):                          │
-│   rg --json 'OAuth|token|login|auth|refresh' \            │
-│      -g '*.py' -g '*.java' /repos/auth-service/           │
-│   rg --json 'OAuth|token|login|auth|refresh' \            │
-│      -g '*.py' -g '*.java' /repos/auth-gateway/           │
-│   ... (sso-service, user-service)                         │
-│                                                            │
-│ 路由方法: file_path_cache                                  │
-│ 置信度: HIGH                                               │
-│ 总延迟: ~32ms (模式 3ms + SQL 27ms + 截断 1ms)            │
-└────────────────────────────────────────────────────────────┘
-```
+| 步骤 | 内容 |
+|------|------|
+| **实体抽取** | `code_refs=[]`, module="用户登录", type=MIXED_CN_EN |
+| **搜索词构造** | 英文直提: OAuth(0.95), token(0.95)；中文→同义词: "用户登录"→login,auth,authenticate,oauth,sso，"刷新"→refresh,renew,rotate；共现加分: OAuth+token→refresh_token(+0.3)。fuzzy_terms 共 7 个，tag_terms 3 个 |
+| **路径模式构造** | dir: 7 个目录模式；file: 4 个文件名模式；domain: module→auth,login,sso,oauth；convention: test/ config/ migration 变体，共 28 个 LIKE 模式 |
+| **SQL 查询** | **auth-service**: 452.8/385files/4types; auth-gateway: 218.6/172/3; sso-service: 185.3/140/3; user-service: 162.4/118/3; login-guard: 58.2/45/2; session-service: 42.1/32/2; captcha-service: 15.3/12/1 |
+| **候选截断** | 依次 gap: 52%→15%→12%→**64%**（user-service→login-guard 处截断）；绝对值过滤: login-guard(58.2) < 15%×452.8=67.9 → 额外排除 |
+| **输出** | 候选: `["auth-service","auth-gateway","sso-service","user-service"]` 共 4 个，方法: file_path_cache，置信度: HIGH，延迟: ~32ms |
 
 #### 模拟 C：纯中文 + 路由失败 — "额度校验的逻辑在哪"
 
-```
-┌─ Step 0: Supervisor 实体抽取 ─────────────────────────────┐
-│ entities.code_refs = []                                    │
-│ entities.module = "额度校验"                               │
-│ query_type = PURE_CN                                       │
-└────────────────────────────────────────────────────────────┘
-    │
-    ▼
-┌─ Step 1: 搜索词构造（第六章） ─────────────────────────────┐
-│ 第一层-同义词表: "额度校验"→未覆盖                          │
-│ 第二层-模块→符号: "额度校验"→未覆盖                         │
-│ 第三层-LLM翻译:  "额度校验"→["credit_limit","quota_check", │
-│                  "limit_validation","amount_verify"]        │
-│                  (缓存未命中，首次耗时 ~300ms)              │
-│                                                            │
-│ exact_terms:  []                                           │
-│ fuzzy_terms:  ["credit_limit","quota_check",              │
-│                "limit_validation","amount_verify"]         │
-│ tag_terms:    []                                           │
-└────────────────────────────────────────────────────────────┘
-    │
-    ▼
-┌─ Step 2: 文件路径模式构造（3.3） ──────────────────────────┐
-│ 目录结构:  /credit/, /quota/, /limit/, /amount/           │
-│ 文件名:    /credit_limit%, /quota_check%,                  │
-│            /limit_validation%, /amount_verify%             │
-│ 域模板:    module="额度校验"→未在映射表中                   │
-│ 工程约定:  test*credit_limit*, test*quota_check*           │
-│                                                            │
-│ 共生成 16 个 LIKE 模式                                     │
-└────────────────────────────────────────────────────────────┘
-    │
-    ▼
-┌─ Step 3: SQL 查询（3.4） ─────────────────────────────────┐
-│ 实际执行结果:                                              │
-│ ┌──────────────────┬───────┬───────┬────────┬───────────┐ │
-│ │ repo_name        │ score │ files │ types  │ top_match │ │
-│ ├──────────────────┼───────┼───────┼────────┼───────────┤ │
-│ │ credit-service   │   8.4 │     7 │   2    │ dir(1.0)  │ │
-│ │ risk-service     │   2.1 │     2 │   1    │ conv(0.5) │ │
-│ └──────────────────┴───────┴───────┴────────┴───────────┘ │
-│                                                            │
-│ ⚠ 只有 2 个候选，且分数极低                                │
-└────────────────────────────────────────────────────────────┘
-    │
-    ▼
-┌─ Step 4: 候选截断（3.5） ─────────────────────────────────┐
-│ candidates = ["credit-service", "risk-service"]            │
-│ len < min_candidates(3) → 触发 Layer 2                     │
-└────────────────────────────────────────────────────────────┘
-    │
-    ▼
-┌─ Step 5: Layer 2 仓库注册表兜底（3.6） ───────────────────┐
-│ 查询 repo_registry:                                        │
-│   WHERE display_name ILIKE '%额度%'                       │
-│      OR description ILIKE '%额度%'                         │
-│      OR 'credit_limit' = ANY(tags)                        │
-│      OR '额度校验' = ANY(tags)                             │
-│                                                            │
-│ 结果:                                                      │
-│   billing-service (score=0.85) — tags:["额度","计费"]     │
-│   credit-service  (score=0.90) — 已在 Layer 1 中         │
-│   order-service   (score=0.72) — desc:"...订单额度校验..." │
-│                                                            │
-│ 合并: [credit-service, risk-service,                       │
-│        billing-service, order-service]                     │
-│ len=4 ≥ min_candidates(3) → 返回                           │
-└────────────────────────────────────────────────────────────┘
-    │
-    ▼
-┌─ Step 6: 输出 ────────────────────────────────────────────┐
-│ Phase 1 候选仓库:                                          │
-│   ["credit-service","billing-service","order-service"]     │
-│   (risk-service 分数太低被排除)                            │
-│ Phase 1 ripgrep 命令:                                      │
-│   rg --json 'credit_limit|quota_check|limit_validation' \ │
-│      -g '*.py' -g '*.java' \                              │
-│      /repos/credit-service/ /repos/billing-service/ ...    │
-│                                                            │
-│ 路由方法: file_path_cache + repo_registry (Layer 1→2 兜底)│
-│ 置信度: MEDIUM                                             │
-│ 总延迟: ~335ms (搜索词构造 300ms LLM翻译 + 路由 35ms)     │
-│ 注: LLM 翻译结果缓存后，下次命中 ~35ms                     │
-└────────────────────────────────────────────────────────────┘
-```
+| 步骤 | 内容 |
+|------|------|
+| **实体抽取** | `code_refs=[]`, module="额度校验", type=PURE_CN |
+| **搜索词构造** | 第一层同义词表: 未覆盖；第二层模块→符号: 未覆盖；第三层 LLM 翻译: → ["credit_limit","quota_check","limit_validation","amount_verify"]（首次 ~300ms）。fuzzy_terms 4 个 |
+| **路径模式构造** | dir: /credit/, /quota/, /limit/, /amount/; file: /credit_limit%, /quota_check% 等; domain: 未在映射表; convention: test 变体。共 16 个 LIKE 模式 |
+| **SQL 查询** | credit-service: 8.4/7files/2types; risk-service: 2.1/2/1 — ⚠ 仅 2 个候选、分数极低 |
+| **候选截断** | len=2 < min_candidates(3) → 触发 Layer 2 仓库注册表兜底 |
+| **Layer 2 兜底** | repo_registry 匹配: billing-service(0.85, tags:["额度","计费"]), order-service(0.72, desc:"...订单额度校验...")；合并后 len=4 ≥ 3 → 返回 |
+| **输出** | 候选: `["credit-service","billing-service","order-service"]`（risk-service 被排除），方法: file_path_cache+repo_registry，置信度: MEDIUM，延迟: ~335ms（首次）/ ~35ms（缓存后） |
 
 #### 三个模拟的对比总结
 
-```
-┌────────────┬──────────────┬──────────────┬──────────────┐
-│            │ 模拟 A       │ 模拟 B       │ 模拟 C       │
-│            │ 精确引用     │ 中英混合     │ 纯中文+兜底  │
-├────────────┼──────────────┼──────────────┼──────────────┤
-│ 搜索词构造 │ < 5ms        │ < 10ms       │ ~300ms(首次) │
-│            │ (直接提取)   │ (同义词表)   │ /5ms(缓存)   │
-├────────────┼──────────────┼──────────────┼──────────────┤
-│ 路径模式数 │ 12           │ 28           │ 16           │
-├────────────┼──────────────┼──────────────┼──────────────┤
-│ SQL 耗时   │ ~28ms        │ ~27ms        │ ~25ms        │
-├────────────┼──────────────┼──────────────┼──────────────┤
-│ 候选仓库数 │ 1 (截断)     │ 4 (截断)     │ 3 (Layer1+2) │
-├────────────┼──────────────┼──────────────┼──────────────┤
-│ 路由层     │ Layer 1      │ Layer 1      │ Layer 1→2    │
-├────────────┼──────────────┼──────────────┼──────────────┤
-│ 置信度     │ HIGH         │ HIGH         │ MEDIUM       │
-├────────────┼──────────────┼──────────────┼──────────────┤
-│ 总路由延迟 │ ~35ms        │ ~32ms        │ ~335ms/35ms  │
-│ Phase 1    │ 1×rg(~50ms)  │ 4×rg(~80ms)  │ 3×rg(~70ms) │
-│ 端到端延迟 │ ~150ms       │ ~200ms       │ ~400ms/150ms │
-└────────────┴──────────────┴──────────────┴──────────────┘
-```
+| | 模拟 A（精确引用）| 模拟 B（中英混合）| 模拟 C（纯中文+兜底）|
+|---|---|---|---|
+| **搜索词构造** | < 5ms（直接提取）| < 10ms（同义词表）| ~300ms 首次 / 5ms 缓存 |
+| **路径模式数** | 12 | 28 | 16 |
+| **SQL 耗时** | ~28ms | ~27ms | ~25ms |
+| **候选仓库数** | 1（截断）| 4（截断）| 3（Layer 1→2）|
+| **路由层** | Layer 1 | Layer 1 | Layer 1→2 |
+| **置信度** | HIGH | HIGH | MEDIUM |
+| **总路由延迟** | ~35ms | ~32ms | ~335ms / 35ms |
+| **端到端延迟** | ~150ms | ~200ms | ~400ms / 150ms |
 
 **关键观察：**
 - 模拟 A：精确引用时断崖极深（96.8% gap），自适应截断省掉 4 次无效 ripgrep
 - 模拟 B：中英混合场景，同义词表覆盖全部翻译，零 LLM 调用
-- 模拟 C：同义词表和模块→符号都未覆盖 → LLM 翻译是唯一兜底 → 首次 300ms，但结果缓存后第二次仅 5ms
+- 模拟 C：两层级都未覆盖 → LLM 翻译是唯一兜底 → 首次 300ms，缓存后仅 5ms
 - 所有场景的 SQL 查询都在 30ms 以内——50 万行对 PostgreSQL 完全没有压力
 
 ### 3.9 与全量 grep 的对比
@@ -1798,14 +1576,14 @@ async def route_code_search(
 
 | 实体 | 用法 | 优先级 | 示例 |
 |------|------|-------|------|
-| `code_refs` | 精确搜索——作为 `exact_terms` 直接匹配全局符号索引 | **最高** | `token_refresh` → `WHERE symbol_name = 'token_refresh'` |
+| `code_refs` | 精确搜索——作为 `exact_terms` 直接参与 ripgrep 搜索 | **最高** | `token_refresh` → 精确匹配代码中的符号 |
 | `req_ids` | 关联搜索——git log 中搜索需求 ID，不依赖符号索引 | 高 | `git log --grep="REQ-2024-0187"` 找变更文件 |
 | `module` | 搜索词构造——映射中文术语→英文标识符；辅助 Phase 1 零命中时补充候选仓库 | 高 | "用户登录"→搜索词 `["login","auth","oauth"]` |
 | `person` | 作者过滤——`git log --author="张三"` 限定变更范围 | 中 | 结合 `time_range` 精确定位 |
 | `time_range` | 时间过滤——限制 git log 的 `--since` / `--until` | 中 | `git log --since="2026-05-29"` |
 | `version` | 分支/tag 过滤 | 中 | `git log release/2026Q1` |
 
-**关键变化：** `module` 实体不再主要用于仓库路由（限定搜哪些仓库），而是用于**搜索词构造**——把中文模块名翻译为英文代码标识符。仓库路由由全局符号索引（Phase 1）自动完成。
+**关键变化：** `module` 实体不再主要用于仓库路由（限定搜哪些仓库），而是用于**搜索词构造**——把中文模块名翻译为英文代码标识符。仓库路由由文件路径缓存（Phase 0）自动完成。
 
 ---
 
@@ -1995,7 +1773,7 @@ def boost_cooccurring_terms(terms: list[Term], anchor_tokens: list[str]) -> list
         ("payment", "callback"): {
             "payment_callback": +0.3, "notify_url": +0.2,
         },
-        # 更多模式从历史成功搜索中自动挖掘（见 6.9 反馈闭环）
+        # 更多模式从历史成功搜索中自动挖掘（见 6.8 反馈闭环）
     }
     
     anchor_set = {t.lower() for t in anchor_tokens}
@@ -2404,11 +2182,7 @@ async def llm_retranslate_with_feedback(
 
 **与搜索词构造管线的集成：** 6.4 节第三层 LLM 翻译调用 `llm_translate_with_validation` 替代原 `llm_translate_to_identifiers`。存在性验证需要候选仓库列表（Phase 0 路由结果）——如果路由也失败（无候选仓库），跳过验证，直接返回 LLM 翻译结果做全量搜索。
 
-### 6.8 不依赖翻译的快速路径
-
-以下路径不需要任何跨语言映射，直接在 6.1 的 Query Type Detection 中分流：`code_refs` 精确匹配、`req_ids` git log 搜索、`person` + `time_range` git log 过滤、中英混合输入直接提取英文部分。这四类覆盖了估计 60%+ 的中文查询场景。
-
-### 6.9 反馈闭环：从成功搜索中学习
+### 6.8 反馈闭环：从成功搜索中学习
 
 让系统越用越好的关键机制：
 
@@ -2476,7 +2250,7 @@ class SearchTermFeedbackLoop:
         await self.decay_stale_mappings()
 ```
 
-### 6.9.2 被动学习通道：从代码仓库自动挖掘中英映射
+### 6.8.2 被动学习通道：从代码仓库自动挖掘中英映射
 
 现有反馈闭环（6.9）依赖用户点击行为来学习新映射。但上线初期存在**冷启动死循环**：映射表不准确 → 搜索结果差 → 用户不点击 → 反馈信号弱 → 映射表无法改进。
 
@@ -2654,22 +2428,9 @@ class RepoMetadataMiner:
         return self._aggregate(mappings)
 ```
 
-#### 管道 P3：代码注释挖掘（Phase 2+，可选）
+#### 管道 P3：代码注释挖掘（远期可选）
 
-```python
-class CodeCommentMiner:
-    """
-    从代码注释中挖掘 中文→函数名 映射。
-    
-    # 额度校验：检查单笔金额是否超出用户授信额度
-    def check_credit_limit(user_id: str, amount: float) -> bool:
-    
-    → "额度校验" ↔ check_credit_limit
-    
-    只对 docstring 中文占比 > 50% 的函数做提取，避免英文 docstring 被误解析。
-    """
-    # 实现逻辑与管道 P1 类似，只是语料来源为 TreeSitter 提取的 docstring
-```
+从代码注释中挖掘中文→函数名映射（如 `# 额度校验` → `check_credit_limit`），语料来源为 TreeSitter 提取的 docstring。实现思路与 P1 类似，仅语料来源不同，当前阶段不展开。
 
 #### 预期效果
 
@@ -2683,9 +2444,9 @@ class CodeCommentMiner:
 
 **关键：** 被动管道不需要等用户交互。代码仓库每天在 commit，每天就有新的中英对照数据。第一天跑就能从历史 commit 中挖出 ~30-50 条高置信度映射，直接跨越冷启动死循环。
 
-> **反馈闭环 vs 被动学习的分工：** 反馈闭环（6.9）覆盖"用户用的口语/简称"（如"挂了"→"服务不可用"），这些词不会出现在 commit message 中。被动学习覆盖"开发者用的业务术语"（如"额度校验"→credit_limit），这些词不会出现在用户口语中但大量存在于工程记录中。两者互补，不是替代。
+> **反馈闭环 vs 被动学习的分工：** 反馈闭环（6.8）覆盖"用户用的口语/简称"（如"挂了"→"服务不可用"），这些词不会出现在 commit message 中。被动学习覆盖"开发者用的业务术语"（如"额度校验"→credit_limit），这些词不会出现在用户口语中但大量存在于工程记录中。两者互补，不是替代。
 
-### 6.10 完整管线
+### 6.9 完整管线
 
 ```python
 async def build_search_terms(
@@ -2731,7 +2492,7 @@ async def build_search_terms(
     return score_and_truncate(raw_terms, query_type)
 ```
 
-### 6.11 效果预期
+### 6.10 效果预期
 
 | 查询类型 | 占比（估计） | 延迟 | 覆盖方式 |
 |---------|------------|------|---------|
@@ -2762,16 +2523,17 @@ async def build_search_terms(
 | `req_ids` | git log 关联搜索 | 跨源溯源（需求→代码）链路断裂 |
 | `person` + `time_range` | 作者/时间过滤 | 无法缩小历史变更范围 |
 
-### 7.2 去掉全局符号索引（退回搜前路由）
+### 7.2 去掉文件路径缓存（退回全量 ripgrep）
 
-如果将第三章的全局符号索引退回原设计的 MODULE_REPO_MAP 搜前路由：
+如果将第三章的文件路径缓存去掉，退回对 500 个仓库全量执行 ripgrep：
 
 | 场景 | 影响 |
 |------|------|
-| 新仓库上线 | 需人工更新映射表，遗漏则搜不到 |
-| "用户登录"类宽泛模块 | 映射到 50+ 仓库，限定失去意义 |
-| 跨模块查询 | 静态映射表覆盖不到的组合查询 → 退化为全量 grep |
-| Phase 1 延迟 | 全量 grep 从 15ms 变为 300-800ms（500 仓库） |
+| 每次查询的 IO | 从 5-8 次 ripgrep 变为 500 次，延迟从 ~200ms 变为 3-8s |
+| 新仓库上线 | 自动覆盖（ripgrep 扫全部），但代价是每次都扫全部 |
+| CPU 开销 | 500 路并行 ripgrep 对服务器压力远大于 5-8 路 |
+
+文件路径缓存的维护成本极低（git ls-files），却能减少 98% 的搜索范围——这是用最低成本换取最大收益的优化。
 
 ### 7.3 去掉搜索词构造管线（第六章）
 
