@@ -3,7 +3,7 @@
 设计依据: SPMA-design-01 第五节 意图分类器
 """
 
-from typing import TypedDict, Literal
+from typing import Literal, TypedDict
 
 SourceType = Literal["doc", "code", "sql"]
 QueryType = Literal["trace", "search", "data_query", "explain"]

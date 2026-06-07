@@ -3,8 +3,7 @@
 设计依据: SPMA-design-02 §1.5.3 埋点日志结构
 """
 
-from typing import TypedDict, NotRequired
-
+from typing import NotRequired, TypedDict
 
 # 使用函数式语法以支持 $schema 字段名（$ 在 class 语法中是非法标识符）
 SearchLogEntry = TypedDict("SearchLogEntry", {

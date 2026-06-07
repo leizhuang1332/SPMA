@@ -3,7 +3,7 @@
 设计依据: SPMA-design-01 第六节 实体抽取
 """
 
-from typing import TypedDict, NotRequired
+from typing import TypedDict
 
 
 class ExtractedEntities(TypedDict, total=False):

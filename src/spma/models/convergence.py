@@ -3,7 +3,7 @@
 设计依据: SPMA-design-07 第二节 收敛契约
 """
 
-from typing import TypedDict, Literal
+from typing import Literal, TypedDict
 
 ConvergenceSource = Literal[
     "deterministic",

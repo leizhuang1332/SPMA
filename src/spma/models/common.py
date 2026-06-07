@@ -1,6 +1,6 @@
 """跨模块共享的通用类型定义。"""
 
-from typing import TypedDict, NotRequired
+from typing import NotRequired, TypedDict
 
 
 class RequestMetadata(TypedDict):

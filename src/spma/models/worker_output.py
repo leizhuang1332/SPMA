@@ -3,7 +3,7 @@
 设计依据: SPMA-design-07 第四节 Agent 交互协议
 """
 
-from typing import TypedDict, Literal, NotRequired
+from typing import Literal, NotRequired, TypedDict
 
 
 class Citation(TypedDict):
@@ -48,22 +48,21 @@ WorkerOutput = TypedDict("WorkerOutput", {
 
 
 # 使用函数式语法以支持 $schema 字段名
-WorkerDispatch = TypedDict("WorkerDispatch", {
-    "task_id": NotRequired[str],
-    "query_id": NotRequired[str],
-    "agent_type": NotRequired[Literal["doc", "code", "sql"]],
-    "original_query": NotRequired[str],
-    "rewritten_query": NotRequired[str],
-    "sub_queries": NotRequired[list[dict]],
-    "entities": NotRequired[dict],
-    "max_rounds": NotRequired[int],
-    "timeout_ms": NotRequired[int],
-    "token_budget": NotRequired[int],
-    "previous_results": NotRequired[list[dict]],
-    "hints_from_other_workers": NotRequired[dict],
-    "feature_flags": NotRequired[dict],
-    "model_override": NotRequired[str | None],
-}, total=False)
+class WorkerDispatch(TypedDict, total=False):
+    task_id: NotRequired[str]
+    query_id: NotRequired[str]
+    agent_type: NotRequired[Literal["doc", "code", "sql"]]
+    original_query: NotRequired[str]
+    rewritten_query: NotRequired[str]
+    sub_queries: NotRequired[list[dict]]
+    entities: NotRequired[dict]
+    max_rounds: NotRequired[int]
+    timeout_ms: NotRequired[int]
+    token_budget: NotRequired[int]
+    previous_results: NotRequired[list[dict]]
+    hints_from_other_workers: NotRequired[dict]
+    feature_flags: NotRequired[dict]
+    model_override: NotRequired[str | None]
 
 
 class DegradationInfo(TypedDict):
