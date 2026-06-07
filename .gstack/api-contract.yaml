@@ -1,0 +1,1891 @@
+openapi: "3.1.0"
+info:
+  title: SPMA — 企业级多源RAG智能问答系统 API
+  version: "1.0.0"
+  description: |
+    三种数据源（PRD文档、代码仓库、SQL数据库）的统一自然语言查询接口。
+
+    **核心能力：** 跨源溯源查询、Text-to-SQL、AST感知代码搜索、PRD文档混合检索。
+    **认证方式：** Web UI 使用 SSO + JWT Cookie；CI/脚本使用 API Key Header。
+  contact:
+    name: SPMA Team
+
+servers:
+  - url: https://spma.internal.example.com/api/v1
+    description: 企业内网生产环境
+
+# ═══════════════════════════════════════════════════════════════
+# 安全定义
+# ═══════════════════════════════════════════════════════════════
+
+security:
+  - bearerAuth: []
+  - apiKey: []
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Web UI 使用的认证方式。JWT 通过 SSO (OIDC/LDAP) 登录后颁发，
+        HttpOnly Cookie 自动携带，过期时间 8 小时。
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: |
+        CI/自动化脚本使用的认证方式。项目级 API Key，只读权限。
+        在 Admin UI 中生成和管理。
+
+  # ═══════════════════════════════════════════════════════════
+  # 通用 Schemas
+  # ═══════════════════════════════════════════════════════════
+
+  schemas:
+    # ── 错误响应 ──
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: 错误码，格式 E{N}{NNN}
+              example: "E1001"
+            message:
+              type: string
+              description: 面向用户的中文错误描述
+              example: "查询分类失败，请稍后重试"
+            details:
+              type: object
+              description: 机器可读的错误详情，用于日志和调试
+              additionalProperties: true
+              example:
+                llm_model: "claude-haiku-4.5"
+                error_type: "timeout"
+                timeout_ms: 500
+            retryable:
+              type: boolean
+              description: 该错误是否可通过重试解决
+              example: true
+            degradation:
+              $ref: "#/components/schemas/DegradationInfo"
+              description: 当前降级信息（如果已触发降级）
+
+    # ── 降级信息 ──
+    DegradationInfo:
+      type: object
+      required: [level]
+      properties:
+        level:
+          type: integer
+          minimum: 0
+          maximum: 4
+          description: |
+            当前降级级别：
+            - 0: L0 全功能 — 所有组件正常运行
+            - 1: L1 LLM降级 — 切换到备用模型（本地 Qwen3）
+            - 2: L2 检索降级 — 向量库异常，降级为纯 BM25 关键词检索
+            - 3: L3 缓存兜底 — 后端检索大面积故障，返回 Redis 缓存的热点问答
+            - 4: L4 静态兜底 — 所有动态服务不可用，返回预定义 FAQ
+          example: 0
+        trigger_reason:
+          type: string
+          description: 触发降级的具体原因
+          example: "主 LLM (Claude Sonnet) 连续超时 3 次，错误率超过 30% 阈值"
+        affected_workers:
+          type: array
+          items:
+            type: string
+            enum: [doc, code, sql, supervisor, synthesis]
+          description: 受降级影响的组件列表
+          example: [doc]
+        user_notice:
+          type: string
+          description: 展示给用户的透明标注（不静默失败原则）
+          example: "⚠️ 文档检索当前降级为关键词搜索，部分结果可能不够精准。系统将在向量库恢复后自动切回。"
+        auto_recovery_eta:
+          type: string
+          description: 预计自动恢复时间（if known）
+          example: "约 5 分钟内自动恢复"
+
+    # ── 分页 ──
+    Pagination:
+      type: object
+      properties:
+        offset:
+          type: integer
+          minimum: 0
+          default: 0
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+        total:
+          type: integer
+          description: 符合条件的总记录数
+        has_more:
+          type: boolean
+          description: 是否还有更多记录
+
+    # ── 数据新鲜度 ──
+    DataFreshness:
+      type: object
+      required: [checked_at]
+      properties:
+        checked_at:
+          type: string
+          format: date-time
+          description: 数据新鲜度检查时间
+        sources:
+          type: object
+          properties:
+            doc:
+              $ref: "#/components/schemas/SourceFreshness"
+            code:
+              $ref: "#/components/schemas/SourceFreshness"
+            sql:
+              $ref: "#/components/schemas/SourceFreshness"
+
+    SourceFreshness:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [fresh, stale, unknown]
+          description: |
+            - fresh: 索引在目标延迟内
+            - stale: 索引超过目标延迟
+            - unknown: 无法确定新鲜度（源不可达）
+        last_indexed_at:
+          type: string
+          format: date-time
+        lag_seconds:
+          type: integer
+          description: 当前延迟（秒）
+        target_lag_seconds:
+          type: integer
+          description: 目标延迟（秒）
+          example: 300
+        document_count:
+          type: integer
+          description: 已索引的文档/函数/表数量
+
+    # ── 引用来源 ──
+    Source:
+      type: object
+      required: [source_type, content, metadata, relevance_score]
+      properties:
+        source_type:
+          type: string
+          enum: [doc, code, sql]
+          description: 数据源类型
+        content:
+          type: string
+          description: 检索到的原始内容片段
+        metadata:
+          $ref: "#/components/schemas/SourceMetadata"
+        relevance_score:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: BM25+向量 RRF 融合后的相关度分数
+        retrieval_method:
+          type: string
+          enum: [exact, grep, semantic, hybrid, cache]
+          description: 实际使用的检索方式
+
+    SourceMetadata:
+      type: object
+      description: 根据 source_type 不同，字段不同（多态结构）
+      properties:
+        # ── doc 类型字段 ──
+        title:
+          type: string
+          description: 文档标题
+        source_url:
+          type: string
+          format: uri
+          description: 原始文档链接
+        doc_type:
+          type: string
+          enum: [PRD, 技术方案, 接口文档, 会议纪要, 其他]
+        req_id:
+          type: string
+          description: 关联的需求 ID
+          example: "REQ-2024-0187"
+        version:
+          type: string
+        updated_at:
+          type: string
+          format: date-time
+        # ── code 类型字段 ──
+        file_path:
+          type: string
+          example: "src/auth/oauth.py"
+        line_start:
+          type: integer
+        line_end:
+          type: integer
+        function_name:
+          type: string
+        class_name:
+          type: string
+        language:
+          type: string
+        repo:
+          type: string
+        commit_hash:
+          type: string
+        author:
+          type: string
+        # ── sql 类型字段 ──
+        table_name:
+          type: string
+        column_name:
+          type: string
+        data_type:
+          type: string
+        column_comment:
+          type: string
+        business_meaning:
+          type: string
+        enum_values:
+          type: object
+          additionalProperties:
+            type: string
+
+    # ── 提取的实体 ──
+    ExtractedEntities:
+      type: object
+      properties:
+        module:
+          type: string
+          description: 功能模块
+          example: "用户登录"
+        req_ids:
+          type: array
+          items:
+            type: string
+          example: ["REQ-2024-0187"]
+        time_range:
+          type: string
+          example: "上周"
+        version:
+          type: string
+        table_names:
+          type: array
+          items:
+            type: string
+          example: ["users", "user_sessions"]
+        column_names:
+          type: array
+          items:
+            type: string
+        metrics:
+          type: array
+          items:
+            type: string
+          example: ["新增用户数"]
+        group_by:
+          type: string
+        code_refs:
+          type: array
+          items:
+            type: string
+          example: ["oauth.py", "TokenService"]
+        person:
+          type: string
+        doc_types:
+          type: array
+          items:
+            type: string
+
+    # ── 查询履历 ──
+    QueryRecord:
+      type: object
+      required: [query_id, query_text, created_at]
+      properties:
+        query_id:
+          type: string
+          format: uuid
+        session_id:
+          type: string
+          format: uuid
+        query_text:
+          type: string
+        answer:
+          type: string
+          description: 系统生成的最终回答（Markdown）
+        sources:
+          type: array
+          items:
+            $ref: "#/components/schemas/Source"
+        classification:
+          type: object
+          properties:
+            sources:
+              type: array
+              items:
+                type: string
+            is_cross_source:
+              type: boolean
+            entities:
+              $ref: "#/components/schemas/ExtractedEntities"
+        degradation:
+          $ref: "#/components/schemas/DegradationInfo"
+        sql_executed:
+          type: string
+          description: 如果生成了SQL，原始SQL语句
+        latency_ms:
+          type: integer
+        user_feedback:
+          type: string
+          enum: [positive, negative, none]
+        created_at:
+          type: string
+          format: date-time
+
+    # ── 反馈提交 ──
+    FeedbackSubmission:
+      type: object
+      required: [query_id, rating]
+      properties:
+        query_id:
+          type: string
+          format: uuid
+        rating:
+          type: string
+          enum: [positive, negative]
+        reason:
+          type: string
+          enum: [inaccurate, incomplete, irrelevant, too_slow, other]
+          description: 负面评价的原因分类
+        comment:
+          type: string
+          maxLength: 500
+          description: 用户自由文本反馈
+
+    # ── 会话 ──
+    SessionRecord:
+      type: object
+      required: [session_id, created_at]
+      properties:
+        session_id:
+          type: string
+          format: uuid
+        turns:
+          type: array
+          items:
+            $ref: "#/components/schemas/QueryRecord"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    # ── 同义词映射候选 ──
+    SynonymCandidate:
+      type: object
+      required: [id, original_term, suggested_term, source, confidence, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+        original_term:
+          type: string
+          description: 用户使用的原始词
+          example: "支付挂了"
+        suggested_term:
+          type: string
+          description: 建议映射到的规范词
+          example: "支付服务不可用 OR 支付异常 OR 支付超时"
+        source:
+          type: string
+          enum: [self_correction, retrieval_gap, llm_mining, manual]
+          description: 发现管道
+        confidence:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+        evidence:
+          type: object
+          description: 支持该候选映射的证据摘要
+        status:
+          type: string
+          enum: [pending, approved, rejected, modified]
+        reviewer:
+          type: string
+          description: 审核人（审批后填写）
+        reviewed_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+
+    # ── 重索引任务 ──
+    ReindexTask:
+      type: object
+      required: [task_id, source, status, created_at]
+      properties:
+        task_id:
+          type: string
+          format: uuid
+        source:
+          type: string
+          enum: [doc, code, sql]
+          description: 要重建索引的数据源
+        scope:
+          type: string
+          enum: [full, incremental, single]
+          description: |
+            - full: 全量重建
+            - incremental: 增量更新（只处理自上次索引后的变更）
+            - single: 单文件/表重建（指定 target）
+        target:
+          type: string
+          description: scope=single 时指定具体目标（如文件路径、表名）
+        status:
+          type: string
+          enum: [pending, running, completed, failed]
+        progress:
+          type: object
+          properties:
+            total_items:
+              type: integer
+            processed_items:
+              type: integer
+            percentage:
+              type: number
+              format: float
+        error:
+          type: string
+          description: 失败原因（if failed）
+        started_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+
+    # ── 审计日志条目 ──
+    AuditLogEntry:
+      type: object
+      required: [id, event_type, timestamp, actor]
+      properties:
+        id:
+          type: string
+          format: uuid
+        event_type:
+          type: string
+          enum:
+            - query.submitted
+            - query.completed
+            - query.failed
+            - sql.executed
+            - sql.confirmed_by_user
+            - sql.rejected_by_user
+            - feedback.submitted
+            - synonym.approved
+            - synonym.rejected
+            - reindex.triggered
+            - degradation.triggered
+            - degradation.recovered
+            - auth.login
+            - auth.logout
+        timestamp:
+          type: string
+          format: date-time
+        actor:
+          type: object
+          properties:
+            user_id:
+              type: string
+            user_name:
+              type: string
+            ip_address:
+              type: string
+        detail:
+          type: object
+          description: 事件相关的结构化数据（query_id, table_name 等）
+        sensitive_data_redacted:
+          type: boolean
+          description: 是否有敏感字段被脱敏
+
+    # ── 系统统计 ──
+    SystemStats:
+      type: object
+      properties:
+        period:
+          type: object
+          properties:
+            from:
+              type: string
+              format: date-time
+            to:
+              type: string
+              format: date-time
+        queries:
+          type: object
+          properties:
+            total:
+              type: integer
+            by_source:
+              type: object
+              properties:
+                single_doc:
+                  type: integer
+                single_code:
+                  type: integer
+                single_sql:
+                  type: integer
+                cross_source:
+                  type: integer
+            avg_latency_ms:
+              type: integer
+            p95_latency_ms:
+              type: integer
+            p99_latency_ms:
+              type: integer
+            error_rate:
+              type: number
+              format: float
+        llm:
+          type: object
+          properties:
+            total_tokens:
+              type: integer
+            total_cost_usd:
+              type: number
+              format: float
+            cache_hit_rate:
+              type: number
+              format: float
+        degradation:
+          type: object
+          properties:
+            total_incidents:
+              type: integer
+            total_downtime_seconds:
+              type: integer
+            availability_pct:
+              type: number
+              format: float
+        feedback:
+          type: object
+          properties:
+            positive_rate:
+              type: number
+              format: float
+            negative_rate:
+              type: number
+              format: float
+            total_ratings:
+              type: integer
+        users:
+          type: object
+          properties:
+            active_users:
+              type: integer
+            new_users:
+              type: integer
+
+    # ── SQL 确认请求 ──
+    SQLConfirmationRequest:
+      type: object
+      required: [query_id, action]
+      properties:
+        query_id:
+          type: string
+          format: uuid
+        action:
+          type: string
+          enum: [confirm, modify]
+          description: |
+            - confirm: 确认执行原始 SQL
+            - modify: 用户修改了 SQL，执行修改后的版本
+        modified_sql:
+          type: string
+          description: action=modify 时用户提供的新 SQL
+
+  # ═══════════════════════════════════════════════════════════
+  # 请求/响应参数
+  # ═══════════════════════════════════════════════════════════
+
+  parameters:
+    QueryIdParam:
+      name: query_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: 查询唯一标识
+
+    SessionIdParam:
+      name: session_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: 会话唯一标识
+
+    SynonymIdParam:
+      name: synonym_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: 同义词候选唯一标识
+
+    TaskIdParam:
+      name: task_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: 重索引任务唯一标识
+
+# ═══════════════════════════════════════════════════════════════
+# PATH: /query
+# ═══════════════════════════════════════════════════════════════
+
+paths:
+  /query:
+    post:
+      operationId: submitQuery
+      summary: 提交自然语言查询（非流式）
+      description: |
+        提交一个自然语言查询，系统执行完整的 Supervisor → Workers → Synthesis 流水线，
+        返回带引用来源的结构化回答。
+
+        **典型延迟：** 单源 1-3s，跨源 3-8s。
+        **超时策略：** 默认 30s，超时返回部分结果。可通过 `timeout_ms` 自定义。
+      tags: [查询]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                query:
+                  type: string
+                  minLength: 1
+                  maxLength: 2000
+                  description: 用户自然语言查询
+                  example: "REQ-187 改了哪些代码和表？"
+                session_id:
+                  type: string
+                  format: uuid
+                  description: |
+                    多轮对话的会话 ID。不传则自动创建新会话。
+                    后续追问传入相同 session_id 可继承上下文（代词消解、模块继承）。
+                  example: "550e8400-e29b-41d4-a716-446655440000"
+                max_sources:
+                  type: array
+                  items:
+                    type: string
+                    enum: [doc, code, sql]
+                  description: |
+                    限定查询的数据源。不传则自动分类。
+                    传 ["sql"] 强制只查数据库（跳过 Supervisor 分类）。
+                  example: [doc, code]
+                timeout_ms:
+                  type: integer
+                  minimum: 5000
+                  maximum: 60000
+                  default: 30000
+                  description: 查询超时时间（毫秒）。超时后返回部分结果
+                stream:
+                  type: boolean
+                  default: false
+                  description: |
+                    true 时使用 SSE 流式返回。客户端应使用 /query/stream 端点。
+                    此端点始终返回完整 JSON 响应。
+              example:
+                query: "用户登录模块的 PRD 需求改了哪些内容？影响了哪些代码文件和数据库表？"
+      responses:
+        "200":
+          description: 查询成功（可能包含部分结果或降级标注）
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [query_id, answer, sources, degradation, latency_ms]
+                properties:
+                  query_id:
+                    type: string
+                    format: uuid
+                    example: "660e8400-e29b-41d4-a716-446655440001"
+                  answer:
+                    type: string
+                    description: LLM 生成的最终回答（Markdown 格式，含引用标注）
+                    example: |
+                      ## 用户登录模块 PRD 变更分析
+
+                      根据 [PRD §3.2] 和 [PRD §4.1]，REQ-2024-0187 对用户登录模块做了以下变更：
+
+                      1. **新增 OAuth2.0 登录方式** — 支持 Google 和企业微信 OAuth
+                      2. **Token 刷新机制调整** — refresh_token 有效期从 7 天延长到 30 天
+
+                      ### 影响的代码文件
+                      - `src/auth/oauth.py:42-87` [来源](src/auth/oauth.py) — login_oauth() 函数
+                      - `src/auth/token_service.py:103-156` — TokenService.refresh() 方法
+
+                      ### 影响的数据库表
+                      - `users` 表新增 `oauth_provider`, `oauth_token` 列
+                      - `user_sessions` 表新增 `refresh_token_expiry` 列
+
+                      ℹ️ 本次查询未识别到具体需求ID或表名，结果基于语义搜索，可能不够精确。
+                  sources:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Source"
+                  degradation:
+                    $ref: "#/components/schemas/DegradationInfo"
+                  latency_ms:
+                    type: integer
+                    description: 端到端延迟（毫秒）
+                    example: 4740
+                  data_freshness:
+                    $ref: "#/components/schemas/DataFreshness"
+                  suggested_followups:
+                    type: array
+                    items:
+                      type: string
+                    description: 建议的追问（引导用户深入探索）
+                    example:
+                      - "这些代码变更的测试覆盖率如何？"
+                      - "users 表的 oauth_provider 字段有哪些可选值？"
+                  sql_executed:
+                    type: string
+                    description: 实际执行的 SQL（如果查询触发了 SQL 生成）
+                  needs_confirmation:
+                    type: boolean
+                    description: |
+                      true 表示系统生成了 SQL 但需要用户确认才能执行（高风险查询）。
+                      客户端应展示 SQL 确认 UI，用户确认后调用 POST /query/{query_id}/confirm。
+                    example: false
+                  confirmation_prompt:
+                    type: object
+                    description: needs_confirmation=true 时展示给用户的确认信息
+                    properties:
+                      sql:
+                        type: string
+                      tables_affected:
+                        type: array
+                        items:
+                          type: string
+                      risk_level:
+                        type: string
+                        enum: [low, medium, high]
+                      risk_reasons:
+                        type: array
+                        items:
+                          type: string
+        "202":
+          description: 查询已接收但处理超时（异步处理中，客户端应轮询 GET /query/{query_id}）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  query_id:
+                    type: string
+                    format: uuid
+                  status:
+                    type: string
+                    enum: [processing]
+                  retry_after_ms:
+                    type: integer
+                    default: 2000
+        "400":
+          description: 请求参数错误
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          description: 触发限流
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: 系统全功能不可用（L4 降级触发）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    # ── 查询历史列表 ──
+    get:
+      operationId: listQueries
+      summary: 查询历史列表
+      description: 获取当前用户的查询历史，按时间倒序排列
+      tags: [查询]
+      parameters:
+        - name: session_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+          description: 按会话过滤
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: since
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: 只返回该时间之后的查询
+        - name: has_feedback
+          in: query
+          schema:
+            type: string
+            enum: ["positive", "negative", "none"]
+      responses:
+        "200":
+          description: 查询历史列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/QueryRecord"
+                  pagination:
+                    $ref: "#/components/schemas/Pagination"
+
+  # ═══════════════════════════════════════════════════════════
+  # PATH: /query/stream — SSE 流式查询
+  # ═══════════════════════════════════════════════════════════
+
+  /query/stream:
+    post:
+      operationId: submitQueryStream
+      summary: 提交查询（SSE 流式返回）
+      description: |
+        与 POST /query 功能相同，但通过 Server-Sent Events 流式返回处理进度和结果。
+
+        **SSE 事件类型：**
+        - `classification` — Supervisor 完成意图分类
+        - `worker_start` — Worker 开始检索
+        - `worker_progress` — Worker 检索进度
+        - `worker_result` — Worker 返回结果
+        - `synthesis` — 回答生成中（逐 chunk 推送）
+        - `done` — 查询完成
+        - `error` — 查询过程中出现错误（不中断流）
+        - `confirmation_required` — 需要用户确认 SQL（暂停等待确认）
+
+        **客户端实现要点：**
+        - 使用 EventSource API 或等效的 SSE 客户端
+        - 若收到 `confirmation_required`，通过 POST /query/{query_id}/confirm 响应
+        - 若 SSE 断开，可重连后通过 GET /query/{query_id} 获取完整结果
+      tags: [查询]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                query:
+                  type: string
+                  minLength: 1
+                  maxLength: 2000
+                session_id:
+                  type: string
+                  format: uuid
+                max_sources:
+                  type: array
+                  items:
+                    type: string
+                    enum: [doc, code, sql]
+                timeout_ms:
+                  type: integer
+                  minimum: 5000
+                  maximum: 60000
+                  default: 30000
+      responses:
+        "200":
+          description: SSE 事件流
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: |
+                  SSE 事件流格式（每行一个 data，空行分隔事件）：
+
+                  ```
+                  event: classification
+                  data: {"sources":["doc","code","sql"],"is_cross_source":true,"entities":{"module":"用户登录","req_ids":["REQ-2024-0187"]},"completeness":"rich","elapsed_ms":180}
+
+                  event: worker_start
+                  data: {"worker":"doc","timestamp":"2026-06-07T10:00:00.200Z"}
+
+                  event: worker_start
+                  data: {"worker":"code","timestamp":"2026-06-07T10:00:00.200Z"}
+
+                  event: worker_start
+                  data: {"worker":"sql","timestamp":"2026-06-07T10:00:00.200Z"}
+
+                  event: worker_progress
+                  data: {"worker":"doc","status":"searching","query_used":"用户登录 PRD 需求变更","elapsed_ms":500}
+
+                  event: worker_result
+                  data: {"worker":"doc","result_count":5,"top_sources":[...],"elapsed_ms":1500}
+
+                  event: worker_progress
+                  data: {"worker":"code","status":"grepping","query_used":"REQ-2024-0187 OR oauth OR login","elapsed_ms":8}
+
+                  event: worker_result
+                  data: {"worker":"code","result_count":12,"retrieval_method":"grep","elapsed_ms":1200}
+
+                  event: worker_result
+                  data: {"worker":"sql","result_count":3,"elapsed_ms":1480}
+
+                  event: synthesis
+                  data: {"chunk":"## 用户登录模块 PRD 变更分析\n\n根据 PRD §3.2...","citations":[{"text":"PRD §3.2","source_type":"doc","url":"..."}],"elapsed_ms":500}
+
+                  event: synthesis
+                  data: {"chunk":"\n### 影响的代码文件\n...","citations":[...],"elapsed_ms":1200}
+
+                  event: done
+                  data: {"query_id":"660e8400-...","latency_ms":4700,"degradation":{"level":0},"suggested_followups":[...]}
+
+                  event: error
+                  data: {"code":"E2001","message":"Doc Worker 超时，已使用部分结果","retryable":false,"degradation":{"level":0,"affected_workers":["doc"],"user_notice":"文档检索超时，已使用代码和SQL结果"}}
+                  ```
+        "400":
+          description: 请求参数错误
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ═══════════════════════════════════════════════════════════
+  # PATH: /query/{query_id}
+  # ═══════════════════════════════════════════════════════════
+
+  /query/{query_id}:
+    get:
+      operationId: getQuery
+      summary: 获取查询详情
+      description: 获取指定查询的完整记录，包括答案、来源、延迟、反馈
+      tags: [查询]
+      parameters:
+        - $ref: "#/components/parameters/QueryIdParam"
+      responses:
+        "200":
+          description: 查询详情
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueryRecord"
+        "404":
+          description: 查询不存在
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ═══════════════════════════════════════════════════════════
+  # PATH: /query/{query_id}/confirm — SQL 确认闸门
+  # ═══════════════════════════════════════════════════════════
+
+  /query/{query_id}/confirm:
+    post:
+      operationId: confirmSQL
+      summary: 确认或修改高风险 SQL
+      description: |
+        当查询返回 `needs_confirmation: true` 时，用户通过此端点确认或修改 SQL。
+
+        **两种模式：**
+        - confirm: 确认执行系统生成的 SQL
+        - modify: 用户修改 SQL 后提交，修改后的 SQL 仍需通过 SQL Guard 校验
+
+        确认后系统继续执行查询流水线（SQL 执行 → 格式化 → 合成最终回答）。
+        对于流式查询，确认后 SSE 流会恢复，从 `worker_result` (sql) 继续推送。
+      tags: [查询]
+      parameters:
+        - $ref: "#/components/parameters/QueryIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SQLConfirmationRequest"
+      responses:
+        "200":
+          description: SQL 确认成功，查询继续执行（返回完整结果）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  query_id:
+                    type: string
+                    format: uuid
+                  answer:
+                    type: string
+                  sources:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Source"
+                  sql_executed:
+                    type: string
+                  degradation:
+                    $ref: "#/components/schemas/DegradationInfo"
+                  latency_ms:
+                    type: integer
+        "400":
+          description: 修改后的 SQL 未通过 SQL Guard 校验
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        example: "E3002"
+                      message:
+                        type: string
+                        example: "SQL 校验未通过"
+                      details:
+                        type: object
+                        properties:
+                          sqlguard_errors:
+                            type: array
+                            items:
+                              type: string
+                            example: ["禁止的 DDL 操作: DROP TABLE"]
+                          original_sql:
+                            type: string
+                          suggested_fix:
+                            type: string
+
+  # ═══════════════════════════════════════════════════════════
+  # PATH: /sessions
+  # ═══════════════════════════════════════════════════════════
+
+  /sessions:
+    post:
+      operationId: createSession
+      summary: 创建新会话
+      description: 创建一个新的对话会话，返回 session_id。用于多轮对话场景。
+      tags: [会话]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  description: 可选的会话标题（自动从首轮查询生成）
+      responses:
+        "201":
+          description: 会话创建成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session_id:
+                    type: string
+                    format: uuid
+                  created_at:
+                    type: string
+                    format: date-time
+
+  /sessions/{session_id}:
+    get:
+      operationId: getSession
+      summary: 获取会话历史
+      description: 获取指定会话的完整对话历史（所有轮次）
+      tags: [会话]
+      parameters:
+        - $ref: "#/components/parameters/SessionIdParam"
+      responses:
+        "200":
+          description: 会话历史
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionRecord"
+    delete:
+      operationId: deleteSession
+      summary: 清除会话
+      description: 删除会话及其所有关联的查询历史
+      tags: [会话]
+      parameters:
+        - $ref: "#/components/parameters/SessionIdParam"
+      responses:
+        "204":
+          description: 会话已删除
+
+  # ═══════════════════════════════════════════════════════════
+  # PATH: /health
+  # ═══════════════════════════════════════════════════════════
+
+  /health:
+    get:
+      operationId: healthCheck
+      summary: 系统健康检查
+      description: |
+        返回系统各组件的健康状态。用于 K8s liveness/readiness probe 和负载均衡器健康检查。
+
+        **K8s 配置建议：**
+        ```
+        livenessProbe:   GET /health?mode=basic   每 30s
+        readinessProbe:  GET /health?mode=full    每 10s
+        ```
+      tags: [系统]
+      security: []  # 健康检查不需要认证
+      parameters:
+        - name: mode
+          in: query
+          schema:
+            type: string
+            enum: [basic, full]
+            default: basic
+          description: |
+            - basic: 只检查进程存活（< 5ms，适合 livenessProbe）
+            - full: 检查所有下游依赖（PGVector、Redis、LLM API、数据源连接）
+      responses:
+        "200":
+          description: 健康（所有组件正常或部分降级但仍可用）
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, checked_at]
+                properties:
+                  status:
+                    type: string
+                    enum: [healthy, degraded, unhealthy]
+                    description: |
+                      - healthy: 所有组件正常
+                      - degraded: 部分组件异常但降级路径可用（系统仍可服务）
+                      - unhealthy: 全部不可用（L4 触发，仅静态 FAQ 可用）
+                  checked_at:
+                    type: string
+                    format: date-time
+                  components:
+                    type: object
+                    description: mode=full 时返回各组件的详细健康状态
+                    properties:
+                      api_gateway:
+                        type: string
+                        enum: [up, down]
+                      supervisor:
+                        type: string
+                        enum: [up, down]
+                      doc_worker:
+                        type: string
+                        enum: [up, degraded, down]
+                      code_worker:
+                        type: string
+                        enum: [up, degraded, down]
+                      sql_worker:
+                        type: string
+                        enum: [up, degraded, down]
+                      pgvector:
+                        type: string
+                        enum: [up, down]
+                        details:
+                          type: object
+                          properties:
+                            latency_ms:
+                              type: integer
+                            active_connections:
+                              type: integer
+                      redis:
+                        type: string
+                        enum: [up, down]
+                      llm_primary:
+                        type: string
+                        enum: [up, degraded, down]
+                        description: Claude API 状态
+                      llm_fallback:
+                        type: string
+                        enum: [up, down]
+                        description: 本地 Qwen3 状态
+                  degradation:
+                    $ref: "#/components/schemas/DegradationInfo"
+                  uptime_seconds:
+                    type: integer
+                    description: 系统运行时间
+        "503":
+          description: 不健康（所有动态服务不可用）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ═══════════════════════════════════════════════════════════
+  # PATH: /health/degradation
+  # ═══════════════════════════════════════════════════════════
+
+  /health/degradation:
+    get:
+      operationId: getDegradationStatus
+      summary: 获取当前降级状态
+      description: 返回当前降级级别、触发原因、受影响组件、预计恢复时间
+      tags: [系统]
+      responses:
+        "200":
+          description: 降级状态
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  current:
+                    $ref: "#/components/schemas/DegradationInfo"
+                  history_24h:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        timestamp:
+                          type: string
+                          format: date-time
+                        from_level:
+                          type: integer
+                        to_level:
+                          type: integer
+                        trigger_reason:
+                          type: string
+
+  # ═══════════════════════════════════════════════════════════
+  # PATH: /sources/status
+  # ═══════════════════════════════════════════════════════════
+
+  /sources/status:
+    get:
+      operationId: getSourcesStatus
+      summary: 获取数据源新鲜度
+      description: 返回三种数据源的索引延迟、文档数量、连接状态
+      tags: [系统]
+      responses:
+        "200":
+          description: 数据源状态
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataFreshness"
+
+  # ═══════════════════════════════════════════════════════════
+  # PATH: /feedback
+  # ═══════════════════════════════════════════════════════════
+
+  /feedback:
+    post:
+      operationId: submitFeedback
+      summary: 提交查询反馈
+      description: |
+        用户对某次查询结果点赞或点踩。点踩时可附带原因分类和自由文本说明。
+        反馈数据直接进入质量改进流水线（每日 review、每周汇总）。
+      tags: [反馈]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FeedbackSubmission"
+            example:
+              query_id: "660e8400-e29b-41d4-a716-446655440001"
+              rating: "negative"
+              reason: "inaccurate"
+              comment: "oauth.py 文件路径错误，应该是 src/api/auth/oauth.py"
+      responses:
+        "201":
+          description: 反馈已记录
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                  message:
+                    type: string
+                    example: "感谢你的反馈！我们会用它来改进搜索质量。"
+        "400":
+          description: query_id 无效
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ═══════════════════════════════════════════════════════════
+  # PATH: /admin/synonyms
+  # ═══════════════════════════════════════════════════════════
+
+  /admin/synonyms:
+    get:
+      operationId: listSynonymCandidates
+      summary: 列出同义词候选
+      description: |
+        返回同义词映射的审核队列。按状态和置信度过滤。
+        用于管理界面的"待审核映射"列表。
+      tags: [管理]
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, approved, rejected, all]
+            default: pending
+        - name: source
+          in: query
+          schema:
+            type: string
+            enum: [self_correction, retrieval_gap, llm_mining, manual]
+        - name: min_confidence
+          in: query
+          schema:
+            type: number
+            format: float
+            minimum: 0
+            maximum: 1
+            default: 0.0
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        "200":
+          description: 同义词候选列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SynonymCandidate"
+                  pagination:
+                    $ref: "#/components/schemas/Pagination"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /admin/synonyms/{synonym_id}/approve:
+    post:
+      operationId: approveSynonym
+      summary: 批准同义词候选
+      description: |
+        批准一个候选映射，立即写入生产映射表（热配置，无需重启）。
+
+        **side effect:**
+        - 写入 synonym_map 表
+        - 记录审批人和审批时间
+        - 触发同义词映射表健康度仪表盘更新
+      tags: [管理]
+      parameters:
+        - $ref: "#/components/parameters/SynonymIdParam"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                modified_term:
+                  type: string
+                  description: 如果审核人修改了映射关系，传入修改后的规范词
+      responses:
+        "200":
+          description: 已批准并生效
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                  status:
+                    type: string
+                    enum: [approved]
+                  message:
+                    type: string
+                    example: "已批准并立即生效。用户下次查询'支付挂了'时将自动映射到'支付服务不可用'。"
+        "404":
+          description: 候选不存在
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /admin/synonyms/{synonym_id}/reject:
+    post:
+      operationId: rejectSynonym
+      summary: 拒绝同义词候选
+      description: |
+        拒绝一个候选映射。记录拒绝理由，避免后续重复发现相同映射。
+      tags: [管理]
+      parameters:
+        - $ref: "#/components/parameters/SynonymIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason:
+                  type: string
+                  description: 拒绝原因
+                  example: "'支付挂了'不只是'服务不可用'，还包括'接口超时'和'返回错误'，需要更细粒度的拆分"
+      responses:
+        "200":
+          description: 已拒绝
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                  status:
+                    type: string
+                    enum: [rejected]
+                  message:
+                    type: string
+                    example: "已拒绝并记录理由。相同映射在 30 天内不会被重新推荐。"
+
+  # ═══════════════════════════════════════════════════════════
+  # PATH: /admin/reindex
+  # ═══════════════════════════════════════════════════════════
+
+  /admin/reindex:
+    post:
+      operationId: triggerReindex
+      summary: 触发数据源重索引
+      description: |
+        手动触发全量或增量重索引。适用于：
+        - DDL 变更后手动刷新 SQL Schema（设计文档要求提供此能力）
+        - 代码仓库迁移后重建代码索引
+        - 全量同步兜底（PRD 文档每日凌晨定时全量之外的补充）
+
+        **并发限制：** 同一数据源同时只能有一个重索引任务运行。
+      tags: [管理]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [source]
+              properties:
+                source:
+                  type: string
+                  enum: [doc, code, sql]
+                  description: 数据源类型
+                scope:
+                  type: string
+                  enum: [full, incremental, single]
+                  default: full
+                target:
+                  type: string
+                  description: scope=single 时指定目标（文件路径/表名/文档URL）
+      responses:
+        "202":
+          description: 重索引任务已创建
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReindexTask"
+        "409":
+          description: 该数据源已有进行中的重索引任务
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    get:
+      operationId: listReindexTasks
+      summary: 重索引任务列表
+      description: 返回最近的重索引任务及其状态
+      tags: [管理]
+      parameters:
+        - name: source
+          in: query
+          schema:
+            type: string
+            enum: [doc, code, sql]
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, running, completed, failed]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        "200":
+          description: 任务列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ReindexTask"
+
+  /admin/reindex/{task_id}:
+    get:
+      operationId: getReindexTask
+      summary: 获取重索引任务状态
+      description: 轮询重索引任务的进度
+      tags: [管理]
+      parameters:
+        - $ref: "#/components/parameters/TaskIdParam"
+      responses:
+        "200":
+          description: 任务状态
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReindexTask"
+
+  # ═══════════════════════════════════════════════════════════
+  # PATH: /admin/audit-logs
+  # ═══════════════════════════════════════════════════════════
+
+  /admin/audit-logs:
+    get:
+      operationId: queryAuditLogs
+      summary: 查询审计日志
+      description: |
+        审计日志是不可变的。每次查询、SQL 执行、反馈、管理操作都记录在此。
+        用于合规审计和安全审查。
+      tags: [管理]
+      parameters:
+        - name: event_type
+          in: query
+          schema:
+            type: string
+          description: 按事件类型过滤
+        - name: user_id
+          in: query
+          schema:
+            type: string
+          description: 按用户过滤
+        - name: since
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: until
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        "200":
+          description: 审计日志列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AuditLogEntry"
+                  pagination:
+                    $ref: "#/components/schemas/Pagination"
+
+  # ═══════════════════════════════════════════════════════════
+  # PATH: /admin/stats
+  # ═══════════════════════════════════════════════════════════
+
+  /admin/stats:
+    get:
+      operationId: getSystemStats
+      summary: 系统统计概览
+      description: 返回指定时间段内的系统统计数据（查询量、延迟、LLM成本、可用性、用户反馈）
+      tags: [管理]
+      parameters:
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: 统计起始时间（默认 24h 前）
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: 统计截止时间（默认当前）
+      responses:
+        "200":
+          description: 系统统计
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemStats"
+
+  # ═══════════════════════════════════════════════════════════
+  # 共享响应
+  # ═══════════════════════════════════════════════════════════
+
+components:
+  responses:
+    Unauthorized:
+      description: 未认证或认证过期
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: object
+                properties:
+                  code:
+                    type: string
+                    example: "E5001"
+                  message:
+                    type: string
+                    example: "认证已过期，请重新登录"
+                  retryable:
+                    type: boolean
+                    example: true
+    Forbidden:
+      description: 无权限
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: object
+                properties:
+                  code:
+                    type: string
+                    example: "E5002"
+                  message:
+                    type: string
+                    example: "当前用户无权限访问管理功能"
+                  retryable:
+                    type: boolean
+                    example: false
+
+# ═══════════════════════════════════════════════════════════════
+# 错误码完整索引（非 OpenAPI 标准字段，文档性附录）
+# ═══════════════════════════════════════════════════════════════
+
+x-error-codes:
+  system:
+    - code: E0001
+      message: 内部服务错误
+      http_status: 500
+      retryable: true
+    - code: E0010
+      message: 系统全部不可用（L4降级已触发），请稍后重试
+      http_status: 503
+      retryable: true
+    - code: E0020
+      message: 部分功能降级中，结果可能不完整
+      http_status: 200
+      retryable: false
+    - code: E0030
+      message: 查询频率过高，请稍后重试
+      http_status: 429
+      retryable: true
+
+  query_understanding:
+    - code: E1001
+      message: 查询分类失败，请换一种问法重试
+      http_status: 500
+      retryable: true
+    - code: E1002
+      message: 实体识别失败，已使用全文搜索兜底
+      http_status: 200
+      retryable: false
+    - code: E1010
+      message: 无法确定查询意图，请提供更多信息
+      http_status: 400
+      retryable: false
+    - code: E1011
+      message: 查询过于简短，请补充具体信息
+      http_status: 400
+      retryable: false
+
+  worker:
+    - code: E2001
+      message: 文档检索超时，已使用代码和数据库结果
+      http_status: 200
+      retryable: true
+    - code: E2002
+      message: 代码检索超时，已使用文档和数据库结果
+      http_status: 200
+      retryable: true
+    - code: E2003
+      message: 数据查询超时，已使用文档和代码结果
+      http_status: 200
+      retryable: true
+    - code: E2010
+      message: 未找到相关信息，请调整查询条件
+      http_status: 200
+      retryable: false
+    - code: E2020
+      message: 部分数据源有结果，已标注缺失维度
+      http_status: 200
+      retryable: false
+
+  sql_worker:
+    - code: E3001
+      message: SQL 生成失败，请用更具体的业务描述重试
+      http_status: 500
+      retryable: true
+    - code: E3002
+      message: 生成的 SQL 包含不安全的操作，已被拦截
+      http_status: 400
+      retryable: false
+    - code: E3003
+      message: SQL 执行失败，请稍后重试
+      http_status: 500
+      retryable: true
+    - code: E3004
+      message: SQL 自动修复失败，请手动调整查询条件
+      http_status: 500
+      retryable: false
+
+  data_source:
+    - code: E4001
+      message: PRD 文档源暂不可达，已使用其他数据源的结果
+      http_status: 200
+      retryable: true
+    - code: E4002
+      message: 代码仓库暂不可达，已使用其他数据源的结果
+      http_status: 200
+      retryable: true
+    - code: E4003
+      message: 数据库暂不可达，已使用其他数据源的结果
+      http_status: 200
+      retryable: true
+    - code: E4010
+      message: 部分数据可能不是最新，已标注数据新鲜度
+      http_status: 200
+      retryable: false
+
+  auth:
+    - code: E5001
+      message: 请先登录
+      http_status: 401
+      retryable: false
+    - code: E5002
+      message: 当前用户无权限执行此操作
+      http_status: 403
+      retryable: false
+    - code: E5003
+      message: 会话已过期，请重新登录
+      http_status: 401
+      retryable: false
+
+# ═══════════════════════════════════════════════════════════════
+# 服务组件拓扑（文档性附录）
+# ═══════════════════════════════════════════════════════════════
+
+x-topology:
+  services:
+    - name: api-gateway
+      port: 8080
+      dependencies: [supervisor, redis]
+      health: /health
+    - name: supervisor
+      port: 8081
+      dependencies: [llm-primary, llm-fallback]
+      health: /health
+    - name: doc-worker
+      port: 8082
+      dependencies: [pgvector, llm-primary]
+      health: /health
+    - name: code-worker
+      port: 8083
+      dependencies: [pgvector]
+      health: /health
+    - name: sql-worker
+      port: 8084
+      dependencies: [pgvector, llm-primary, db-readonly-replica]
+      health: /health
+    - name: synthesis
+      port: 8085
+      dependencies: [llm-primary, llm-fallback]
+      health: /health
+    - name: ingestion-scheduler
+      port: 8086
+      dependencies: [pgvector, confluence-api, git-repos, db-readonly-replica]
+      health: /health

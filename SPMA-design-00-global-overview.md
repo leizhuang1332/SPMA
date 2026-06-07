@@ -13,6 +13,7 @@ Mode: Intrapreneurship
 > - [SQL Worker 设计](SPMA-design-04-sql-worker.md) — Text-to-SQL、SQL Guard、正确性保障
 > - [数据摄入管道设计](SPMA-design-05-data-ingestion.md) — 三源数据离线/异步摄入
 > - [基础设施与运维设计](SPMA-design-06-infrastructure.md) — 技术选型、降级策略、安全、测试、部署
+> - [5独立Agent架构设计](SPMA-design-07-agent-architecture.md) — Agent收敛契约、质量函数、状态管理、技术选型（CEO + Eng 双审查通过）
 
 ---
 
