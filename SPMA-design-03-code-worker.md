@@ -124,7 +124,7 @@ Supervisor Agent
 
 **核心发现：业界无人使用"AST 符号索引"。** 要么零索引（Claude Code），要么用**语言无关的 Ngram 索引**（Livegrep/Zoekt/Blackbird）——后者只需读原始字节提取 Ngram，不需要 TreeSitter 解析任何语言。
 
-**我们上一版设计的 `global_symbol_index`（AST 解析每个函数/类名建索引）是业界已知方案中最重的——它的维护成本比 embedding 更高，不是更低。** 这个批评成立。
+**上一版设计的 `global_symbol_index`（AST 解析每个函数/类名建索引）是业界已知方案中最重的——它的维护成本比 embedding 更高，不是更低。**
 
 ### 1.3 Claude Code 的做法
 
@@ -2056,45 +2056,3 @@ agents:
 ```
 
 **回滚触发：** 虚假信心率 > 15% OR P99 延迟恶化 > 30% OR Token 成本恶化 > 50%。
-
----
-
-## 十、设计变更记录
-
-### v4（2026-06-07）：Agent 架构升级
-
-**触发原因：** 按 [5独立Agent架构](SPMA-design-07-agent-architecture.md) 升级为检索 Agent。
-
-| 变更 | 说明 |
-|------|------|
-| 模块升级 | Code Worker → Code Agent，引入多轮自主推理循环 |
-| 新增收敛契约 | ≤3轮，2s超时。收敛条件：结果≥3 AND (调用链≤2层 OR 第3轮无新增文件) |
-| 新增 Agent 状态模型 | CodeAgentState 含 round/assessment/confidence/call_depth |
-| 新增 Agent Action Guard | 白名单：ripgrep/read_file/glob/ast_expand/completeness_check/return_results |
-| 新增 WorkerOutput 格式 | 标准输出含 rounds_used/has_exact_match/confidence |
-| 新增回滚机制 | code_agentic feature flag → 秒级回退到 pipeline 模式 |
-| 完备度判断 | 确定性优先（代码规则）→ LLM 兜底（Haiku, ~300ms） |
-
-### v3（2026-06-07）：架构重设计
-
-**触发原因：** 用户指出 `global_symbol_index` 的维护成本与 embedding 同等——每次 commit 需重新解析。业界调研确认无人使用 AST 符号索引。
-
-| 变更 | 说明 |
-|------|------|
-| 删除 `global_symbol_index` | 不再建符号内容索引。搜索全部由实时 ripgrep 承担 |
-| 新增 3.3-3.7 文件路径路由详细实现 | 模式分类型构造（目录/文件名/域模板/工程约定）→ 加权 SUM + 多样性打分 → 分数断崖截断 → 三层兜底 → 搜索词管线集成 |
-| `code_chunks` → `code_metadata` | 不存源代码（read_file 实时读），只存调用图 |
-| 第一章重写 | 加入 Claude Code / Livegrep / Sourcegraph / Blackbird / OpenGrok 五大工具架构对比 |
-| 第三章重写 | 文件路径路由 + ripgrep 替代全局符号索引 + 两阶段搜索 |
-| 第四章简化 | code_chunks 从搜索索引降级为调用图元数据 |
-| 第八章简化 | 数据摄入从三路简化为两路 |
-| 其他章节适配 | 2.1、2.2、2.6、6.4、6.6 同步清理旧索引引用 |
-
-### v2（2026-06-06 ～ 2026-06-07 上午）
-
-| 变更 | 状态 |
-|------|------|
-| 全局符号索引 + 两阶段搜后聚合（第三章原版） | 被 v3 替代 |
-| 代码域 IDF、Bloom Filter 预检、分级缓存（3.5-3.7 原版） | 被 v3 替代 |
-| 自适应 K + 两轮检索兜底（3.11-3.13 原版） | 被 v3 替代 |
-| 三工具协同 2.6、搜索词构造管线第六章、精简冗余 | 保留并适配 v3 |
