@@ -21,18 +21,22 @@
 
 ### Agent 循环图
 
-```python
-# Code Agent 独立构建 LangGraph 子图
-code_graph = StateGraph(CodeAgentState)  # 继承 AgentState
-code_graph.add_node("search", ripgrep_search)
-code_graph.add_node("assess", completeness_check)
-code_graph.add_node("expand", ast_call_graph_expand)  # 调用链展开
-code_graph.add_conditional_edges("assess", should_continue, {
-    "expand": "expand",   # 不够 → 调用链展开+重搜
-    "done": END,          # 够了 → 返回
-})
-code_graph.add_edge("expand", "search")  # 展开后重新搜索
+Code Agent 作为独立的 LangGraph 子图运行，节点与流转如下：
+
 ```
+search（ripgrep 实时搜索）
+    │
+    ▼
+assess（完备度判断）
+    │
+    ├─ 不够 → expand（AST调用链展开）→ 回到 search
+    └─ 够了 → 返回结果（END）
+```
+
+- **search 节点：** 执行 ripgrep 搜索（Phase 1），含搜索词构造、文件路径路由和渐进式回退
+- **assess 节点：** 完备度判断——确定性条件优先（结果≥3 AND 调用链≤2层→收敛），不满足时 LLM 兜底
+- **expand 节点：** AST 调用图扩展——沿调用链 BFS 展开（upstream/downstream/both），提取新线索后回到 search
+- **条件边：** assess → 收敛则 END，不收敛 → expand → search（最多 3 轮）
 
 ### Agent 状态数据模型
 
@@ -1347,7 +1351,7 @@ detect_query_type(entities, raw_query)
     └─ morphological_variants(ref)                      形态扩展
 ```
 
-`morphological_variants()` 的变换规则：
+**形态扩展的变换规则：** 对已知符号名按以下规则生成命名约定变体。变换前提：符号至少含 2 个词干（按 `_` 拆分），单词语义无法形态扩展。
 
 | 变换 | 输入 → 输出 | 权重 | 说明 |
 |------|------------|------|------|
@@ -1356,7 +1360,7 @@ detect_query_type(entities, raw_query)
 | **camelCase** | `token_refresh` → `tokenRefresh` | 0.5 | 方法名约定 |
 | **缩写扩展** | `cfg` → `config` | 0.4 | 依赖 ABBREV_MAP 映射表 |
 
-变换前提: 符号至少含 2 个词干（按 `_` 拆分）。单词语义无法形态扩展。
+处理流程：遍历 `code_refs` 中的每个引用——含 `/` 或 `.` 的按文件路径处理（提取 stem 和目录名），含 `_` 或首字母大写的按符号名处理（保留原样 + 生成上述四种变体）。所有生成的 Term 去重并按权重降序排列。
 
 ### 6.3 Type B：中英混合——最重要的场景（~35% 查询）
 

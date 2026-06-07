@@ -31,6 +31,8 @@
 
 采用"状态共享 + 循环独立"的抽象层次：
 
+**共享状态模型（所有 Agent 的基础字段）：**
+
 ```python
 class AgentState(TypedDict):
     """所有Agent共享的状态字段"""
@@ -39,24 +41,17 @@ class AgentState(TypedDict):
     results: list[dict]
     token_used: int
     assessment_history: list[str]
-
-class AgentInfrastructure:
-    """共享方法——每个Agent通过mixin使用"""
-    def check_convergence(self, state: AgentState) -> bool: ...
-    def consume_budget(self, tokens: int) -> bool: ...
-    def save_checkpoint(self, state: AgentState) -> None: ...
 ```
+
+**共享基础设施方法（每个 Agent 通过 mixin 使用）：**
+
+- `check_convergence(state)` — 判断当前 Agent 循环是否满足收敛条件
+- `consume_budget(tokens)` — 从 Token 预算中扣减，返回是否有剩余额度
+- `save_checkpoint(state)` — 将 Agent 状态写入 checkpointer（LangGraph 自动管理）
 
 ### Checkpointer 隔离
 
-每个 Agent 子图使用独立 LangGraph checkpointer namespace，避免并发冲突：
-
-```python
-# Supervisor Send API 注入 namespace 到子图 config
-Send("doc_agent", state, config={"configurable": {"namespace": f"{query_id}:doc"}})
-Send("code_agent", state, config={"configurable": {"namespace": f"{query_id}:code"}})
-Send("sql_agent", state, config={"configurable": {"namespace": f"{query_id}:sql"}})
-```
+每个 Agent 子图使用独立 LangGraph checkpointer namespace，避免并发冲突。Supervisor 通过 Send API 下发任务时，在子图 config 中注入 namespace，格式为 `{query_id}:{agent_type}`（如 `uuid-xxx:doc`、`uuid-xxx:code`、`uuid-xxx:sql`）。同一 query 下不同 Agent 的子图状态互不干扰。
 
 ### 状态存储层级
 
@@ -94,14 +89,9 @@ ALLOWED_ACTIONS = {
     'synthesis': ['rrf_fusion', 'llm_generate', 'citation_check', 
                   'cross_source_check', 'return_results'],
 }
-
-class AgentActionGuard:
-    def validate(self, agent_type: str, proposed_action: str) -> bool:
-        if proposed_action not in ALLOWED_ACTIONS.get(agent_type, set()):
-            logger.error(f"BLOCKED: {agent_type} attempted {proposed_action}")
-            return False
-        return True
 ```
+
+**Action Guard 执行机制：** 每次 Agent 尝试调用工具时，系统检查 `ALLOWED_ACTIONS[agent_type]` 白名单——不在白名单内的操作被拦截并记录 `BLOCKED` 日志。这是一个纯确定性检查，不依赖 LLM。
 
 ---
 
@@ -143,36 +133,17 @@ agents:
 
 ## 六、熔断器设计（v2 启用，v1 用超时+重试）
 
-```python
-# v1: 简单超时+指数退避重试（tenacity, max 3次）
-# v2: 当微服务间调用量增大后升级为完整熔断器
-class CircuitBreaker:
-    """
-    - failure_threshold: 连续失败5次触发熔断
-    - timeout: 熔断30秒后进入半开状态
-    - half_open_max_requests: 半开状态允许3次探测请求
-    - 状态: CLOSED → OPEN → HALF_OPEN → CLOSED
-    """
-```
+**熔断器设计（v2 启用，v1 用超时+重试）：**
+
+v1 阶段使用简单超时 + 指数退避重试（tenacity，最多 3 次）。v2 当微服务间调用量增大后升级为完整熔断器，遵循标准三态模型：
+
+- **CLOSED（正常）：** 请求正常通过，连续失败计数
+- **OPEN（熔断）：** 连续失败达到阈值（5 次）后触发，拒绝所有请求，持续 30 秒
+- **HALF_OPEN（探测）：** 熔断超时后允许少量探测请求（3 次）通过，成功则恢复 CLOSED，失败则重新进入 OPEN
 
 ### LLM 并发与退避
 
-```python
-from tenacity import retry, stop_after_attempt, wait_exponential
-
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=0.5, max=2),
-    retry=lambda e: isinstance(e, RateLimitError),
-)
-async def call_llm_with_retry(prompt: str):
-    try:
-        return await haiku_api.generate(prompt)
-    except RateLimitError:
-        raise  # tenacity 自动重试
-    except Exception:
-        return await local_qwen.generate(prompt)  # 降级本地模型
-```
+LLM API 调用使用指数退避重试策略（tenacity 库）：最多重试 3 次，退避系数 0.5s、最大等待 2s。触发条件为 `RateLimitError`（429）。若 3 次重试后仍失败或遇到非限流错误，降级到本地 Qwen3-8B 模型。
 
 > 429 不计入 Agent 轮次计数——这是基础设施问题，不是搜索质量问题。
 
@@ -275,27 +246,14 @@ async def call_llm_with_retry(prompt: str):
 
 ### LLM Mock 策略
 
-```python
-@pytest.fixture
-def mock_llm_converges_round3():
-    """模拟第3轮才收敛的LLM"""
-    return MockLLM(responses=[
-        {"sufficient": False, "missing": "缺少性能数据"},    # round 1
-        {"sufficient": False, "missing": "缺少历史版本"},    # round 2
-        {"sufficient": True, "confidence": 0.85},             # round 3
-    ])
+Agent 循环测试使用 MockLLM 替代真实 LLM 调用。MockLLM 按预先编排的响应序列逐轮返回结果——每轮返回一个 JSON 对象，控制该轮的完备度判断结论（`sufficient`/`insufficient`）、缺失信息描述（`missing`）和置信度（`confidence`）。
 
-@pytest.mark.parametrize("mock_llm,expected_rounds", [
-    ("mock_llm_converges_round1", 1),
-    ("mock_llm_converges_round3", 3),
-    ("mock_llm_never_converges", 3),  # 达到 max_rounds 强制停止
-])
-def test_agent_convergence(mock_llm, expected_rounds, request):
-    mock = request.getfixturevalue(mock_llm)
-    agent = DocAgent(llm=mock)
-    result = await agent.search("用户登录为什么变慢了")
-    assert result.rounds_used == expected_rounds
-```
+测试覆盖三种典型收敛模式：
+- **第 1 轮收敛：** MockLLM 首轮返回 `sufficient=True, confidence=0.9`，验证 Agent 的单轮快速收敛路径
+- **第 3 轮收敛：** MockLLM 前两轮返回 `sufficient=False`、第三轮返回 `sufficient=True`，验证多轮扩展检索后收敛
+- **永不收敛（强制停止）：** MockLLM 每轮返回 `sufficient=False`，验证 Agent 在达到 `max_rounds` 后强制收敛并返回当前最佳结果
+
+通过 `pytest.mark.parametrize` 对以上三种场景参数化测试，断言 `agent.rounds_used == expected_rounds`。
 
 ### Agent Eval Dataset
 
