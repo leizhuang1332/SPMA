@@ -64,3 +64,67 @@ class MockExecutor:
             )
         except Exception as e:
             raise RuntimeError(f"SQL 执行异常: {str(e)}")
+
+
+# ============================================================
+# PostgreSQL 只读副本执行器——Slice 2+ 使用
+# ============================================================
+
+import psycopg2
+import psycopg2.pool
+from contextlib import contextmanager
+from datetime import datetime, timezone
+
+
+class PostgresExecutor:
+    """PostgreSQL 只读副本执行器——Slice 2+ 使用。"""
+
+    def __init__(self, connection_string: str, min_connections: int = 2, max_connections: int = 10):
+        if "options" not in connection_string.lower():
+            connection_string += " options='-c default_transaction_read_only=on'"
+        self.pool = psycopg2.pool.ThreadedConnectionPool(
+            minconn=min_connections,
+            maxconn=max_connections,
+            dsn=connection_string,
+        )
+
+    @contextmanager
+    def _get_conn(self):
+        conn = self.pool.getconn()
+        try:
+            yield conn
+        finally:
+            self.pool.putconn(conn)
+
+    def execute(self, sql: str, timeout_ms: int = 2000) -> QueryResult:
+        """在只读副本上执行 SQL，含超时控制和数据新鲜度记录。"""
+        import time
+
+        start = time.time()
+        with self._get_conn() as conn:
+            conn.set_session(readonly=True)
+            with conn.cursor() as cur:
+                cur.execute(f"SET statement_timeout = '{timeout_ms}'")
+                cur.execute(sql)
+                columns = [desc[0] for desc in cur.description] if cur.description else []
+                rows = [list(row) for row in cur.fetchall()]
+
+                # 获取副本延迟
+                try:
+                    cur.execute("SELECT EXTRACT(EPOCH FROM (NOW() - pg_last_xact_replay_timestamp())) * 1000")
+                    lag_result = cur.fetchone()
+                    replica_lag_ms = int(lag_result[0]) if lag_result and lag_result[0] else 0
+                except Exception:
+                    replica_lag_ms = -1
+
+                elapsed_ms = int((time.time() - start) * 1000)
+
+                return QueryResult(
+                    columns=columns,
+                    rows=rows,
+                    row_count=len(rows),
+                    execution_time_ms=elapsed_ms,
+                    replica_lag_ms=replica_lag_ms,
+                    data_snapshot_at=datetime.now(timezone.utc).isoformat(),
+                    sql_executed=sql,
+                )
