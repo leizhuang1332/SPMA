@@ -82,3 +82,35 @@ class DiscoveredEntities(TypedDict, total=False):
     code_refs: list[str]
     module: str | None
     person: str | None
+
+
+# ============================================================
+# SQL Agent 特有字段（Phase 1）
+# ============================================================
+
+SQLWorkerOutput = TypedDict("SQLWorkerOutput", {
+    "$schema": NotRequired[str],
+    "task_id": NotRequired[str],
+    "query_id": NotRequired[str],
+    "worker_type": NotRequired[Literal["doc", "code", "sql"]],
+    "result_count": NotRequired[int],
+    "results": NotRequired[list[dict]],
+    "citations": NotRequired[list[Citation]],
+    "confidence": NotRequired[float],
+    "has_exact_match": NotRequired[bool],
+    "rounds_used": NotRequired[int],
+    "convergence_reason": NotRequired[str],
+    "total_llm_calls": NotRequired[int],
+    "total_tokens": NotRequired[int],
+    "latency_ms": NotRequired[int],
+    "original_query": NotRequired[str],
+    "degradation": NotRequired[dict],
+    "discovered_entities": NotRequired[dict],
+    # SQL Agent 特有
+    "execution_sql": NotRequired[str],
+    "guard_risk_level": NotRequired[str],
+    "quality_report": NotRequired[dict],
+    "tables_used": NotRequired[list[str]],
+    "columns_used": NotRequired[list[str]],
+    "data_limitations": NotRequired[list[str]],
+}, total=False)

@@ -30,3 +30,36 @@ def main():
         shutdown_event.wait()
     except KeyboardInterrupt:
         shutdown()
+
+
+# ============================================================
+# Schema 定时轮询——每 10 分钟检查 information_schema 变更
+# ============================================================
+
+
+async def schedule_schema_polling(
+    db_connection_string: str,
+    vector_store=None,
+    embedding_client=None,
+    interval_minutes: int = 10,
+):
+    """启动 APScheduler 定时轮询 job。"""
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler
+    from spma.ingestion.sql_pipeline import run_schema_ingestion
+
+    scheduler = AsyncIOScheduler()
+
+    @scheduler.scheduled_job("interval", minutes=interval_minutes)
+    async def _poll():
+        try:
+            written = await run_schema_ingestion(
+                db_connection_string=db_connection_string,
+                vector_store=vector_store,
+                embedding_client=embedding_client,
+            )
+            print(f"Schema 摄入完成: {written} 张表")
+        except Exception as e:
+            print(f"Schema 摄入失败: {e}")
+
+    scheduler.start()
+    return scheduler
