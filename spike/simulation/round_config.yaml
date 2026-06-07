@@ -1,0 +1,18 @@
+# 多轮模拟器配置
+doc:
+  max_rounds: 3
+  top_k_per_round: [5, 8, 10]
+  injection_strategy: golden_random
+  injection_ratio_per_round: [0.0, 0.6, 1.0]
+
+code:
+  max_rounds: 3
+  top_k_per_round: [3, 5, 7]
+  injection_strategy: golden_random
+  injection_ratio_per_round: [0.0, 0.6, 1.0]
+
+sql:
+  max_rounds: 3
+  top_k_per_round: [3, 5, 7]
+  injection_strategy: golden_random
+  injection_ratio_per_round: [0.0, 0.6, 1.0]
