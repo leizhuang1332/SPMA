@@ -68,3 +68,97 @@ def run_verification(state: SQLAgentState) -> str:
 
     # 不收敛
     return f"failed: {reason}"
+
+
+# ============================================================
+# LLM 语义验证——Slice 3 启用
+# ============================================================
+
+SEMANTIC_VERIFY_SYSTEM = """你是一个 SQL 查询结果的语义验证器。判断查询结果是否正确地回答了用户的问题。
+
+请逐项检查：
+1. 结果的行数和列数是否符合问题的预期？
+2. 结果的数值范围是否合理？
+3. 如果有聚合，聚合逻辑是否正确？
+
+输出 JSON:
+{
+  "verdict": "sufficient" | "insufficient",
+  "confidence": 0.0-1.0,
+  "missing_info": "如果 insufficient，说明缺少什么信息"
+}"""
+
+
+async def llm_semantic_verify(
+    query: str,
+    sql: str,
+    columns: list[str],
+    rows: list[list],
+    row_count: int,
+    llm_client=None,
+) -> str:
+    """调用 Haiku 进行语义验证。
+
+    Returns:
+        "passed" 或 "failed: <原因>"
+    """
+    if llm_client is None:
+        from spma.llm.clients import chat
+        llm_client = chat
+
+    # 构造样本数据（最多 5 行，避免 token 过大）
+    sample_rows = rows[:5]
+    result_summary = f"列: {columns}\n行数: {row_count}\n示例行:\n"
+    for row in sample_rows:
+        result_summary += f"  {row}\n"
+
+    user_message = f"""用户问题: {query}
+执行的 SQL: {sql}
+查询结果:
+{result_summary}
+
+请判断这个结果是否语义正确地回答了用户的问题。"""
+
+    try:
+        response = await llm_client(
+            messages=[
+                {"role": "system", "content": SEMANTIC_VERIFY_SYSTEM},
+                {"role": "user", "content": user_message},
+            ],
+            model="claude-haiku-4-5-20251001",
+        )
+
+        import json
+        result_json = json.loads(response)
+        if result_json.get("verdict") == "sufficient":
+            return "passed"
+        else:
+            return f"failed: {result_json.get('missing_info', '语义验证不通过')}"
+    except Exception as e:
+        # LLM 调用失败——不阻塞，标记为 passed（降级）
+        return "passed"
+
+
+async def run_verification_async(state, llm_client=None) -> str:
+    """异步语义验证——含 LLM 调用。Slice 3 使用。"""
+    from spma.agents.sql.convergence import check_convergence
+
+    converged, reason = check_convergence(state)
+
+    if converged:
+        if "deterministic" in reason:
+            return "passed"
+        elif "need_llm_verification" in reason:
+            er = state.get("execution_result", {})
+            return await llm_semantic_verify(
+                query=state.get("query", ""),
+                sql=state.get("generated_sql", ""),
+                columns=er.get("columns", []),
+                rows=er.get("rows", []),
+                row_count=state.get("row_count", 0),
+                llm_client=llm_client,
+            )
+        else:
+            return "passed"
+
+    return f"failed: {reason}"

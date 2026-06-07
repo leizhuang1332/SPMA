@@ -126,3 +126,41 @@ async def sql_query(req: SqlQueryRequest):
             "confidence": 1.0,
         },
     }
+
+
+class ConfirmRequest(BaseModel):
+    confirmation_token: str
+    action: str  # "execute" | "modify"
+    modified_query: str | None = None
+
+
+@router.post("/api/v1/sql/query/confirm")
+async def sql_query_confirm(req: ConfirmRequest):
+    """确认闸门端点——用户确认后继续执行。"""
+    from spma.infrastructure.state_store import confirmation_store
+
+    entry = confirmation_store.load(req.confirmation_token)
+    if entry is None:
+        return {
+            "status": "error",
+            "error": "confirmation_token_expired",
+            "message": "确认令牌已过期（有效期3分钟），请重新提交查询",
+            "original_query": None,
+        }
+
+    if req.action == "modify":
+        original_query = entry["original_query"]
+        confirmation_store.delete(req.confirmation_token)
+        return {
+            "status": "completed",
+            "message": f"查询已修改，请用新查询重新发起请求: {req.modified_query or original_query}",
+        }
+
+    # action == "execute": 继续执行（Slice 3 实现完整流程）
+    saved_state = entry["state"]
+    confirmation_store.delete(req.confirmation_token)
+
+    return {
+        "status": "completed",
+        "message": "确认后执行完成（Slice 3 完整实现待接入 Agent 循环）",
+    }
