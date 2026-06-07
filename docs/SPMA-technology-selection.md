@@ -45,10 +45,10 @@
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                         【Agent 编排层】LangGraph                              │
+│                         【Agent 编排层】LangChain 1.x + LangGraph 运行时        │
 │  ┌───────────────────────────────────────────────────────────────────────┐  │
 │  │                    Supervisor Agent (编排)                               │
-│  │         LangGraph StateGraph + Send API + Checkpointer                   │
+│  │         LangChain create_agent + LangGraph StateGraph 运行时             │
 │  │      ┌─────────┐   ┌─────────┐   ┌─────────┐   ┌────────────┐         │
 │  │      │  意图分类 │──▶│ 实体抽取 │──▶│ 查询改写 │──▶│ 并行派发    │         │
 │  │      └─────────┘   └─────────┘   └─────────┘   └────────────┘         │
@@ -88,9 +88,9 @@
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                      【基础设施层】缓存 & 状态 & 消息                           │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐    │
-│  │  Dragonfly    │  │  PostgreSQL  │  │  APScheduler  │  │  RabbitMQ     │    │
+│  │  Redis        │  │  PostgreSQL  │  │  APScheduler  │  │  RabbitMQ     │    │
 │  │  (热状态缓存) │  │  (冷trace)   │  │  + PG Queue   │  │  (Phase 3+    │    │
-│  │  高性能内存DB │  │  业务数据     │  │  (摄入调度)   │  │   异步消息)   │    │
+│  │  成熟稳定的内存DB│  │  业务数据    │  │  (摄入调度)   │  │   异步消息)   │    │
 │  └──────────────┘  └──────────────┘  └──────────────┘  └──────────────┘    │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
@@ -113,8 +113,8 @@
     ├────────────┬────────────┬────────────────┬──────────────────────┤
     │    层级     │   组件      │   首选方案      │   备选方案            │
     ├────────────┼────────────┼────────────────┼──────────────────────┤
-    │ Agent 框架  │ 编排引擎    │ LangGraph       │ CrewAI(原型)          │
-    │            │ 状态管理    │ LangGraph Ckpt  │ 自研 StateManager     │
+    │ Agent 框架  │ 编排引擎    │ LangChain 1.x   │ CrewAI(原型)          │
+    │            │ Agent运行时 │ LangGraph       │ 自研 StateManager     │
     ├────────────┼────────────┼────────────────┼──────────────────────┤
     │            │ 完备度判断  │ Claude Haiku    │ Qwen3-8B (本地降级)   │
     │ LLM 模型   │ 生成/分类   │ Claude Sonnet   │ DeepSeek-V3 (备选)    │
@@ -129,7 +129,7 @@
     ├────────────┼────────────┼────────────────┼──────────────────────┤
     │ 重排序     │ Reranker    │ BGE-Reranker v2 │ Voyage Rerank 2.5(API)│
     ├────────────┼────────────┼────────────────┼──────────────────────┤
-    │ 内存DB     │ 热状态缓存  │ DragonflyDB     │ Redis/Valkey (备选)   │
+    │ 内存DB     │ 热状态缓存  │ Redis           │ Valkey (备选)          │
     ├────────────┼────────────┼────────────────┼──────────────────────┤
     │ API 网关   │ 流量入口    │ Apache APISIX   │ Kong (如需开发者门户)  │
     ├────────────┼────────────┼────────────────┼──────────────────────┤
@@ -155,42 +155,78 @@
 
 ## 二、Agent 框架选型
 
-### 2.1 行业对比
+### 2.1 LangChain 1.x 与 LangGraph 的关系
 
-| 维度 | **LangGraph** ✅ | CrewAI | AutoGen | Microsoft Agent Framework |
-|------|----------------|--------|---------|--------------------------|
-| **架构模型** | 状态图 (StateGraph) | 角色扮演 (Crew) | 对话驱动 (Conversation) | 对话 + 工具 |
-| **Checkpointing** | ⭐⭐⭐⭐⭐ 完整 | ⭐⭐ 部分 (v1.14+) | ❌ 无 | ⭐⭐ 部分 |
-| **Human-in-the-Loop** | ⭐⭐⭐⭐⭐ 原生一等公民 | ⚠️ 后添加 | ⭐⭐⭐ 对话天然支持 | ⭐⭐⭐ |
-| **时间旅行调试** | ✅ 完整回放 | ❌ | ❌ | ❌ |
-| **观测性 (OTel)** | ⭐⭐⭐⭐⭐ LangSmith 深度集成 | ⭐⭐ Verbose | ⭐⭐⭐ | ⭐⭐⭐ |
-| **Token 效率** | ⭐⭐⭐⭐⭐ Checkpoint 缓存 | ⭐⭐⭐ 中等 | ⭐⭐ 对话历史膨胀 | ⭐⭐⭐ |
+LangChain Inc. 于 **2025 年 10 月 22 日** 同时发布 LangChain 1.0 和 LangGraph 1.0 GA。**两者不是竞争关系，而是同一技术栈的不同抽象层次：**
+
+```
+LangChain 1.x (高抽象层)
+  ├─ create_agent() — 标准 Tool-Calling Agent，一行代码创建
+  ├─ Middleware — 可插拔横切关注点 (摘要/HITL/脱敏)
+  ├─ 标准内容块 — 跨 Provider 统一输出格式
+  ├─ 600+ 集成 — 模型/向量库/文档加载器
+  └─ 底层运行在 LangGraph 运行时之上
+         │
+         ▼
+LangGraph (低抽象层 / 运行时)
+  ├─ StateGraph — 显式状态机，自定义节点+边+条件分支
+  ├─ Checkpointer — 每步自动快照，服务重启后精确恢复
+  ├─ Send API — 并行派发 + fan-in 收集 (多 Agent 编排核心)
+  ├─ Human-in-the-Loop — interrupt_before/after 原语
+  └─ 时间旅行调试 — 回退到任意历史状态
+```
+
+**SPMA 的选型策略：LangChain 1.x 作为框架层 + LangGraph 作为运行时层，两者配合使用。**
+
+- **80% 的代码**使用 LangChain 1.x 的高层抽象：`create_agent` 创建各 Worker Agent、Middleware 注入脱敏/摘要、标准内容块统一 Claude/OpenAI 输出
+- **20% 的场景**（Supervisor 并行派发、复杂收敛契约、Checkpointer namespace 隔离）下沉到 LangGraph StateGraph 做精确控制
+
+### 2.2 行业对比
+
+| 维度 | **LangChain 1.x + LangGraph** ✅ | CrewAI | AutoGen | Microsoft Agent Framework |
+|------|----------------------------------|--------|---------|--------------------------|
+| **架构模型** | create_agent 高层 + StateGraph 底层 | 角色扮演 (Crew) | 对话驱动 (Conversation) | 对话 + 工具 |
+| **Agent 创建** | `create_agent(model, tools)` 一行 | Agent + Task + Crew 三步 | ConversableAgent 注册 | Agent + Tool 注册 |
+| **Checkpointing** | ⭐⭐⭐⭐⭐ LangGraph Checkpointer | ⭐⭐ 部分 (v1.14+) | ❌ 无 | ⭐⭐ 部分 |
+| **Human-in-the-Loop** | ⭐⭐⭐⭐⭐ LangGraph 原生 + HITL Middleware | ⚠️ 后添加 | ⭐⭐⭐ 对话天然支持 | ⭐⭐⭐ |
+| **Middleware 机制** | ✅ 6 个标准 Hook 点 | ❌ | ❌ | ❌ |
+| **时间旅行调试** | ✅ LangGraph 完整回放 | ❌ | ❌ | ❌ |
+| **Token 效率** | ⭐⭐⭐⭐⭐ Checkpoint 缓存 + Middleware 摘要 | ⭐⭐⭐ 中等 | ⭐⭐ 对话历史膨胀 | ⭐⭐⭐ |
+| **Send API (并行派发)** | ✅ LangGraph 原生支持 | ❌ | ❌ | ❌ |
+| **标准内容块** | ✅ 跨 Provider 统一 citations/tools/reasoning | ❌ | ❌ | ❌ |
 | **多语言** | Python + TypeScript | Python only | Python+.NET(AG2) | Python + C# |
-| **维护状态 (2026)** | ✅ 活跃开发 | ✅ 活跃开发 | ❌ 维护模式 | ✅ 活跃（AutoGen 继任者）|
-| **学习曲线** | 陡峭（需工程成熟度）| 平缓（2-4 小时上手）| 中等 | 中等 |
-| **Send API (并行派发)** | ✅ 原生支持 | ❌ | ❌ | ❌ |
+| **维护状态 (2026)** | ✅ 活跃开发 (LangChain 1.x + LangGraph 2.0) | ✅ 活跃开发 | ❌ 维护模式 | ✅ 活跃 |
+| **学习曲线** | 中等（create_agent 简单；StateGraph 需学习）| 平缓 | 中等 | 中等 |
+| **生产案例** | Klarna、LinkedIn、Uber、JPMorgan | 中小团队 | — | Azure 生态 |
 
-### 2.2 选型结论
+### 2.3 选型结论
 
-**首选：LangGraph**
+**首选：LangChain 1.x（框架层）+ LangGraph（运行时层）**
 
-LangGraph 是唯一满足 SPMA 5 Agent 架构所有核心需求的框架：
+SPMA 5 Agent 架构需要两个层次的支撑：
 
-1. **StateGraph + Checkpointer** —— 每个 Agent 独立子图 + namespace 隔离状态，与 SPMA 的 Checkpointer 隔离设计完全吻合
-2. **Send API** —— 原生支持 Supervisor 向 Doc/Code/SQL Agent 的并行派发和 fan-in 收集
-3. **时间旅行调试** —— checkout 任意历史状态进行复盘，对 Agent 循环调试至关重要
-4. **Token 效率最优** —— checkpoint 缓存减少 40-50% LLM 调用，年成本节省显著
-5. **收敛契约实现** —— 条件边 + max_rounds 天然映射到 SPMA 的确定性收敛优先策略
+**框架层（LangChain 1.x）提供：**
 
-**为什么不用 CrewAI？** CrewAI 适合短期原型验证（2-4 小时可出 Demo），但缺少 checkpointing 和细粒度错误处理。行业约 70% 的团队在用 CrewAI 原型后 3 个月内迁移到 LangGraph。如果要做生产，**从 LangGraph 起步**。
+1. **`create_agent`** —— 一行代码创建具备 ReAct 循环的标准 Agent。Doc/Code/SQL/Synthesis Agent 各自是一个 `create_agent` 实例，内部自动执行"推理→工具调用→观察→推理"循环
+2. **Middleware 体系** —— 6 个标准 Hook 点（`before_agent → before_model → wrap_model_call → wrap_tool_call → after_model → after_agent`），可插拔注入脱敏、摘要压缩、人工审核等横切关注点。每个 Agent 可以组合不同的 Middleware 链
+3. **标准内容块** —— 跨 Claude/OpenAI 统一输出 citations、reasoning traces、tool calls，Synthesis Agent 的引用完整性检查依赖此能力
+4. **动态模型选择** —— 运行时根据 state 自动切换模型：简单任务走 Haiku、复杂推理走 Sonnet。与 SPMA 的 LLM 分层策略天然匹配
 
-**为什么不用 AutoGen？** AutoGen 于 2025 年底进入维护模式（最后版本 v0.7.5），不建议新项目使用。
+**运行时层（LangGraph）提供：**
 
-### 2.3 配套工具
+1. **StateGraph** —— 当 `create_agent` 内置的 ReAct 循环不够用时（如 SQL Agent 的 generate→guard→execute→verify 四阶段流水线），下沉到 StateGraph 自定义节点和条件边
+2. **Send API** —— Supervisor 向 Doc/Code/SQL Agent 并行派发 + fan-in 收集的核心能力
+3. **Checkpointer** —— 每个 Agent 子图独立 namespace 持久化，与 SPMA 的 Checkpointer 隔离设计完全吻合
+4. **收敛契约** —— 条件边 + max_rounds 天然映射到 SPMA 的确定性收敛优先策略
+
+**开发路径：先用 `create_agent` 快速搭建每个 Worker Agent，当中某个 Agent 的循环逻辑超出 ReAct 范式的表达力时，再将该 Agent 下沉为 StateGraph 定制。**
+
+### 2.4 配套工具
 
 | 工具 | 用途 | 选型 |
 |------|------|------|
-| **LangSmith** | LangGraph 配套的调试、追踪、评估平台 | 开发/测试环境（Team 版 ~$39/月）|
+| **LangSmith** | LangChain/LangGraph 配套的调试、追踪、评估平台 | 开发/测试环境（Team 版 ~$39/月）|
+| **LangSmith Fleet** (原 Agent Builder) | 可视化 Agent 构建 + 企业级权限管理 | Phase 4+ 评估 |
 | **LangGraph Platform** | 生产部署平台（可选）| Phase 3+ 评估 |
 
 ---
@@ -342,7 +378,7 @@ Doc Agent 检索架构
 ═════════════════════
                     ┌──────────────────────┐
   检索请求          │    Doc Agent         │
-                    │    (LangGraph 子图)   │
+                    │    (LangChain Agent)   │
                     └──────────┬───────────┘
                                │
               ┌────────────────┼────────────────┐
@@ -413,41 +449,48 @@ Code Agent **不使用嵌入索引和全文检索引擎**，而是：
 
 ### 7.1 行业对比
 
-| 维度 | **DragonflyDB** ✅ | Redis OSS | Valkey | KeyDB |
-|------|------------------|-----------|--------|-------|
-| **吞吐量 (SET/GET)** | **312K-1.2M ops/s** | 180K-420K ops/s | 200K-450K ops/s | 245K-500K ops/s |
-| **P95 延迟 (读)** | ~298μs | **~245μs** | ~260μs | ~445μs |
-| **P99.9 尾延迟** | **1,234μs** | 3,456μs | 2,800μs | 4,123μs |
-| **内存效率 (20M keys)** | **~880 MB** | ~4.2 GB | ~3.8 GB | ~4.5 GB |
-| **多核扩展** | 线性 (shared-nothing) | 有限 (单线程) | 有限 | 好 (多线程) |
-| **Redis 兼容** | ~95% | 100% | 100% (fork) | 100% (superset) |
-| **License** | BSL 1.1 | RSAL/SSPL | BSD-3 | BSD-3 |
-| **持久化** | RDB + WAL | RDB + AOF | RDB + AOF | RDB + AOF |
-| **集群** | 原生（成熟中）| Redis Cluster | Redis Cluster | Active Replication |
+| 维度 | **Redis** ✅ | DragonflyDB | Valkey | KeyDB |
+|------|------------|-------------|--------|-------|
+| **吞吐量 (SET/GET)** | 180K-420K ops/s | **312K-1.2M ops/s** | 200K-450K ops/s | 245K-500K ops/s |
+| **P95 延迟 (读)** | **~245μs** | ~298μs | ~260μs | ~445μs |
+| **P99.9 尾延迟** | 3,456μs | **1,234μs** | 2,800μs | 4,123μs |
+| **内存效率 (20M keys)** | ~4.2 GB | **~880 MB** | ~3.8 GB | ~4.5 GB |
+| **多核扩展** | 有限 (单线程执行) | 线性 (shared-nothing) | 有限 | 好 (多线程) |
+| **生态与模块** | ⭐⭐⭐⭐⭐ 最成熟 (RedisJSON/Search/Graph/Bloom/Streams) | ⭐⭐ ~95% 兼容 | ⭐⭐⭐⭐ 100% 兼容 | ⭐⭐⭐⭐ 100% 兼容 |
+| **运维工具** | ⭐⭐⭐⭐⭐ Sentinel/Cluster/可视化/Dashboards | ⭐⭐ 成长中 | ⭐⭐⭐ 继承 Redis 生态 | ⭐⭐⭐ |
+| **License** | RSAL/SSPL (2024 变更) | BSL 1.1 | BSD-3 | BSD-3 |
+| **持久化** | RDB + AOF | RDB + WAL | RDB + AOF | RDB + AOF |
+| **集群** | Redis Cluster (成熟) | 原生（成熟中）| Redis Cluster | Active Replication |
+| **社区/文档** | ⭐⭐⭐⭐⭐ 最丰富 | ⭐⭐ 成长中 | ⭐⭐⭐ | ⭐⭐ |
 
 ### 7.2 选型结论
 
-**首选：DragonflyDB**
+**首选：Redis**
 
-SPMA 场景下的分析：
+SPMA 场景下的选型分析：
 
-1. **内存效率是决定性因素**——Agent 热状态（TTL=5min）和热点问答缓存（TTL=1h）的数据量级在万到十万级 keys，Dragonfly 的内存优势可节省 80% RAM
-2. **高并发下的尾延迟**——Dragonfly 的 shared-nothing 架构避免了 Redis 单线程的 head-of-line blocking，Agent 多路并发检索场景下 P99.9 更低
-3. **运维简单**——Dragonfly 是单个二进制，不需要 sentinel/cluster 的复杂配置
+1. **生态成熟度是决定性因素**——Redis 拥有最完善的客户端库（Python redis-py 是事实标准）、最丰富的运维工具（Sentinel/Cluster/可视化面板）、最详尽的文档和社区支持。对于企业生产环境，"出了问题时能快速定位"比"极致性能"更重要
+2. **模块生态完整**——RedisJSON、RedisSearch、RedisGraph、RedisBloom、Redis Streams、RedisTimeSeries 等模块可直接复用。SPMA 后续可能需要 Redis Streams 做异步消息、RedisSearch 做轻量全文索引
+3. **团队技能匹配**——Redis 是业界最熟悉的内存数据库，运维团队无需额外学习新工具的配置、监控、故障排查流程
+4. **SPMA 的数据量在 Redis 舒适区**——Agent 热状态（TTL=5min，万级 keys）+ 热点问答缓存（TTL=1h，十万级 keys），8GB 实例轻松承载，无需 Dragonfly 的内存优势
+
+**为什么不用 DragonflyDB？** DragonflyDB 在吞吐量和内存效率上确实优于 Redis，但其运维生态远不如 Redis 成熟——缺少成熟的集群方案、监控面板较少、社区规模有限。对 SPMA 的数据量级（非海量缓存场景），Redis 的性能完全够用，生态优势远大于性能差异。
 
 **备选：Valkey**
 
-如果需要 100% Redis 兼容（例如要用 RedisJSON/RedisSearch 等模块），且希望避免 Redis Ltd. 的许可证变更风险，Valkey（Linux Foundation 治理，BSD-3 许可）是安全的替代方案。
+如果企业对 Redis Ltd. 的 RSAL/SSPL 许可证变更（2024年3月）有顾虑，Valkey（Linux Foundation 治理，BSD-3 许可）是安全的替代方案——100% Redis 兼容，可直接替换。
 
 ### 7.3 配置建议
 
 | 配置项 | 推荐值 |
 |--------|--------|
+| 版本 | Redis 7.2+ |
 | 内存 | 8 GB（生产），2 GB（开发）|
-| 持久化 | RDB 快照（每小时）+ WAL |
+| 持久化 | RDB 快照（每小时）+ AOF (everysec) |
 | 热状态 TTL | 5 min（Agent 循环内状态）|
 | 热点缓存 TTL | 1h（问答结果），5min（查询结果）|
-| 高可用 | Dragonfly 原生复制（Phase 3+）|
+| 高可用 | Redis Sentinel (Phase 2+) / Redis Cluster (Phase 4+) |
+| 连接池 | redis-py ConnectionPool, max_connections=20 |
 
 ---
 
@@ -545,7 +588,7 @@ SPMA 需要**三层可观测性**，没有单一工具能覆盖全部：
     │  ┌──────────────────────────────────────────────────┐   │
     │  │  Grafana + Prometheus + DCGM (GPU)                │   │
     │  │  ├─ GPU 利用率 (tensor pipe, VRAM, thermal)       │   │
-    │  │  ├─ Dragonfly/PostgreSQL/ES 健康指标              │   │
+    │  │  ├─ Redis/PostgreSQL/ES 健康指标              │   │
     │  │  ├─ K8s Pod 资源使用 & HPA 状态                   │   │
     │  │  └─ 告警规则 (Prometheus AlertManager)            │   │
     │  └──────────────────────────────────────────────────┘   │
@@ -831,7 +874,7 @@ Langfuse 在 Agent 循环追踪、Prompt 版本管理、Token 成本分析三个
 | Synthesis Agent | 2 | 1C2G / 2C4G | 请求队列深度 |
 | BGE-M3 Embedding | 2 | 1×A100/2×A100 (生产) | vLLM num_requests_running |
 | Qwen3-8B vLLM | 2 | 1×A100/1×A100 (生产) | vLLM num_requests_running |
-| DragonflyDB | 2 (主从) | 2G/8G RAM | N/A (手动扩容) |
+| Redis | 2 (主从) | 2G/8G RAM | N/A (手动扩容) |
 | PostgreSQL + PGVector | 1 主 + 1 只读副本 | 4C16G/8C32G + SSD | N/A (垂直扩容) |
 | Elasticsearch | 2 节点 (Phase 3+) | 4C8G/8C16G | N/A |
 | Langfuse | 按组件 | 见 Langfuse 官方建议 | N/A |
@@ -858,7 +901,7 @@ Langfuse 在 Agent 循环追踪、Prompt 版本管理、Token 成本分析三个
 ║  📡 API Gateway       │ Apache APISIX (限流/鉴权/路由/LLM令牌限流)        ║
 ║  🔐 认证              │ OIDC/LDAP → 企业SSO + JWT (HttpOnly Cookie)      ║
 ║                                                                           ║
-║  🧠 Agent 框架        │ LangGraph (StateGraph + SendAPI + Checkpointer)   ║
+║  🧠 Agent 框架        │ LangChain 1.x + LangGraph 运行时   ║
 ║  📊 Agent 调试        │ LangSmith (开发/测试) + Langfuse (生产追踪)       ║
 ║                                                                           ║
 ║  🤖 LLM (高速)        │ Claude Haiku (~300ms, ~$0.001/次)                ║
@@ -871,7 +914,7 @@ Langfuse 在 Agent 循环追踪、Prompt 版本管理、Token 成本分析三个
 ║  📝 全文检索          │ PostgreSQL tsvector (Phase1-2) → Elasticsearch    ║
 ║  🎯 重排序            │ RRF等权 (Phase1-2) → BGE-Reranker v2 M3 (Phase3) ║
 ║                                                                           ║
-║  💾 内存DB/缓存        │ DragonflyDB (高性能, 低内存, 兼容Redis 95%)       ║
+║  💾 内存DB/缓存        │ Redis (高性能, 低内存, 兼容Redis 95%)       ║
 ║  🗃️  业务数据库        │ PostgreSQL (元数据/冷trace/业务数据)              ║
 ║                                                                           ║
 ║  🔍 代码检索          │ ripgrep + glob + read_file (零索引, 实时文件系统)  ║
@@ -904,7 +947,7 @@ Langfuse 在 Agent 循环追踪、Prompt 版本管理、Token 成本分析三个
 
 | 组件 | 首选 | 选型关键词 | 备选方案 |
 |------|------|-----------|---------|
-| Agent 框架 | LangGraph | Checkpointing, SendAPI, 收敛契约 | CrewAI (原型) |
+| Agent 框架 | LangChain 1.x + LangGraph | create_agent, Middleware, StateGraph 运行时 | CrewAI (原型) |
 | LLM (高速) | Claude Haiku | 300ms, $0.001, 中文好 | DeepSeek-V3 |
 | LLM (质量) | Claude Sonnet | 高质量, 中文, Prompt Caching | DeepSeek-V3 |
 | LLM (降级) | Qwen3-8B(vLLM) | 本地, 零 API 成本, 数据不出境 | Qwen3-32B |
@@ -912,7 +955,7 @@ Langfuse 在 Agent 循环追踪、Prompt 版本管理、Token 成本分析三个
 | 嵌入模型 | BGE-M3 | 开源, 中文SOTA, 三合一检索 | Cohere Embed |
 | 全文检索 (BM25) | PG tsvector → ES | 渐进式, Phase 规划 | Meilisearch |
 | Reranker | RRF等权 → BGE-Reranker | 数据驱动, Phase 规划 | Qwen3-Reranker |
-| 内存DB | DragonflyDB | 内存效率, 尾延迟, 多核 | Valkey |
+| 内存DB | Redis | 内存效率, 尾延迟, 多核 | Valkey |
 | API 网关 | APISIX | LLM令牌限流, 开源, 性能 | Kong |
 | LLM追踪 | Langfuse + OTel | Agent循环, Token成本, Prompt版本 | MLflow |
 | 脱敏 | Presidio + 自定义 | 中文PII, 多层防护 | — |
@@ -928,15 +971,21 @@ Langfuse 在 Agent 循环追踪、Prompt 版本管理、Token 成本分析三个
 ### 17.1 Agent 框架选型决策树
 
 ```
-是否需要多Agent编排？
-├─ 是 → 是否需要Checkpointing（长任务断点恢复）？
-│      ├─ 是 → ✅ LangGraph (唯一支持完整checkpointing)
-│      └─ 否 → 是否需要Send API并行派发？
-│             ├─ 是 → ✅ LangGraph (原生Send API)
-│             └─ 否 → 是否为快速原型验证？
-│                    ├─ 是 → CrewAI (2-4h可出Demo)
-│                    └─ 否 → ✅ LangGraph (生产首选)
-└─ 否 → 单Agent → LangGraph (单Agent循环) 或 LlamaIndex
+是否为标准 Tool-Calling Agent（无特殊编排需求）？
+├─ 是 → ✅ LangChain 1.x create_agent() (一行代码，自动 ReAct 循环)
+│      └─ 是否需要 Middleware (脱敏/HITL/摘要)？
+│           ├─ 是 → 挂载对应 Middleware 即可
+│           └─ 否 → 直接使用
+│
+└─ 否 → 是否需要复杂编排（多Agent并行/自定义状态机/收敛契约）？
+       ├─ 是 → ✅ LangChain 1.x + LangGraph StateGraph
+       │      ├─ 多Agent并行派发 → LangGraph Send API
+       │      ├─ 长任务断点恢复 → LangGraph Checkpointer
+       │      └─ 自定义循环逻辑 → StateGraph 条件边 + 节点
+       │
+       └─ 否 → 是否为快速原型验证？
+              ├─ 是 → CrewAI (2-4h 可出 Demo)
+              └─ 否 → ✅ LangChain 1.x create_agent (生产首选)
 ```
 
 ### 17.2 向量数据库选型决策树
@@ -988,7 +1037,7 @@ Langfuse 在 Agent 循环追踪、Prompt 版本管理、Token 成本分析三个
 | **GPU 服务器** | A100 80GB × 2 (BGE-M3 + Qwen3-8B) | ~$2,000-3,000 | 企业自建/云租用 |
 | **计算节点** | K8s Worker Nodes (Agent Services) | ~$500-800 | 4-6 节点, 按需 |
 | **数据库** | PostgreSQL HA + PGVector | ~$300-500 | 已有PG集群增量 |
-| | DragonflyDB (8GB) | ~$100-150 | 云实例或自建 |
+| | Redis (8GB) | ~$80-120 | 云实例或自建 |
 | **Elasticsearch** | 2 节点 (Phase 3+) | ~$200-400 | Phase 3+ |
 | **可观测性** | Langfuse Cloud (Team) | ~$39 | 或自建基础设施成本 |
 | | Grafana Cloud | 免费 (自建) / ~$29 | |
@@ -1024,19 +1073,19 @@ Phase 0: 收敛判断 Spike
   └─ 数据: 100 条标注 query
 
 Phase 1: SQL Agent + 进程内存状态 (1.5-2 月)
-  ├─ 必选: LangGraph, Claude Haiku, Claude Sonnet, SQLGlot,
+  ├─ 必选: LangChain 1.x + LangGraph, Claude Haiku, Claude Sonnet, SQLGlot,
   │        PostgreSQL+PGVector, BGE-M3(vLLM), Qwen3-8B(vLLM),
-  │        APScheduler, Presidio, APISIX(Base), DragonflyDB(Base)
+  │        APScheduler, Presidio, APISIX(Base), Redis(Base)
   └─ 降级: 纯规则分类
 
 Phase 2: Doc Agent + Synthesis + Redis 热状态 (+1-1.5 月)
   ├─ 新增: PG tsvector (BM25), RRF 等权融合,
-  │        DragonflyDB (Agent热状态, TTL=5min),
+  │        Redis (Agent热状态, TTL=5min),
   │        Langfuse (Agent循环追踪)
   └─ 优化: BGE-M3 权重分层 (precise/semantic/hybrid)
 
 Phase 3: Supervisor + Code Agent + 冷 trace (+1.5-2 月)
-  ├─ 新增: LangGraph Supervisor (Send API), Elasticsearch,
+  ├─ 新增: LangGraph 运行时 Supervisor (Send API), Elasticsearch,
   │        PostgreSQL (冷trace, Write-back),
   │        Langfuse Agent Dashboard, APISIX (LLM令牌限流),
   │        Airflow (摄入DAG), BGE-Reranker v2 M3
@@ -1058,8 +1107,8 @@ Phase 5+: Cognitive Layer (TBD)
 Phase 0 ──→ Phase 1 ──→ Phase 2 ──→ Phase 3 ──→ Phase 4 ──→ Phase 5+
   │            │            │            │            │
   │            │            │            │            └─ 熔断器需 5 Agent 全稳定
-  │            │            │            └─ LangGraph Supervisor + Send API
-  │            │            └─ DragonflyDB 热状态 + RAG 评估数据积累
+  │            │            │            └─ LangGraph 运行时 Supervisor + Send API
+  │            │            └─ Redis 热状态 + RAG 评估数据积累
   │            └─ PGVector + BGE-M3 + vLLM 基础设施
   └─ 验证 LLM 完备度判断能力，决定后续所有 Agent 循环设计
 ```
@@ -1072,7 +1121,7 @@ Phase 0 ──→ Phase 1 ──→ Phase 2 ──→ Phase 3 ──→ Phase 4 
 
 | 风险 | 等级 | 缓解措施 | 监控指标 |
 |------|------|---------|---------|
-| LangGraph 学习曲线陡峭 | 🟡 中 | Phase 0 即开始团队培训；每个 Agent 独立迭代，降低认知负载 | 开发进度 |
+| LangChain 1.x + LangGraph 学习曲线 | 🟡 中 | Phase 0 即开始团队培训；create_agent 高层 API 降低入门门槛，复杂编排逐 Agent 下沉到 StateGraph | 开发进度 |
 | PGVector 性能瓶颈 | 🟡 中 | 预留 Qdrant 迁移接口；监控 P99 延迟和向量规模增长趋势 | `pgvector_p99_latency` |
 | BGE-M3 中→英代码符号映射质量 | 🟡 中 | 同义词映射表人工种子 + 自动发现闭环；Phase 2 前完成评估 | 搜索词构造命中率 |
 | LLM API 不可用 | 🟡 中 | Qwen3-8B 本地降级；多级降级 L0-L4 | `llm_availability` |
@@ -1101,7 +1150,7 @@ Phase 0 ──→ Phase 1 ──→ Phase 2 ──→ Phase 3 ──→ Phase 4 
 4. **vLLM 生产部署：** SitePoint "vLLM Production Deployment Guide 2026"、vLLM 官方 Production Stack
 5. **LLM 可观测性：** FutureAGI "Best LLMOps Platforms 2026"、Latitude "AI Agent Observability Tools 2026"
 6. **Text-to-SQL 最佳实践：** ZenML LLMOps Database、Thoughtworks Technology Radar、BIRD/Spider 2.0 学术基准
-7. **内存数据库对比：** RepoFlow "Redis vs Valkey vs DragonflyDB vs KeyDB Benchmarks"、Debugg.ai "After Redis's License Shift"
+7. **内存数据库对比：** RepoFlow "Redis vs Valkey vs Redis vs KeyDB Benchmarks"、Debugg.ai "After Redis's License Shift"
 8. **API 网关对比：** Apache APISIX 官方对比、API7.ai "API Gateway Comparison 2026"
 9. **重排序模型对比：** Agentset Reranker Leaderboard、Agentset "Best Reranker for RAG"
 
@@ -1111,11 +1160,11 @@ Phase 0 ──→ Phase 1 ──→ Phase 2 ──→ Phase 3 ──→ Phase 4 
 
 项目启动前，确认以下选型决策已落地：
 
-- [ ] Agent 框架：LangGraph (版本锁定)
+- [ ] Agent 框架：LangChain 1.x + LangGraph (版本锁定)
 - [ ] LLM 配额：Haiku + Sonnet API 配额已申请
 - [ ] GPU 资源：vLLM 部署 BGE-M3 + Qwen3-8B 的 GPU 已就位
 - [ ] PostgreSQL 集群：PGVector 扩展已安装，HNSW 索引参数已配置
-- [ ] DragonflyDB：Agent 热状态缓存实例已部署
+- [ ] Redis：Agent 热状态缓存实例已部署
 - [ ] APISIX：API 网关已配置限流/鉴权/审计规则
 - [ ] Langfuse：LLM 追踪实例已部署（或 Cloud 账号已开通）
 - [ ] 脱敏规则：Presidio + 自定义规则已覆盖所有 PII 类型
