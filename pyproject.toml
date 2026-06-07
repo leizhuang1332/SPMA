@@ -1,0 +1,108 @@
+[project]
+name = "spma"
+version = "0.1.0"
+description = "企业级多源RAG智能问答系统 - SPMA (Supervisor-Powered Multi-Agent)"
+requires-python = ">=3.13,<3.14"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "SPMA Team"}
+]
+keywords = ["rag", "llm", "agent", "langgraph", "text-to-sql"]
+
+dependencies = [
+    "langchain>=1.0",
+    "langgraph>=1.0",
+    "fastapi>=0.115",
+    "uvicorn[standard]",
+    "psycopg[binary,pool]",
+    "pgvector",
+    "redis[hiredis]",
+    "apscheduler",
+    "sqlglot",
+    "presidio-analyzer",
+    "presidio-anonymizer",
+    "anthropic",
+    "openai",
+    "pydantic>=2",
+    "pydantic-settings",
+    "tenacity",
+    "httpx",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+doc = [
+    "elasticsearch[async]",
+    "sentence-transformers",
+]
+code = [
+    "tree-sitter",
+]
+observability = [
+    "opentelemetry-api",
+    "opentelemetry-sdk",
+    "opentelemetry-exporter-otlp",
+    "prometheus-client",
+    "langfuse",
+]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio",
+    "pytest-cov",
+    "testcontainers[postgres,redis]",
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "pre-commit",
+]
+all = [
+    "spma[doc]",
+    "spma[code]",
+    "spma[observability]",
+]
+
+[project.scripts]
+spma-api = "spma.api.app:main"
+spma-ingest = "spma.ingestion.scheduler:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+dev-dependencies = []
+
+[tool.ruff]
+target-version = "py313"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "SIM"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--strict-markers",
+    "--tb=short",
+]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+    "e2e: marks tests as end-to-end tests",
+]

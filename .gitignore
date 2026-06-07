@@ -1,0 +1,68 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# uv
+uv.lock
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Config secrets
+config/secrets.yaml
+*.key
+*.pem
+
+# Logs
+logs/
+*.log
+
+# Test coverage
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.lcov
+
+# MyPy
+.mypy_cache/
+.dmypy.json
+
+# Ruff
+.ruff_cache/
+
+# Docker
+.dockerignore
+
+# Helm
+deployments/helm/spma/charts/
+deployments/helm/spma/Chart.lock
+
+# Temporary files
+*.tmp
+*.bak
+tmp/
