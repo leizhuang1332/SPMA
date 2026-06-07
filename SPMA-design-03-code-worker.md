@@ -2,7 +2,7 @@
 
 > 所属项目：[SPMA 全局概览](SPMA-design-00-global-overview.md)
 > 相关模块：[Supervisor Agent](SPMA-design-01-supervisor-agent.md) — 负责下发检索参数给本 Worker
-> 模块职责：对代码仓库执行 AST 感知的结构化搜索，通过 grep 精确匹配 + AST 调用图扩展上下文，支持多仓库路由
+> 模块职责：通过 glob + grep + read_file 三工具协同，结合全局符号索引和 AST 调用图，对数百个代码仓库执行"发现→定位→理解"三阶段检索
 
 ---
 
@@ -13,13 +13,18 @@ Supervisor Agent（实体抽取 + 意图分类）
     │
     ├── Doc Worker
     ├── Code Worker  ← 本文档范围
-    │   ├─ 搜索词构造管线（用户问题 → 代码标识符）
+    │   ├─ 搜索词构造管线（用户问题 → 代码标识符 + 文件路径模式）
+    │   │
+    │   ├─ Phase 0: glob 文件发现（文件路径模式匹配，并行于 Phase 1）
     │   ├─ Phase 1: 全局符号索引扫描（跨仓库 Top-K 候选）
-    │   ├─ Phase 2: 候选仓库深度搜索（grep + AST）
-    │   │   ├─ 精确符号匹配（B-tree 索引）
-    │   │   ├─ 实时 ripgrep 兜底（最新未索引代码）
-    │   │   └─ AST 调用图扩展（上下文补全）
-    │   └─ 跨仓库结果去重排序
+    │   │
+    │   ├─ Phase 2: 候选仓库深度搜索
+    │   │   ├─ grep 精确符号匹配（B-tree 索引 + 实时 ripgrep）
+    │   │   ├─ glob 关联文件发现（test、config、schema、migration）
+    │   │   ├─ read_file 完整文件上下文（import 链、模块级代码）
+    │   │   └─ AST 调用图扩展（调用链上下文补全）
+    │   │
+    │   └─ Phase 3: 跨仓库结果去重排序 + 上下文理解
     │
     └── SQL Worker
 ```
@@ -127,80 +132,91 @@ async def code_search(
     entities: ExtractedEntities,
     search_terms: SearchTermSet | None = None
 ) -> SearchResult:
-    """两阶段检索：全局符号扫描 → 候选仓库深度搜索。"""
+    """三阶段检索：glob 文件发现 + 全局符号扫描 → 深度搜索 → 上下文理解。"""
     # Step 0: 构造搜索词（如果未预构造）
     if search_terms is None:
         search_terms = await build_search_terms(query, entities)  # 见第六章
     
     if not search_terms.has_any:
-        # 完全没有提取到搜索词 → 无法做符号搜索
-        # 尝试 git log 路径（req_ids / person / time_range）
         return await git_log_search(entities)
     
-    # ========== Phase 1: 全局符号索引扫描 ==========
-    # 在所有仓库的符号表中搜索，按仓库聚合排序
-    candidate_repos = await global_symbol_scan(
-        terms=search_terms,
-        top_k=5,
-        min_match_per_repo=2  # 至少匹配 2 个符号才纳入候选
+    # ========== Phase 0 & 1: 并行执行 ==========
+    # Phase 0: glob 文件路径模式发现
+    # Phase 1: 全局符号索引扫描
+    file_results, symbol_results = await asyncio.gather(
+        glob_file_discovery(search_terms, candidate_repos=None, entities=entities),
+        global_symbol_scan(terms=search_terms, top_k=5, min_match_per_repo=2),
     )
     
+    # 合并两路结果 → 确定候选仓库
+    candidate_repos = merge_candidates(file_results, symbol_results)
+    
     if not candidate_repos:
-        # 符号索引没命中 → 反问用户，不降级到语义搜索
         return SearchResult(
             primary=[],
-            method="grep+symbol_index",
-            note="全局符号索引未匹配到关键词。建议提供文件名、函数名或需求ID。",
+            method="glob+symbol_index",
+            note="未匹配到关键词。建议提供文件名、函数名或需求ID。",
             suggestions=generate_query_suggestions(query, entities)
         )
     
     # ========== Phase 2: 候选仓库深度搜索 ==========
     all_results = []
     for repo in candidate_repos:
-        repo_results = await deep_search_repo(
+        repo_results = await deep_search_repo_enhanced(
             repo_name=repo.name,
             search_terms=search_terms,
-            seeds=repo.matched_symbols,  # Phase 1 已知的种子符号
-            expand_context=True,          # AST 调用图扩展
+            seeds=repo.matched_symbols,
+            candidate_files=repo.matched_files,  # Phase 0 发现的文件
+            expand_context=True,
             max_depth=2
         )
         all_results.extend(repo_results)
     
-    # 跨仓库去重排序
-    ranked = rank_and_deduplicate(all_results, query, search_terms)
+    # ========== Phase 3: 上下文理解 ==========
+    # read_file 获取完整文件上下文 + import 链追踪
+    file_contexts = await read_file_context(
+        seed_chunks=all_results,
+        candidate_repos=[r.name for r in candidate_repos],
+        expand_imports=True,
+        max_files=10
+    )
+    
+    ranked = rank_and_deduplicate(all_results, file_contexts, query, search_terms)
     
     return SearchResult(
         primary=ranked[:20],
+        file_contexts=file_contexts,
         candidate_repos=candidate_repos,
-        method="symbol_index+grep+ast"
+        method="glob+grep+read_file+ast"
     )
 ```
 
-**Phase 2 深度搜索**——在单个候选仓库内的搜索逻辑：
+**Phase 2 深度搜索（增强版）**——在单个候选仓库内，结合 glob + grep + read_file：
 
 ```python
-async def deep_search_repo(
+async def deep_search_repo_enhanced(
     repo_name: str,
     search_terms: SearchTermSet,
-    seeds: list[str],  # Phase 1 在该仓库匹配到的符号
+    seeds: list[str],           # Phase 1 匹配到的符号
+    candidate_files: list[str], # Phase 0 glob 发现的文件
     expand_context: bool = True,
     max_depth: int = 2
 ) -> list[CodeChunk]:
     """
-    在单个仓库内执行深度搜索。
-    同时走两条路：元数据索引（code_chunks 表）+ 实时文件系统（ripgrep）。
+    在单个仓库内执行增强深度搜索。
+    三工具流水线：grep 定位 → glob 补充 → read_file 理解。
     """
-    # 路径 1: 元数据索引搜索（B-tree，~5ms）
-    # 用 Phase 1 的种子符号做精确匹配，获取完整源代码
+    # 路径 1: grep 精确符号匹配（code_chunks B-tree，~5ms）
     index_results = await search_code_chunks(
         repo=repo_name,
         function_names=[s for s in seeds if is_symbol(s)],
         file_paths=[s for s in seeds if is_filepath(s)],
+        # 同时搜索 Phase 0 发现的候选文件
+        limit_to_files=candidate_files[:20] if candidate_files else None,
         content_keywords=search_terms.fuzzy_terms[:5]
     )
     
-    # 路径 2: 实时 ripgrep（兜底，~50ms）
-    # 当索引可能过期时（updated_at < repo HEAD），验证最新代码
+    # 路径 2: ripgrep 实时兜底（~50ms，仅索引可能过期时触发）
     live_results = []
     if should_live_grep(repo_name):
         live_results = await ripgrep_repo(
@@ -209,15 +225,34 @@ async def deep_search_repo(
             file_patterns=infer_file_patterns(seeds)
         )
     
-    # 合并 + AST 扩展
     merged = merge_index_and_live(index_results, live_results)
     
+    # 路径 3: glob 关联文件发现（~5ms）
+    # 发现与 grep 命中相关的文件：测试、配置、迁移脚本
+    related_files = []
+    if merged:
+        related_files = await glob_related_files(
+            repo=repo_name,
+            seed_chunks=merged,
+            patterns=[
+                "**/test*/**",           # 测试文件
+                "**/*.yaml", "**/*.yml", # 配置文件
+                "**/migration*/**",      # 数据库迁移
+                "**/Dockerfile*",        # 部署文件
+            ]
+        )
+    
+    # 路径 4: AST 调用图扩展（~10ms）
     if expand_context and merged:
         merged = expand_via_call_graph(
             seeds=merged,
             direction="both",
             max_depth=max_depth
         )
+    
+    # 标记关联文件供 Phase 3 read_file 使用
+    for chunk in merged:
+        chunk.related_files = related_files
     
     return merged
 ```
@@ -328,6 +363,211 @@ AST扩展:
 用户看到的不仅是 token_refresh 的代码，还有它在整个认证链路中的位置
 ```
 
+### 2.6 三工具协同：glob + grep + read_file
+
+Code Worker 采用三工具协同模式——这与 Claude Code 的 Grep→Read→Understand 循环一致，但适配了我们的多用户 RAG 场景：
+
+| 工具 | 角色 | 回答什么问题 | 延迟 | 适用场景 |
+|------|------|-------------|------|---------|
+| **glob** | 面定位 | "这个模块有哪些文件？" | ~5ms | 项目结构探索、关联文件发现 |
+| **grep** | 点定位 | "token_refresh 在哪一行？" | ~10ms | 符号/模式精确匹配 |
+| **read_file** | 深度理解 | "这个文件完整内容是什么？谁 import 了它？" | ~5ms | 上下文补全、跨文件理解 |
+
+三者不可互相替代，各补对方的盲区：
+
+```
+glob 的盲区：知道文件路径，不知道文件里有什么   → grep 补
+grep 的盲区：知道第 42 行有匹配，不知道前后文    → read_file 补
+read 的盲区：知道一个文件，不知道还有哪些相关文件 → glob 补
+```
+
+#### 2.6.1 glob：文件路径模式匹配
+
+**解决的核心问题：** `global_symbol_index` 只索引符号名（函数/类），不索引文件路径的**语义**。用户问"认证模块的目录结构是怎样的"——这不是符号查询，是文件路径查询。
+
+```python
+async def glob_file_discovery(
+    search_terms: SearchTermSet,
+    candidate_repos: list[str],
+    entities: ExtractedEntities
+) -> list[FileInfo]:
+    """
+    从搜索词和实体中推断文件路径模式，在候选仓库中匹配。
+    
+    输入: search_terms=["oauth", "token"], module="用户登录"
+    输出: [
+        FileInfo(repo="auth-service", path="src/auth/oauth.py"),
+        FileInfo(repo="auth-service", path="src/auth/oauth_test.py"),
+        FileInfo(repo="auth-service", path="config/oauth_config.yaml"),
+    ]
+    """
+    patterns = []
+    
+    # 来源1: 从搜索词构造文件路径模式
+    for term in search_terms.exact_terms + search_terms.fuzzy_terms:
+        patterns.append(f"**/*{term}*")        # **/*oauth*
+        patterns.append(f"**/{term}/**")       # **/oauth/**
+        patterns.append(f"**/*{term}*.py")     # **/*oauth*.py
+        patterns.append(f"**/test*{term}*")    # test files
+    
+    # 来源2: 从 module 实体推断目录结构
+    if entities.module:
+        module_patterns = module_to_path_patterns(entities.module)
+        # "用户登录" → ["**/auth/**", "**/login/**", "**/sso/**"]
+        patterns.extend(module_patterns)
+    
+    # 来源3: 常见工程文件模式
+    patterns.extend([
+        "**/README*", "**/*.yaml", "**/*.yml", "**/*.toml",
+        "**/Dockerfile*", "**/docker-compose*", "**/Makefile",
+    ])
+    
+    # 去重 + 限制数量
+    patterns = list(dict.fromkeys(patterns))[:20]
+    
+    # 在每个候选仓库中并行执行 glob
+    results = []
+    for repo in candidate_repos:
+        repo_files = await glob_in_repo(repo, patterns)
+        for f in repo_files:
+            f.relevance = score_file_relevance(f, search_terms, entities)
+        results.extend(repo_files)
+    
+    return sorted(results, key=lambda f: f.relevance, reverse=True)[:30]
+```
+
+**glob 的典型使用场景：**
+
+| 用户查询 | glob 模式 | 发现内容 |
+|---------|----------|---------|
+| "oauth 模块有哪些文件" | `**/oauth*/**`, `**/auth/**` | 模块的完整文件树 |
+| "token_refresh 的测试在哪" | `**/test*token*`, `**/token*test*` | 单元测试文件 |
+| "认证服务的配置文件" | `**/auth*/**/*.yaml`, `**/auth*/**/*.toml` | 配置、部署文件 |
+| "跟 oauth 相关的数据库迁移" | `**/migration*/*oauth*`, `**/alembic/**/*oauth*` | DDL 变更脚本 |
+
+#### 2.6.2 read_file：完整文件上下文
+
+**解决的核心问题：** `code_chunks` 表按函数/类分块存储。但以下信息不在任何函数/类内部，`code_chunks` 存不到：
+
+- `import` 语句和依赖关系
+- 模块级常量、配置变量
+- `__init__.py` 的公开导出列表
+- 装饰器的实现（如果定义在其他文件）
+- 文件级 docstring
+
+```python
+async def read_file_context(
+    seed_chunks: list[CodeChunk],
+    candidate_repos: list[str],
+    expand_imports: bool = True,
+    max_files: int = 10
+) -> list[FileContext]:
+    """
+    从 grep 命中的 chunk 出发，读取完整文件获取上下文。
+    
+    seed_chunks: grep 找到的 code_chunks
+    → 读取每个 chunk 所属的完整文件
+    → 可选：追踪 import 链，读取被 import 的模块
+    """
+    files_to_read = set()
+    
+    for chunk in seed_chunks:
+        files_to_read.add((chunk.repo, chunk.file_path))
+    
+    # 去重，限制数量
+    files_to_read = list(files_to_read)[:max_files]
+    
+    results = []
+    for repo, file_path in files_to_read:
+        content = await read_file(repo, file_path)
+        
+        file_ctx = FileContext(
+            repo=repo,
+            file_path=file_path,
+            content=content,
+            # 解析 import 链
+            imports=extract_imports(content),
+            # 提取模块级定义
+            module_level=extract_module_level_defs(content),
+            # 文件的 docstring
+            docstring=extract_file_docstring(content)
+        )
+        results.append(file_ctx)
+        
+        # 追踪关键 import
+        if expand_imports:
+            for imp in file_ctx.imports:
+                if is_internal_import(imp) and len(results) < max_files:
+                    imported_ctx = await resolve_and_read(repo, imp)
+                    if imported_ctx:
+                        results.append(imported_ctx)
+    
+    return results
+```
+
+**read_file vs code_chunks 的分工：**
+
+| | `code_chunks`（已有） | `read_file`（新增） |
+|---|---|---|
+| **粒度** | 单个函数/类 | 完整文件 |
+| **内容** | 函数体 + docstring | import + 模块常量 + 所有函数/类 |
+| **速度** | ~5ms（B-tree） | ~5ms（文件系统 read） |
+| **适用** | 精确符号定位后的快速返回 | 需要完整上下文的理解型查询 |
+
+**使用准则：** 当用户只问"token_refresh 逻辑是什么"→ 返回 code_chunks 即可。当用户问"oauth 模块的认证流程是怎么设计的"→ 需要 read_file 获取完整文件上下文。
+
+#### 2.6.3 三工具协同的典型链路
+
+```
+用户: "oauth 的 token 刷新逻辑怎么实现的，有测试吗？"
+
+Step 1 — glob（发现文件）: ~5ms
+  patterns: **/*oauth*, **/auth/**, **/test*token*, **/token*test*
+  → 发现: auth-service/src/auth/oauth.py
+          auth-service/tests/test_oauth.py
+          auth-service/tests/test_token_refresh.py
+
+Step 2 — grep（精确定位）: ~10ms
+  在发现的文件中 grep "token_refresh\|refresh_token\|def refresh"
+  → oauth.py:42: def token_refresh(token: str) -> Token:
+  → oauth.py:87: def refresh_token_pair(access, refresh):
+
+Step 3 — read_file（理解上下文）: ~10ms
+  读取 oauth.py 完整内容:
+  → import 链: from jose import jwt, import redis
+  → 模块常量: REFRESH_TOKEN_TTL = 3600
+  → 同级函数: validate_token(), rotate_credentials()
+  读取 test_oauth.py:
+  → 使用示例: token_refresh("expired_token")
+  → mock 行为: redis.get() 的测试替身
+
+Step 4 — AST 调用图扩展（已有）: ~10ms
+  token_refresh 的调用链 → 谁是 caller，谁是 callee
+
+总延迟: ~35ms，返回:
+  - token_refresh 源代码 + 完整文件上下文
+  - 调用链上下游
+  - 测试文件中的使用示例
+  - 相关配置常量
+```
+
+#### 2.6.4 与纯 agentic grep 的区别
+
+Claude Code 的 agentic 模式是**交互式的**：grep→read→理解→再 grep→再 read，需要多轮交互。每个步骤都需要 agent 思考和决策。
+
+Code Worker 的协同模式是**流水线式的**：glob+grep+read 在一次调用中流水线执行，中间结果自动触发下一步。这适合 RAG 场景——用户期望一次返回，不要多轮交互。
+
+```
+Claude Code (交互式):         Code Worker (流水线式):
+  agent: "先 grep oauth"         Phase 0: glob **/oauth*
+  → 看到 20 个文件               Phase 1: 全局符号索引扫描
+  agent: "再 read oauth.py"      Phase 2: grep + read_file + AST
+  → 看到 token_refresh           一次返回完整上下文
+  agent: "再 grep token_refresh" 
+  → 找到更多引用
+  ...多轮交互...
+```
+
 ---
 
 ## 三、多仓库路由：全局符号索引 + 两阶段检索
@@ -398,119 +638,164 @@ CREATE INDEX idx_global_symbol_filtered ON global_symbol_index (symbol_name)
 - PostgreSQL `shared_buffers` 设为 1GB，**全表常驻内存，零磁盘 IO**
 - B-tree 深度 3-4 层，单次等值查找 < 0.1ms
 
-### 3.3 两阶段检索流程
+### 3.3 三阶段检索流程
 
 ```
-Phase 1: 全局符号索引扫描（目标 < 20ms）
+Phase 0: glob 文件发现（与 Phase 1 并行，~5ms）
+─────────────────────────────────────────
+搜索词 → 文件路径模式构造
+       → 候选仓库内 glob 匹配
+       → 返回候选文件列表
+
+Phase 1: 全局符号索引扫描（与 Phase 0 并行，~15ms）
 ─────────────────────────────────────────
 搜索词 → B-tree 索引扫描（1.5M 行）
-       → Bitmap OR 合并（多个搜索词）
-       → GROUP BY repo_name（按仓库聚合命中数）
-       → Top-K 排序（K=3~5）
+       → GROUP BY repo_name
+       → Top-K 候选仓库（K=3~5）
+       → 与 Phase 0 结果合并: 候选仓库 + 候选文件
        → 返回: [
-            {repo: "auth-service", score: 0.95, matched: ["token_refresh", "oauth_login"]},
-            {repo: "auth-gateway", score: 0.72, matched: ["oauth_proxy"]},
-            {repo: "sso-service", score: 0.58, matched: ["sso_token"]},
+            {repo: "auth-service", score: 0.95, 
+             files: ["src/auth/oauth.py", "tests/test_oauth.py"],
+             matched: ["token_refresh", "oauth_login"]},
           ]
 
-Phase 2: 候选仓库深度搜索（目标 < 30ms）
+Phase 2: 候选仓库深度搜索（~30ms）
 ─────────────────────────────────────────
 每个候选仓库:
-  ├─ 元数据索引搜索（code_chunks 表，~5ms）
-  │   用 Phase 1 的种子符号做精确匹配，获取完整源代码
-  │
-  ├─ 实时 ripgrep 兜底（~50ms，仅当索引可能过期时触发）
-  │   验证最新 commit 的代码是否已索引
-  │
+  ├─ grep 精确符号匹配（code_chunks B-tree + ripgrep，~5ms）
+  ├─ glob 关联文件发现（test、config、schema、migration，~5ms）
+  ├─ read_file 完整文件上下文（import 链 + 模块级代码，~5ms）
   ├─ AST 调用图扩展（~10ms）
-  │   从种子符号出发，沿调用链扩展上下文
-  │
-  └─ 跨仓库去重排序（~5ms）
-      基于签名 hash 去重 + 相关性排序
+  └─ 跨仓库结果合并 + 去重排序（~5ms）
 ```
 
-### 3.4 Phase 1 实现：全局符号扫描
+### 3.4 Phase 1 实现：全局符号扫描 + 相关性打分
 
 ```python
 async def global_symbol_scan(
     search_terms: SearchTermSet,
-    top_k: int = 5,
-    min_match_per_repo: int = 2
+    top_k: int = 8,
+    min_match_per_repo: int = 1
 ) -> list[CandidateRepo]:
     """
     在所有仓库的符号索引中快速扫描。
-    延迟目标: < 20ms（单次 SQL + 简单聚合）。
+    延迟目标: < 20ms。
+    
+    关键变化（相比初版）：
+    - min_match_per_repo 从 2 降为 1——单个高特异性符号足以成为候选
+    - 不在 SQL 层做最终排序，SQL 只负责收集候选，精排交给 Python
     """
-    # 如果有精确匹配项，优先走 B-tree（最快路径）
-    exact_terms = search_terms.exact_terms  # ["token_refresh", "oauth_login"]
-    fuzzy_terms = search_terms.fuzzy_terms  # ["refresh", "oauth"]
-    tag_terms = search_terms.tag_terms      # ["认证", "Token"]
+    exact_terms = search_terms.exact_terms
+    fuzzy_terms = search_terms.fuzzy_terms
+    tag_terms = search_terms.tag_terms
     
     query = """
     WITH matched AS (
-        -- 精确匹配：最高权重
         SELECT repo_name, symbol_name, symbol_type,
-               1.0 AS match_score,
-               'exact' AS match_type
+               1.0 AS match_score, 'exact' AS match_type
         FROM global_symbol_index
         WHERE symbol_name = ANY($1)
         
         UNION ALL
         
-        -- 模糊匹配：中等权重
         SELECT repo_name, symbol_name, symbol_type,
-               0.7 AS match_score,
-               'fuzzy' AS match_type
+               0.7 AS match_score, 'fuzzy' AS match_type
         FROM global_symbol_index
         WHERE symbol_name ILIKE ANY($2)
         
         UNION ALL
         
-        -- 标签匹配：辅助权重
         SELECT repo_name, symbol_name, symbol_type,
-               0.5 AS match_score,
-               'tag' AS match_type
+               0.5 AS match_score, 'tag' AS match_type
         FROM global_symbol_index
         WHERE business_tags && $3
     )
     SELECT 
         repo_name,
-        AVG(match_score) AS avg_score,
         COUNT(*) AS match_count,
-        ARRAY_AGG(DISTINCT symbol_name ORDER BY match_score DESC) AS matched_symbols,
+        ARRAY_AGG(DISTINCT symbol_name) AS matched_symbols,
         ARRAY_AGG(DISTINCT match_type) AS match_types
     FROM matched
     GROUP BY repo_name
     HAVING COUNT(*) >= $4
-    ORDER BY avg_score DESC, match_count DESC
-    LIMIT $5
     """
     
     like_patterns = [f"%{t}%" for t in fuzzy_terms]
     
     rows = await db.fetch(
         query,
-        exact_terms,           -- $1: 精确匹配
-        like_patterns,         -- $2: 模糊匹配
-        tag_terms,             -- $3: 标签匹配
-        min_match_per_repo,    -- $4: 最少匹配数
-        top_k                  -- $5: 返回 Top-K
+        exact_terms, like_patterns, tag_terms, min_match_per_repo
     )
     
-    return [CandidateRepo(
-        name=row['repo_name'],
-        score=row['avg_score'],
-        match_count=row['match_count'],
-        matched_symbols=row['matched_symbols'],
-        match_types=row['match_types']
-    ) for row in rows]
+    # ===== 精排：IDF 加权 + 仓库规模归一化 =====
+    scored = []
+    for row in rows:
+        score = compute_repo_score(
+            matched_symbols=row['matched_symbols'],
+            match_types=row['match_types'],
+            repo_name=row['repo_name'],
+            code_idf=CODE_SYMBOL_IDF,
+        )
+        scored.append(CandidateRepo(
+            name=row['repo_name'],
+            raw_score=score,
+            match_count=row['match_count'],
+            matched_symbols=row['matched_symbols'],
+            match_types=row['match_types']
+        ))
+    
+    # 排序 + 自适应 K
+    scored.sort(key=lambda r: r.raw_score, reverse=True)
+    return adaptive_top_k(scored, max_k=top_k)
+
+
+def compute_repo_score(
+    matched_symbols: list[str],
+    match_types: list[str],
+    repo_name: str,
+    code_idf: CodeSymbolIDF,
+) -> float:
+    """
+    仓库相关性打分 = IDF 加权 SUM / 规模惩罚
+    
+    设计原理：
+    1. 用 SUM 而非 AVG——多个匹配信号应该叠加，不应被稀释
+    2. 每个符号乘以它的 IDF——稀有符号（如 oauth_token_refresh）权重高，
+       高频符号（如 handle）权重低
+    3. 除以 log(仓库符号总数)——大仓库天然有更多符号，需要归一化
+    4. 精确匹配类型加分——exact > fuzzy > tag 的层级仍然保留
+    """
+    repo_size = REPO_SIZE_CACHE.get(repo_name, 3000)  # 仓库总符号数
+    
+    total = 0.0
+    for symbol in matched_symbols:
+        # 符号特异度：IDF 越高越稀有，越有定位价值
+        idf = code_idf.idf.get(symbol, 1.0)
+        
+        # 基础分：来自匹配类型（exact=1.0, fuzzy=0.7, tag=0.5）
+        # 已经在 SQL 中标记，这里取对应权重
+        base = 1.0  # 默认精确匹配
+        
+        # IDF 加权
+        total += base * idf
+    
+    # 规模归一化：log(repo_size) 保证大仓库不会天然占优
+    # 一个 10 万符号的大仓库搜到 5 个 login 不能比
+    # 一个 1000 符号的小仓库搜到 1 个 oauth_token_refresh 更相关
+    normalized = total / max(math.log(repo_size), 1.0)
+    
+    return normalized
 ```
 
-**性能关键点：**
-- `symbol_name = ANY($1)` 走 B-tree 索引扫描（Bitmap Index Scan），1.5M 行中只读取匹配的几十行
-- `ILIKE ANY` 走 pg_trgm GIN 索引，支持模糊匹配而不走全表扫描
-- `UNION ALL` 而非 `OR`：PostgreSQL 对 UNION ALL 的 Bitmap OR 合并比 WHERE 中的 OR 更高效
-- 排除高频噪声符号的部分索引：`get`/`handle`/`process` 这类出现在 95% 仓库中的符号几乎无区分度，排除它们让结果集从数千行缩到几十行
+**打分公式对比：**
+
+| | 旧方案 `AVG(match_score)` | 新方案 `SUM(base × IDF) / log(size)` |
+|---|---|---|
+| 1 个精确稀有符号 vs 5 个模糊常见符号 | 选 1 个精确（AVG=1.0 > 0.7） | 选 5 个模糊（SUM 叠加 > 单个） |
+| 大仓库 10 个 `login` vs 小仓库 1 个 `oauth_token_refresh` | 选大仓库（count=10 > 1） | 选小仓库（IDF 极高，归一化后占优） |
+| 噪声符号 `handle` 命中 | 等权计入 AVG | IDF≈0.1 → 几乎不贡献分数 |
+
+**为什么 `min_match_per_repo` 从 2 降为 1：** 一个高特异性符号足以定位。比如 `oauth_token_refresh` 只在一个仓库出现——如果设 min=2，这个唯一正确答案会被排除。IDF 加权已经解决了单符号噪声的问题：`handle` 的 IDF 接近于 0，即使匹配到了也不会让它进入 Top-K。
 
 ### 3.5 代码域 IDF：自动过滤低区分度符号
 
@@ -691,6 +976,188 @@ def resolve_repos_v2(
 │ 新仓库支持              │ 需要手动配置          │ 自动（webhook 增量）  │
 └─────────────────────────┴──────────────────────┴──────────────────────┘
 ```
+
+### 3.11 自适应 K：根据分数分布动态决定候选仓库数量
+
+固定 K=5 在两个方向上都可能出错——太多（噪声仓库浪费 Phase 2 预算）或太少（漏掉相关仓库）。自适应 K 根据分数分布动态决策：
+
+```python
+def adaptive_top_k(
+    scored_repos: list[CandidateRepo],
+    max_k: int = 8,
+    min_k: int = 1,
+    gap_ratio_threshold: float = 0.5,   # 分数断崖：相邻仓库分差 > 50%
+    absolute_threshold_ratio: float = 0.15  # 绝对阈值：分数低于最高分 15%
+) -> list[CandidateRepo]:
+    """
+    根据分数分布自适应决定 K。
+    
+    原理：
+    - 分数断崖 → 在断崖处截断（后面的仓库大概率不相关）
+    - 分数聚集 → 全部保留（它们都可能是相关的）
+    - 绝对阈值 → 分数太低的直接排除
+    
+    示例 1（断崖，K→1）：
+      auth-service:  0.95  ← 唯一相关
+      gateway:       0.32  ← gap_ratio = (0.95-0.32)/0.95 = 66% > 50% → 截断
+      monitoring:    0.28
+      结果: K=1，只搜 auth-service
+    
+    示例 2（聚集，K→6）：
+      auth-service:   0.78
+      sso-service:    0.75  ← gap = 4%，紧密
+      user-service:   0.72  ← gap = 4%
+      auth-gateway:   0.70  ← gap = 3%
+      login-guard:    0.68  ← gap = 3%
+      session-svc:    0.67  ← gap = 1%
+      结果: K=6，全部保留（分数分布密集，都是潜在相关）
+    
+    示例 3（混合，K→3）：
+      auth-service:  0.92
+      sso-service:   0.71  ← gap = 23%，尚可接受
+      user-service:  0.65  ← gap = 8%
+      gateway:       0.28  ← gap = 57% > 50% → 截断！
+      结果: K=3，auth + sso + user
+    """
+    if not scored_repos:
+        return []
+    
+    scored_repos.sort(key=lambda r: r.raw_score, reverse=True)
+    top_score = scored_repos[0].raw_score
+    
+    # 规则 1: 分数断崖检测
+    # 从高到低扫描，找到第一个显著断崖
+    for i in range(1, len(scored_repos)):
+        prev_score = scored_repos[i - 1].raw_score
+        curr_score = scored_repos[i].raw_score
+        
+        if prev_score > 0:
+            gap_ratio = (prev_score - curr_score) / prev_score
+            
+            if gap_ratio > gap_ratio_threshold:
+                # 在断崖前截断，但至少保留 min_k 个
+                cut_at = max(i, min_k)
+                return scored_repos[:cut_at]
+    
+    # 规则 2: 绝对阈值过滤
+    # 分数低于最高分 15% 的仓库排除
+    qualified = [r for r in scored_repos
+                 if r.raw_score >= top_score * absolute_threshold_ratio]
+    
+    # 规则 3: 不超过 max_k
+    return qualified[:max_k]
+```
+
+**为什么不在 SQL 里做？** 分数分布分析（相邻仓库的 gap ratio）需要全量排序后的结果做相邻比较。SQL 只负责收集候选（不做最终排序限制），精排和截断在 Python 中完成。候选仓库数通常在 10-50 个，Python 处理 < 1ms。
+
+### 3.12 两轮检索兜底：当 Top-K 置信度不足时
+
+自适应 K 解决了"候选太多"的问题。但还有反向问题：如果 Phase 1 找出的候选仓库置信度不够怎么办？
+
+```python
+async def global_symbol_scan_with_fallback(
+    search_terms: SearchTermSet,
+    entities: ExtractedEntities,
+) -> list[CandidateRepo]:
+    """
+    Phase 1 主流程 + 条件触发的第二轮检索。
+    """
+    # ===== 第一轮: 标准检索 =====
+    results = await global_symbol_scan(
+        search_terms=search_terms,
+        top_k=8,
+        min_match_per_repo=1
+    )
+    
+    # 判断是否需要第二轮
+    confidence = assess_confidence(results, search_terms)
+    
+    if confidence == Confidence.HIGH:
+        # 情况 A: 高分 + 断崖明显 → 直接返回
+        return adaptive_top_k(results)
+    
+    elif confidence == Confidence.MEDIUM:
+        # 情况 B: 有候选但分数不高 → 降低 min_match 重试 + 静态映射补充
+        round2 = await global_symbol_scan(
+            search_terms=search_terms,
+            top_k=10,
+            min_match_per_repo=0  # 放宽到 0，不强制最小匹配数
+        )
+        # 合并两轮结果，用静态映射补充
+        merged = merge_with_static_mapping(
+            round2, entities,
+            MODULE_REPO_MAP, repo_registry
+        )
+        return adaptive_top_k(merged, max_k=6)
+    
+    else:  # LOW
+        # 情况 C: 几乎没找到 → 扩展搜索词重试 + 全量文件路径 glob
+        expanded_terms = expand_search_terms(search_terms)
+        round2 = await global_symbol_scan(
+            search_terms=expanded_terms,
+            top_k=10,
+            min_match_per_repo=0
+        )
+        # 同时用 glob 做文件路径兜底（不依赖符号索引）
+        glob_results = await glob_file_discovery(
+            expanded_terms,
+            candidate_repos=None,  # 不限仓库
+            entities=entities
+        )
+        merged = merge_symbol_and_glob(round2, glob_results)
+        return adaptive_top_k(merged, max_k=5)
+
+
+def assess_confidence(
+    results: list[CandidateRepo],
+    search_terms: SearchTermSet
+) -> Confidence:
+    """
+    评估 Phase 1 结果的置信度。
+    
+    信号：
+    1. 最高分是否 > 阈值（有 exact match 时阈值更高）
+    2. Top-3 仓库间的分数是否紧密
+    3. 是否有 exact match（精确匹配比模糊匹配置信度高得多）
+    """
+    if not results:
+        return Confidence.LOW
+    
+    has_exact = any('exact' in r.match_types for r in results)
+    top_score = results[0].raw_score
+    
+    # 有精确匹配 + 高分 → 高置信
+    if has_exact and top_score > 0.8:
+        return Confidence.HIGH
+    
+    # 无精确匹配但分数聚集 + Top-3 分数接近 → 中等置信
+    if len(results) >= 3:
+        top3_scores = [r.raw_score for r in results[:3]]
+        if max(top3_scores) - min(top3_scores) < 0.2 and top_score > 0.3:
+            return Confidence.MEDIUM
+    
+    # 最高分极低 → 低置信
+    if top_score < 0.2:
+        return Confidence.LOW
+    
+    return Confidence.MEDIUM
+```
+
+**第二轮检索的触发条件和策略：**
+
+| 置信度 | 条件 | 策略 | 延迟增量 |
+|--------|------|------|---------|
+| HIGH | 有 exact match + top_score > 0.8 | 直接返回，不触发第二轮 | 0ms |
+| MEDIUM | 分数聚集但无 exact match，top_score > 0.3 | 降低 min_match → 合并静态映射 | +10ms |
+| LOW | top_score < 0.2 或结果为空 | 扩展搜索词 + glob 文件路径兜底 | +20ms |
+
+### 3.13 Top-K 策略总结：三种失败模式及对策
+
+| 失败模式 | 现象 | 根因 | 对策 | 对应章节 |
+|---------|------|------|------|---------|
+| **噪声候选过多** | 5 个候选中只有 1 个相关 | AVG 打分无法区分；大仓库靠规模占优 | IDF 加权 SUM + 规模归一化（3.4）；分数断崖截断（3.11） | 3.4, 3.11 |
+| **相关仓库被遗漏** | 目标仓库不在 Top-K 中 | 符号名不匹配（不同命名约定）；min_match 硬门槛 | min_match=1（3.4）；两轮检索扩展搜索词（3.12）；glob 文件路径兜底（3.12） | 3.4, 3.12, 2.6 |
+| **K 值不匹配** | 有时 5 太多，有时 5 不够 | 固定 K 无法适应不同查询的语义宽窄 | 自适应 K（3.11）：断崖截断 + 绝对阈值 + 分数聚集保留 | 3.11 |
 
 ---
 
@@ -1506,16 +1973,15 @@ async def build_search_terms(
 ```
 代码仓库 (Git)
   → TreeSitter AST 解析（保留函数/类边界，按语法单元分块）
-  → 双路输出:
+  → 三路输出:
       ├─ code_chunks 表（完整源代码 + 结构化元数据 + 调用图，不生成 embedding）
-      └─ global_symbol_index 表（符号名 + 位置 + 业务标签，用于 Phase 1 快速扫描）
-  → 触发方式：Git Webhook（push 事件）→ 增量更新变更文件；
+      ├─ global_symbol_index 表（符号名 + 位置 + 业务标签，用于 Phase 1 快速扫描）
+      └─ 文件系统工作副本（用于 Phase 0 glob、Phase 2 read_file 和 ripgrep 实时搜索）
+  → 触发方式：Git Webhook（push 事件）→ 增量更新变更文件 + git pull 工作副本；
              存量代码全量导入
 ```
 
-与之前设计的关键差异：**去掉了 BGE-M3 嵌入环节**，新增了 `global_symbol_index` 表作为跨仓库检索的核心基础设施。代码 chunk 不再生成 embedding，只存储结构化元数据和源代码原文。
-
-> 完整的数据摄入管道设计见 [数据摄入管道设计](SPMA-design-05-data-ingestion.md)。注意：该文档中与代码 embedding 相关的内容需同步更新；需新增 `global_symbol_index` 表的摄入流程。
+> 注意：glob 和 read_file 依赖**文件系统工作副本**（每个仓库在服务节点上保留一份 `git clone`）。这与 `code_chunks` 和 `global_symbol_index` 的数据库路径互补——索引覆盖 95% 查询，文件系统用于最新代码和完整文件上下文。
 
 ---
 
@@ -1530,3 +1996,10 @@ async def build_search_terms(
 | 2026-06-06 | 新增 3.7 分级缓存体系 | L1 进程内存 + L2 Redis + L3 PostgreSQL，目标覆盖 70-80% 查询 |
 | 2026-06-06 | 第六章重写：中文查询处理 → 搜索词构造管线 | 从单一翻译策略扩展为 Type A-E 五类查询类型检测 + 对应转换策略；新增形态扩展、共现加分、模块→符号关联、反馈闭环 |
 | 2026-06-06 | 2.1-2.3、五、七 同步更新 | 一致性问题——多处引用了旧的多仓库路由和搜索词构造逻辑 |
+| 2026-06-07 | 3.4 重写打分公式：AVG → IDF 加权 SUM / log(repo_size) | 解决三个问题：①AVG 稀释多匹配信号 ②大仓库规模偏见 ③噪声符号污染。min_match 从 2 降为 1 |
+| 2026-06-07 | 新增 3.11 自适应 K | 分数断崖检测 + 绝对阈值过滤 → 动态决定 K 值，解决"噪声候选过多"和"遗漏相关仓库"两个方向的问题 |
+| 2026-06-07 | 新增 3.12 两轮检索兜底 | 置信度评估 → 条件触发第二轮检索（降低阈值 + 扩展搜索词 + glob 兜底），解决"相关仓库被遗漏"问题 |
+| 2026-06-07 | 新增 3.13 Top-K 策略总结 | 三种失败模式及对策一览表 |
+| 2026-06-06 | 新增 2.6 三工具协同（glob + grep + read_file） | 补三个盲区：文件路径语义（glob）、文件级上下文（read_file）、关联文件发现（glob）；形成"发现→定位→理解"三阶段流水线 |
+| 2026-06-06 | 2.2、3.3 更新为三阶段检索 | Phase 0 glob + Phase 1 符号扫描并行 → Phase 2 深度搜索增强版 → Phase 3 read_file 上下文理解 |
+| 2026-06-06 | 精简冗余内容 | 2.4↔6.4 映射表重复、3.10 重复洞察、4.5↔2.2 重复、6.8↔6.1 重复、多处"不降级到语义搜索"重复 |
