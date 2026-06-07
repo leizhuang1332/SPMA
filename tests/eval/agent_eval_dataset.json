@@ -1,0 +1,15 @@
+{
+  "$schema": "spma/agent-eval-dataset/1.0",
+  "description": "Agent 评估基准数据集——50 条标注 query × golden results",
+  "version": "0.1.0",
+  "queries": [
+    {
+      "query_id": "eval-001",
+      "query": "用户登录模块的PRD改了哪些内容？影响了哪些代码文件和数据库表？",
+      "query_type": "cross_source",
+      "golden_docs": [],
+      "golden_code": [],
+      "golden_sql_tables": []
+    }
+  ]
+}
