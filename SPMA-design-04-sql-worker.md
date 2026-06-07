@@ -1,8 +1,54 @@
-# Design: SQL Worker 设计（Text-to-SQL + 安全执行）
+# Design: SQL Agent 设计（Text-to-SQL 执行Agent）
 
 > 所属项目：[SPMA 全局概览](SPMA-design-00-global-overview.md)
-> 相关模块：[Supervisor Agent](SPMA-design-01-supervisor-agent.md) — 负责下发检索参数给本 Worker
-> 模块职责：将自然语言查询转化为安全的 SQL、在只读副本上执行、保障 SQL 语义正确性和数据正确性
+> 权威架构：[5独立Agent架构设计](SPMA-design-07-agent-architecture.md) — **如有冲突以此为准**
+> 相关模块：[Supervisor Agent](SPMA-design-01-supervisor-agent.md) — 负责通过 Send API 下发检索参数给本 Agent
+> 模块职责：作为**执行 Agent**，将自然语言查询转化为安全的 SQL、在只读副本上执行、通过多轮自主循环保障 SQL 语义正确性和数据正确性——Schema RAG → LLM SQL生成 → Guard → 执行 → 语义验证 → 不够 → 重生成
+
+---
+
+## Agent 收敛契约
+
+| 参数 | 值 |
+|------|-----|
+| **Agent 类型** | 执行 Agent |
+| **最大轮数** | ≤5 |
+| **收敛条件** | SQL执行成功 AND 行数∈[1,10000] AND 通过语义验证 |
+| **超时(含执行)** | 3s |
+| **超时策略** | 返回最后成功执行的SQL结果 |
+| **确定性收敛** | 执行成功 AND 行数正常 → 自动收敛（不调LLM） |
+| **LLM 兜底** | 确定性条件不满足 → Haiku语义验证（~300ms） |
+
+### Agent 循环图
+
+```python
+# SQL Agent 独立构建 LangGraph 子图
+sql_graph = StateGraph(SQLAgentState)  # 继承 AgentState
+sql_graph.add_node("generate", llm_sql_generate)
+sql_graph.add_node("guard", sql_guard_check)
+sql_graph.add_node("execute", execute_readonly)
+sql_graph.add_node("verify", semantic_verify)
+sql_graph.add_conditional_edges("verify", should_continue, {
+    "regenerate": "generate",  # 语义验证不通过 → 重生成
+    "done": END,               # 通过 → 返回
+})
+```
+
+### Agent 状态数据模型
+
+```python
+class SQLAgentState(AgentState):
+    """SQL Agent 专属状态"""
+    round: int                    # 当前执行轮次
+    generated_sql: str            # 本轮生成的SQL
+    guard_result: GuardResult     # SQL Guard校验结果
+    execution_result: QueryResult # 执行结果
+    semantic_check: str           # 语义验证结果 ("passed" | "failed: reason")
+    confidence: float             # Agent自评信心 0-1
+    has_exact_match: bool         # 是否命中精确表名（table_names非空）
+    llm_calls: int                # 本轮LLM调用次数
+    latency_ms: int               # 本轮延迟
+```
 
 ---
 
@@ -11,13 +57,24 @@
 ```
 Supervisor Agent
     │
-    ├── Doc Worker
-    ├── Code Worker
-    └── SQL Worker  ← 本文档范围
-        ├─ Schema 感知 RAG 检索
-        ├─ SQL Guard 校验
-        ├─ 自修复循环
-        └─ 只读副本执行
+    │ Send API
+    ▼
+┌─────────────────────────────────────────┐
+│           SQL Agent  ← 本文档范围         │
+│  (执行Agent, ≤5轮, 3s超时)               │
+│  ┌─────────────────────────────────┐    │
+│  │ 多轮执行循环:                     │    │
+│  │   Schema RAG                    │    │
+│  │   → LLM SQL生成                 │    │
+│  │   → SQL Guard 校验              │    │
+│  │   → 只读副本执行                 │    │
+│  │   → 语义验证                    │    │
+│  │   → 不够 → 重生成（最多5轮）      │    │
+│  └─────────────────────────────────┘    │
+└─────────────────────────────────────────┘
+    │
+    ├── Doc Agent
+    └── Code Agent
 ```
 
 ---
@@ -45,7 +102,7 @@ Supervisor Agent
 │ ✓ 表/列存在性验证   │  ← 生成的 SQL 只能引用真实 schema 对象
 │ ✓ 性能保护          │  ← 检测缺失 WHERE、笛卡尔积、缺失 LIMIT
 └──────┬───────────┘
-       │ 失败 → 错误信息反馈 LLM → 重新生成（最多3次）
+       │ 失败 → 错误信息反馈 LLM → 重新生成（最多5轮，Agent循环）
        │ 通过
        ▼
 ┌──────────────────┐
@@ -154,9 +211,9 @@ SELECT status, COUNT(*) FROM orders WHERE created_at > '2026-01-01' AND status !
 
 Phase 1 人工 curator 选 20-30 条高频查询作为黄金示例集，之后的审核由 LLM 辅助（标记可疑示例）+ 人工确认。
 
-### 3.3 保护层 C：自修复循环的语义增强
+### 3.3 保护层 C：Agent 循环的语义验证增强
 
-当前的自修复循环只把 SQLGlot 的语法错误反馈给 LLM。需要把**执行结果的统计特征**也反馈进去：
+Agent 循环（≤5轮）中每轮不仅反馈语法错误，还把**执行结果的统计特征**也反馈进下一轮：
 
 ```python
 def enhanced_self_healing(sql: str, error: Exception, result: QueryResult) -> str:
@@ -306,35 +363,43 @@ def result_quality_check(result: QueryResult, sql: str) -> QualityReport:
 
 ---
 
-## 五、端到端保障全景图
+## 五、端到端保障全景图（Agent 循环版）
 
 ```
-用户自然语言
+用户自然语言（Supervisor Send API 触发 Agent）
       │
       ▼
-实体抽取 (table_names, metrics, time_range, group_by)
-      │
-      ▼
-Schema RAG 检索 ─── 增强注入: DDL + 业务元数据 + few-shot示例 + 业务规则
-      │
-      ▼
-LLM SQL 生成 ─── 输入包含: 列的业务含义、枚举值映射、相似查询示例
-      │
-      ▼
-SQL Guard 校验 ─── 语法、安全性、表/列真实性、性能
-      │
-      ├─ 失败 → 自修复循环（含统计异常反馈，最多3次）
-      │
-      ▼ 通过
-高风险? ─── 是 → 用户确认闸门（展示SQL + 风险提示）
-      │
-      │ 否/已确认
-      ▼
-只读副本执行 ─── 记录: 执行时间、副本延迟、数据快照标识
-      │
-      ▼
-结果质量扫描 ─── NULL检测、异常值检测、空结果检测
-      │
+┌─────────────────────────────────────────────────────────┐
+│              SQL Agent 循环（≤5轮, 3s超时）               │
+│                                                         │
+│  Round N:                                               │
+│    实体抽取 (table_names, metrics, time_range, group_by) │
+│          │                                               │
+│          ▼                                               │
+│    Schema RAG 检索 ─── 增强注入: DDL + 业务元数据         │
+│          │                                               │
+│          ▼                                               │
+│    LLM SQL 生成 ─── 输入含: 列的业务含义、枚举值映射       │
+│          │                                               │
+│          ▼                                               │
+│    SQL Guard 校验 ─── 语法、安全性、表/列真实性、性能      │
+│          │                                               │
+│          ├─ 失败 → 反馈LLM重生成（Agent循环下一轮）         │
+│          │                                               │
+│          ▼ 通过                                           │
+│    高风险? ─── 是 → 用户确认闸门（展示SQL + 风险提示）      │
+│          │                                               │
+│          │ 否/已确认                                      │
+│          ▼                                               │
+│    只读副本执行 ─── 记录: 执行时间、副本延迟、数据快照标识   │
+│          │                                               │
+│          ▼                                               │
+│    语义验证:                                              │
+│    ├─ 行数∈[1,10000] AND 无统计异常 → 收敛 ✓              │
+│    └─ 异常 → 反馈LLM重生成（Agent循环下一轮，最多5轮）      │
+│                                                         │
+└─────────────────────────────────────────────────────────┘
+      │ 收敛
       ▼
 结果返回 ─── 附带: SQL原文、数据新鲜度、质量标注、业务局限提示
 ```
@@ -382,7 +447,50 @@ SQL Guard 校验 ─── 语法、安全性、表/列真实性、性能
 
 ---
 
-## 八、数据摄入（SQL Worker 视角）
+## 九、Agent Action Guard & Worker 输出 & 回滚机制
+
+### Agent Action Guard
+
+SQL Agent 可调用的工具受白名单限制：
+
+```python
+ALLOWED_ACTIONS = {
+    'sql': ['schema_rag', 'generate_sql', 'validate_sql', 'execute_readonly',
+            'verify_results', 'semantic_verify', 'return_results'],
+}
+```
+
+### WorkerOutput 格式
+
+SQL Agent 返回给 Supervisor 的输出遵循标准 WorkerOutput 格式：
+
+```python
+class WorkerOutput:
+    worker_type: str = "sql"
+    result_count: int          # 返回的行数
+    results: list[dict]        # SQL查询结果
+    citations: list[Citation]  # 每条结果的引用元数据
+    confidence: float          # Agent自评信心 (0-1)
+    has_exact_match: bool      # 是否命中精确表名（table_names非空）
+    rounds_used: int           # 使用的执行轮数
+    original_query: str        # 原始检索query
+    execution_sql: str         # 最终执行的SQL（供用户复制复现）
+```
+
+### 回滚机制
+
+SQL Agent 有独立 feature flag，可秒级回退到当前3轮自修复模式：
+
+```yaml
+agents:
+  sql_agentic: false  # false=当前3轮自修复, true=agentic语义验证循环（≤5轮）
+```
+
+**回滚触发：** 虚假信心率 > 15% OR P99 延迟恶化 > 30% OR Token 成本恶化 > 50%。
+
+---
+
+## 十、数据摄入（SQL Agent 视角）
 
 ```
 SQL 数据库 (PostgreSQL/MySQL)
