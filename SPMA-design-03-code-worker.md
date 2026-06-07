@@ -1189,18 +1189,9 @@ CREATE INDEX idx_cm_req_ids ON code_metadata USING GIN (req_ids);
 
 ---
 
-## 五、实体驱动的检索分发 & Agent Action Guard
+## 五、实体驱动的检索分发
 
-### Agent Action Guard
-
-Code Agent 可调用的工具受白名单限制：
-
-```python
-ALLOWED_ACTIONS = {
-    'code': ['ripgrep', 'read_file', 'glob', 'ast_expand', 
-             'completeness_check', 'return_results'],
-}
-```
+> **Agent Action Guard**（工具白名单）是跨 Agent 的统一基础设施，详见 [基础设施与运维设计](SPMA-design-06-infrastructure.md)。
 
 ### 实体驱动的检索分发决策树
 
@@ -2003,56 +1994,15 @@ build_search_terms(query, entities) → SearchTermSet
 
 ## 八、数据摄入（Code Worker 视角）
 
-```
-代码仓库 (Git)
-  → 两路极简输出:
-      ├─ file_path_cache 表（git ls-files → 文件路径列表，~25MB）
-      │    用于 Phase 0 文件路径路由（500→5 仓库）
-      │    触发: Git webhook push → git pull → git ls-files → upsert（~100ms/仓库）
-      │
-      └─ code_metadata 表（TreeSitter AST → 调用图元数据）
-           用于 Phase 2 AST 调用图扩展（calls/called_by/imports）
-           触发: Git webhook push → TreeSitter 解析变更文件 → upsert 调用图
-      
-      此外: 文件系统工作副本（git clone）
-            用于 Phase 1 ripgrep 实时搜索 + Phase 2 read_file
-            触发: 服务启动时 git clone；运行时 git webhook → git pull
-```
+> 完整的数据摄入管道设计见 [数据摄入管道设计](SPMA-design-05-data-ingestion.md)。
 
 **关键简化：** 
 - 不再需要 `global_symbol_index`（AST 解析每个函数名建索引）——节省 ~450MB 存储和 TreeSitter 全量解析成本
 - `code_chunks` 改为 `code_metadata`——不存源代码，只存调用图
 - 核心搜索引擎是 ripgrep（始终搜最新文件系统），不依赖任何内容索引
 
-> 完整的数据摄入管道设计见 [数据摄入管道设计](SPMA-design-05-data-ingestion.md)。
-
 ---
 
-## 九、Agent Worker 输出格式 & 回滚机制
+## 九、Worker 输出 & 回滚机制
 
-### WorkerOutput 格式
-
-Code Agent 返回给 Supervisor 的输出遵循标准 WorkerOutput 格式：
-
-```python
-class WorkerOutput:
-    worker_type: str = "code"
-    result_count: int          # 返回的代码文件数
-    results: list[dict]        # 代码匹配列表
-    citations: list[Citation]  # 每条结果的引用元数据
-    confidence: float          # Agent自评信心 (0-1)
-    has_exact_match: bool      # 是否命中 code_refs 精确匹配
-    rounds_used: int           # 使用的检索轮数
-    original_query: str        # 原始检索query
-```
-
-### 回滚机制
-
-Code Agent 有独立 feature flag，可秒级回退到单次 ripgrep+AST 模式：
-
-```yaml
-agents:
-  code_agentic: false  # false=ripgrep+AST单次, true=agentic完备度判断+多轮
-```
-
-**回滚触发：** 虚假信心率 > 15% OR P99 延迟恶化 > 30% OR Token 成本恶化 > 50%。
+> **WorkerOutput 格式**和**回滚机制**（feature flags）是跨 Agent 的统一基础设施，详见 [基础设施与运维设计](SPMA-design-06-infrastructure.md)。

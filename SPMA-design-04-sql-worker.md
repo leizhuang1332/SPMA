@@ -426,55 +426,19 @@ SQL:  SELECT COUNT(*) FROM orders WHERE created_at >= '2026-06-05'
 
 ## 九、Agent Action Guard & Worker 输出 & 回滚机制
 
-### Agent Action Guard
+> **Agent Action Guard**（工具白名单）和 **回滚机制**（feature flags）是跨 Agent 的统一基础设施，详见 [基础设施与运维设计](SPMA-design-06-infrastructure.md)。
 
-SQL Agent 可调用的工具受白名单限制：
-
-```python
-ALLOWED_ACTIONS = {
-    'sql': ['schema_rag', 'generate_sql', 'validate_sql', 'execute_readonly',
-            'verify_results', 'semantic_verify', 'return_results'],
-}
-```
-
-### WorkerOutput 格式
-
-SQL Agent 返回给 Supervisor 的输出遵循标准 WorkerOutput 格式：
+SQL Agent 特有的 WorkerOutput 字段：
 
 ```python
 class WorkerOutput:
+    # ... 标准字段见 06 基础设施文档 ...
     worker_type: str = "sql"
-    result_count: int          # 返回的行数
-    results: list[dict]        # SQL查询结果
-    citations: list[Citation]  # 每条结果的引用元数据
-    confidence: float          # Agent自评信心 (0-1)
-    has_exact_match: bool      # 是否命中精确表名（table_names非空）
-    rounds_used: int           # 使用的执行轮数
-    original_query: str        # 原始检索query
     execution_sql: str         # 最终执行的SQL（供用户复制复现）
 ```
-
-### 回滚机制
-
-SQL Agent 有独立 feature flag，可秒级回退到当前3轮自修复模式：
-
-```yaml
-agents:
-  sql_agentic: false  # false=当前3轮自修复, true=agentic语义验证循环（≤5轮）
-```
-
-**回滚触发：** 虚假信心率 > 15% OR P99 延迟恶化 > 30% OR Token 成本恶化 > 50%。
 
 ---
 
 ## 十、数据摄入（SQL Agent 视角）
-
-```
-SQL 数据库 (PostgreSQL/MySQL)
-  → Schema 自省（表结构、列类型、外键关系、列注释作为业务语义描述）
-  → DDL + pg_stat_statements 采样（Top 100 高频查询作为 few-shot 示例；需 DBA 配合开通 pg_stat_statements 扩展）
-  → BGE-M3 嵌入 → PGVector
-  → 触发方式：定时轮询 information_schema（10min 间隔）+ 手动触发刷新（DDL 变更后）
-```
 
 > 完整的数据摄入管道设计见 [数据摄入管道设计](SPMA-design-05-data-ingestion.md)。

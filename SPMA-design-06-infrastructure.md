@@ -69,6 +69,29 @@ Redis不可用 ──→ Agent降级为单轮pipeline模式（退化为非Agenti
               → logger.warning("Redis unavailable, falling back to single-pass mode")
 ```
 
+### Worker 输出格式
+
+所有 Worker Agent 返回给 Supervisor 的输出遵循统一的 `WorkerOutput` 格式：
+
+```python
+class WorkerOutput:
+    worker_type: str           # "doc" | "code" | "sql"
+    result_count: int          # 返回结果数
+    results: list[dict]        # 检索/SQL结果
+    citations: list[Citation]  # 每条结果的引用元数据
+    confidence: float          # Worker自评信心 (0-1)
+    has_exact_match: bool      # 是否命中精确匹配实体
+    rounds_used: int           # 使用的轮数
+    original_query: str        # 原始检索query
+
+class Citation:
+    source_type: str           # "prd" | "code" | "sql"
+    source_id: str             # doc_id, file_path:line, table.column
+    snippet: str               # 引用原文片段（≤200 chars）
+```
+
+各 Agent 可在标准字段基础上追加 Agent 特有字段（如 SQL Agent 追加 `execution_sql`）。
+
 ---
 
 ## 三、Agent Action Guard（安全白名单）
@@ -277,9 +300,7 @@ tests/eval/agent_eval_dataset.json:
 
 ### 分类器评估
 
-- **评估集：** 从 Shadowing 观察和用户测试中收集 100 条真实查询 → 人工标注正确的 `sources`
-- **目标：** 分类准确率 ≥ 95%，实体 correctness ≥ 90%，completeness ≥ 85%
-- **持续改进：** 每次分类结果记录日志，每周 review 20 条，往规则层加 pattern
+> 意图分类器和实体抽取的评估策略详见 [Supervisor Agent 设计](SPMA-design-01-supervisor-agent.md#53-分类质量保障)。
 
 ---
 
