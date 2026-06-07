@@ -1,6 +1,5 @@
 """SQL Agent 专属状态定义。"""
 
-from typing import NotRequired
 from typing import TypedDict
 
 from spma.models.agent_state import AgentState
@@ -31,12 +30,6 @@ class SchemaHit(TypedDict):
     business_description: str
     few_shot_queries: list[str]
     relevance_score: float
-
-
-class SyntaxError(TypedDict):
-    message: str
-    line: int | None
-    col: int | None
 
 
 class GuardResult(TypedDict):
