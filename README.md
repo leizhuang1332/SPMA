@@ -43,6 +43,6 @@ uv run pytest
 
 ## 设计文档
 
-- [全局概览](SPMA-design-00-global-overview.md)
-- [5 Agent 架构](SPMA-design-07-agent-architecture.md)
+- [全局概览](docs/designs/SPMA-design-00-global-overview.md)
+- [5 Agent 架构](docs/designs/SPMA-design-07-agent-architecture.md)
 - [技术选型](docs/SPMA-technology-selection.md)

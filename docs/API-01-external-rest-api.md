@@ -1,6 +1,6 @@
 # API 契约：外部 REST API
 
-> 所属项目：[SPMA 全局概览](../SPMA-design-00-global-overview.md)
+> 所属项目：[SPMA 全局概览](designs/SPMA-design-00-global-overview.md)
 > 契约边界：**User/UI ↔ API Gateway ↔ Supervisor Agent**
 > 协议：HTTPS + JSON + SSE（流式）
 > 版本：v1

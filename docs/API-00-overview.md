@@ -1,7 +1,7 @@
 # API 契约总览与通用约定
 
-> 所属项目：[SPMA 全局概览](../SPMA-design-00-global-overview.md)
-> 权威架构：[5独立Agent架构设计](../SPMA-design-07-agent-architecture.md)
+> 所属项目：[SPMA 全局概览](designs/SPMA-design-00-global-overview.md)
+> 权威架构：[5独立Agent架构设计](designs/SPMA-design-07-agent-architecture.md)
 > 文档状态：DESIGN COMPLETE
 > 生成日期：2026-06-07
 

@@ -1,7 +1,7 @@
 # API 契约：基础设施契约
 
-> 所属项目：[SPMA 全局概览](../SPMA-design-00-global-overview.md)
-> 相关设计：[基础设施与运维设计](../SPMA-design-06-infrastructure.md)
+> 所属项目：[SPMA 全局概览](designs/SPMA-design-00-global-overview.md)
+> 相关设计：[基础设施与运维设计](designs/SPMA-design-06-infrastructure.md)
 > 契约边界：**状态存储、缓存、Feature Flags、降级配置、Token 预算、配置管理**
 > 版本：1.0
 

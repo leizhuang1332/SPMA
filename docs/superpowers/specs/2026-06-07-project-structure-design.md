@@ -2,7 +2,7 @@
 
 > 状态：DESIGN COMPLETE
 > 生成日期：2026-06-07
-> 关联文档：[SPMA 全局概览](../SPMA-design-00-global-overview.md) | [技术选型](../SPMA-technology-selection.md)
+> 关联文档：[SPMA 全局概览](../../designs/SPMA-design-00-global-overview.md) | [技术选型](../SPMA-technology-selection.md)
 
 ---
 

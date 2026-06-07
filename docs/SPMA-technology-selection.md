@@ -441,7 +441,7 @@ Code Agent **不使用嵌入索引和全文检索引擎**，而是：
 | **git log** | 需求追溯/人员时间查询 | ~50ms |
 | **TreeSitter** | AST 调用图解析 | ~20ms |
 
-这些是系统级命令行工具，不需要中间件。详细设计见 [SPMA-design-03-code-worker.md](../SPMA-design-03-code-worker.md)。
+这些是系统级命令行工具，不需要中间件。详细设计见 [SPMA-design-03-code-worker.md](designs/SPMA-design-03-code-worker.md)。
 
 ---
 

@@ -1,7 +1,7 @@
 # API 契约：数据摄入管道
 
-> 所属项目：[SPMA 全局概览](../SPMA-design-00-global-overview.md)
-> 相关设计：[数据摄入管道设计](../SPMA-design-05-data-ingestion.md)
+> 所属项目：[SPMA 全局概览](designs/SPMA-design-00-global-overview.md)
+> 相关设计：[数据摄入管道设计](designs/SPMA-design-05-data-ingestion.md)
 > 契约边界：**外部触发器 ↔ 摄入管道 ↔ PGVector/Redis/PostgreSQL**
 > 版本：1.0
 

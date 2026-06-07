@@ -291,14 +291,14 @@ Month 1      Month 2      Month 3      Month 4      Month 5
 
 | 设计文档 | 内容 |
 |---------|------|
-| [SPMA-design-00](../SPMA-design-00-global-overview.md) | 全局概览、架构全景、决策背景 |
-| [SPMA-design-01](../SPMA-design-01-supervisor-agent.md) | Supervisor Agent：意图分类、实体抽取、查询改写、多轮编排 |
-| [SPMA-design-02](../SPMA-design-02-doc-worker.md) | Doc Agent：BM25+向量混合检索、完备度判断、线索扩展 |
-| [SPMA-design-03](../SPMA-design-03-code-worker.md) | Code Agent：ripgrep实时搜索、搜索词构造、渐进式回退 |
-| [SPMA-design-04](../SPMA-design-04-sql-worker.md) | SQL Agent：Schema RAG→LLM SQL→Guard→执行→语义验证 |
-| [SPMA-design-05](../SPMA-design-05-data-ingestion.md) | 数据摄入管道：三源数据离线/异步摄入 |
-| [SPMA-design-06](../SPMA-design-06-infrastructure.md) | 基础设施：技术选型、降级策略、安全、测试、部署 |
-| [SPMA-design-07](../SPMA-design-07-agent-architecture.md) | 5独立Agent架构：收敛契约、质量函数、状态管理 |
+| [SPMA-design-00](../docs/designs/SPMA-design-00-global-overview.md) | 全局概览、架构全景、决策背景 |
+| [SPMA-design-01](../docs/designs/SPMA-design-01-supervisor-agent.md) | Supervisor Agent：意图分类、实体抽取、查询改写、多轮编排 |
+| [SPMA-design-02](../docs/designs/SPMA-design-02-doc-worker.md) | Doc Agent：BM25+向量混合检索、完备度判断、线索扩展 |
+| [SPMA-design-03](../docs/designs/SPMA-design-03-code-worker.md) | Code Agent：ripgrep实时搜索、搜索词构造、渐进式回退 |
+| [SPMA-design-04](../docs/designs/SPMA-design-04-sql-worker.md) | SQL Agent：Schema RAG→LLM SQL→Guard→执行→语义验证 |
+| [SPMA-design-05](../docs/designs/SPMA-design-05-data-ingestion.md) | 数据摄入管道：三源数据离线/异步摄入 |
+| [SPMA-design-06](../docs/designs/SPMA-design-06-infrastructure.md) | 基础设施：技术选型、降级策略、安全、测试、部署 |
+| [SPMA-design-07](../docs/designs/SPMA-design-07-agent-architecture.md) | 5独立Agent架构：收敛契约、质量函数、状态管理 |
 | [API-00~06](../docs/API-00-overview.md) | API 契约：REST API、Agent通信协议、Worker契约、基础设施契约 |
 | [SPMA-technology-selection](../docs/SPMA-technology-selection.md) | 技术选型清单：20个技术维度深度对比 |
 

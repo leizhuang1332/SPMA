@@ -1,7 +1,7 @@
 # API 契约：Agent 间通信协议
 
-> 所属项目：[SPMA 全局概览](../SPMA-design-00-global-overview.md)
-> 权威架构：[5独立Agent架构设计](../SPMA-design-07-agent-architecture.md)
+> 所属项目：[SPMA 全局概览](designs/SPMA-design-00-global-overview.md)
+> 权威架构：[5独立Agent架构设计](designs/SPMA-design-07-agent-architecture.md)
 > 契约边界：**Supervisor Agent ↔ Worker Agents (Doc/Code/SQL) ↔ Synthesis Agent**
 > 协议：LangGraph Send API + Pydantic TypedDict
 > 版本：1.0

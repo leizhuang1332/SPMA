@@ -1,6 +1,6 @@
 # API 契约：Worker Agent 输入输出
 
-> 所属项目：[SPMA 全局概览](../SPMA-design-00-global-overview.md)
+> 所属项目：[SPMA 全局概览](designs/SPMA-design-00-global-overview.md)
 > 契约边界：**Doc Agent / Code Agent / SQL Agent 的内部 I/O Schema**
 > 版本：1.0
 
