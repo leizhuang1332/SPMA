@@ -1,36 +1,27 @@
 """Doc Agent 专属状态定义。"""
 
-from spma.models.agent_state import AgentState
-from spma.models.entities import WorkerEntities
+from typing import TypedDict, NotRequired
 
 
-class BM25Hit(dict):
-    """BM25 检索命中。doc_id, chunk_id, rank, score, snippet, metadata"""
-    pass
-
-
-class VectorHit(dict):
-    """向量检索命中。doc_id, chunk_id, rank, score, snippet, metadata"""
-    pass
-
-
-class FusedResult(dict):
-    """RRF 融合后结果。doc_id, chunk_id, rrf_score, bm25_rank, vector_rank, snippet, metadata"""
-    pass
-
-
-class DocAgentState(AgentState, total=False):
-    """Doc Agent 专属状态字段。"""
-
-    query: str
+class DocAgentState(TypedDict, total=False):
     original_query: str
-    entities: WorkerEntities
-    action: str
-    bm25_candidates: list[BM25Hit]
-    vector_candidates: list[VectorHit]
-    fused_results: list[FusedResult]
-    weight_mode: str
-    assessment: str
+    entities: dict
     max_rounds: int
     timeout_ms: int
-    token_budget: int
+
+    round: int
+    current_query: str
+    weight_mode: str
+    bm25_candidates: list[dict]
+    vector_candidates: list[dict]
+    fused_results: list[dict]
+    accumulated_results: list[dict]
+
+    assessment: str
+    convergence_reason: str
+    has_exact_match: bool
+    hyde_enabled: bool
+
+    final_results: list[dict]
+    rounds_used: int
+    total_latency_ms: int
