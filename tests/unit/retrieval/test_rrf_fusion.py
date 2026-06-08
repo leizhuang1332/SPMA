@@ -75,3 +75,10 @@ class TestWeightedFusion:
 
         # SQL 的 "z" 虽然分数低，但权重 1.2 拉高了 RRF 分
         assert len(fused) == 3
+        # z (weight 1.2, rank 0) should outrank y (weight 1.0, rank 1)
+        assert fused[0]["chunk_id"] == "z", "z with higher weight should rank first"
+        z_rrf = next(r["rrf_score"] for r in fused if r["chunk_id"] == "z")
+        y_rrf = next(r["rrf_score"] for r in fused if r["chunk_id"] == "y")
+        assert z_rrf > y_rrf, (
+            f"z ({z_rrf}) with weight 1.2 should outrank y ({y_rrf}) with weight 1.0"
+        )

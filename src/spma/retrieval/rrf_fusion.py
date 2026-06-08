@@ -8,6 +8,35 @@ k=60 为标准选择（学界和工业界验证的最稳健常数）。
 """
 
 
+def _accumulate_rrf(
+    item: dict,
+    rank: int,
+    weight: float,
+    rrf_scores: dict[str, float],
+    best_meta: dict[str, dict],
+    k: int,
+) -> None:
+    """累加单个条目的 RRF 分数并记录最佳元数据。"""
+    cid = item["chunk_id"]
+    rrf_scores[cid] = rrf_scores.get(cid, 0) + weight / (k + rank)
+    if cid not in best_meta:
+        best_meta[cid] = dict(item)
+
+
+def _build_results(
+    rrf_scores: dict[str, float],
+    best_meta: dict[str, dict],
+    top_k: int,
+) -> list[dict]:
+    """对累积的 RRF 分数排序并构建最终结果列表。"""
+    sorted_chunks = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
+    results = []
+    for cid, rrf_score in sorted_chunks[:top_k]:
+        entry = {"chunk_id": cid, "rrf_score": rrf_score, **best_meta[cid]}
+        results.append(entry)
+    return results
+
+
 def equal_weight_fusion(
     source_a: list[dict],
     source_b: list[dict],
@@ -29,24 +58,12 @@ def equal_weight_fusion(
     best_meta: dict[str, dict] = {}
 
     for rank, item in enumerate(source_a):
-        cid = item["chunk_id"]
-        rrf_scores[cid] = rrf_scores.get(cid, 0) + 1 / (k + rank)
-        if cid not in best_meta:
-            best_meta[cid] = dict(item)
+        _accumulate_rrf(item, rank, 1.0, rrf_scores, best_meta, k)
 
     for rank, item in enumerate(source_b):
-        cid = item["chunk_id"]
-        rrf_scores[cid] = rrf_scores.get(cid, 0) + 1 / (k + rank)
-        if cid not in best_meta:
-            best_meta[cid] = dict(item)
+        _accumulate_rrf(item, rank, 1.0, rrf_scores, best_meta, k)
 
-    sorted_chunks = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
-    results = []
-    for cid, rrf_score in sorted_chunks[:top_k]:
-        entry = {"chunk_id": cid, "rrf_score": rrf_score, **best_meta[cid]}
-        results.append(entry)
-
-    return results
+    return _build_results(rrf_scores, best_meta, top_k)
 
 
 def weighted_fusion(
@@ -77,15 +94,6 @@ def weighted_fusion(
 
         for item in group:
             rank = item.get("worker_rank", 0)
-            cid = item["chunk_id"]
-            rrf_scores[cid] = rrf_scores.get(cid, 0) + w / (k + rank)
-            if cid not in best_meta:
-                best_meta[cid] = dict(item)
+            _accumulate_rrf(item, rank, w, rrf_scores, best_meta, k)
 
-    sorted_chunks = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
-    results = []
-    for cid, rrf_score in sorted_chunks[:top_k]:
-        entry = {"chunk_id": cid, "rrf_score": rrf_score, **best_meta[cid]}
-        results.append(entry)
-
-    return results
+    return _build_results(rrf_scores, best_meta, top_k)
