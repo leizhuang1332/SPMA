@@ -1,0 +1,26 @@
+# config/doc_weights.yaml
+weights:
+  precise:
+    bm25: 0.8
+    vector: 0.2
+  semantic:
+    bm25: 0.2
+    vector: 0.8
+  hybrid:
+    bm25: 0.5
+    vector: 0.5
+
+rrf:
+  k: 60
+
+hyde:
+  max_query_chars: 30
+  min_entity_completeness: partial
+  parallel: true
+  target: vector_only
+
+thresholds:
+  vector_similarity_converge: 0.85
+  min_results_converge: 5
+  max_rounds: 3
+  timeout_ms: 2000
