@@ -139,7 +139,7 @@ async def sql_query_confirm(req: ConfirmRequest):
     """确认闸门端点——用户确认后继续执行。"""
     from spma.infrastructure.state_store import confirmation_store
 
-    entry = confirmation_store.load(req.confirmation_token)
+    entry = await confirmation_store.load(req.confirmation_token)
     if entry is None:
         return {
             "status": "error",
@@ -150,7 +150,7 @@ async def sql_query_confirm(req: ConfirmRequest):
 
     if req.action == "modify":
         original_query = entry["original_query"]
-        confirmation_store.delete(req.confirmation_token)
+        await confirmation_store.delete(req.confirmation_token)
         return {
             "status": "completed",
             "message": f"查询已修改，请用新查询重新发起请求: {req.modified_query or original_query}",
