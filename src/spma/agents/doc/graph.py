@@ -13,7 +13,7 @@ from spma.agents.doc.state import DocAgentState
 from spma.agents.doc.retriever import route_retrieval_mode
 from spma.agents.doc.completeness import assess_completeness
 from spma.agents.doc.clue_expander import rule_based_expand, llm_based_expand
-from spma.retrieval.rrf_fusion import equal_weight_fusion
+from spma.retrieval.rrf_fusion import weighted_fusion
 
 
 def build_doc_agent_graph(es_client, vector_store, embedder, llm, hyde_llm=None, weights_config=None):
@@ -53,7 +53,18 @@ def build_doc_agent_graph(es_client, vector_store, embedder, llm, hyde_llm=None,
                 pass
 
         all_vector = list(vector_results) + hyde_results
-        fused = equal_weight_fusion(source_a=bm25_results, source_b=all_vector, top_k=10, k=wc.get("rrf", {}).get("k", 60))
+
+        # Get mode-specific weights for weighted RRF fusion
+        mode_weights = wc.get("weights", {}).get(mode, {"bm25": 0.5, "vector": 0.5})
+
+        # Tag results with source_type for weighted fusion
+        for r in bm25_results:
+            r["source_type"] = "bm25"
+        for r in all_vector:
+            r["source_type"] = "vector"
+
+        weights = {"bm25": mode_weights.get("bm25", 0.5), "vector": mode_weights.get("vector", 0.5)}
+        fused = weighted_fusion([bm25_results, all_vector], weights=weights, top_k=10, k=wc.get("rrf", {}).get("k", 60))
         state["bm25_candidates"] = bm25_results[:20]
         state["vector_candidates"] = all_vector[:20]
         state["fused_results"] = fused

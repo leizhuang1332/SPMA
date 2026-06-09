@@ -2,7 +2,7 @@
 
 from spma.retrieval.rrf_fusion import weighted_fusion
 
-DEFAULT_WORKER_WEIGHTS = {"doc": 1.0, "sql": 1.2, "code": 1.0}
+DEFAULT_WORKER_WEIGHTS = {"prd": 1.0, "sql": 1.2, "code": 1.0}
 
 
 def synthesize_fusion(worker_outputs: list[dict], weights: dict[str, float] | None = None, top_k: int = 20) -> list[dict]:

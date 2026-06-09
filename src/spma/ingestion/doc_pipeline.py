@@ -114,7 +114,7 @@ class DocIngestionPipeline:
         return {
             "chunk_id": chunk.chunk_id,
             "source_id": chunk.source_id,
-            "source_type": chunk.source_type,
+            "source_type": "prd",
             "req_ids": chunk.req_ids,
             "content": chunk.content,
             "doc_type": chunk.doc_type,
