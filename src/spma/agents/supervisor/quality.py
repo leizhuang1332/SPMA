@@ -1,32 +1,39 @@
-"""Supervisor 质量函数——Worker 输出的三维评分。
-
-设计依据: SPMA-design-01 §2 质量函数, SPMA-design-07 §3 质量函数
-"""
+"""Supervisor 质量评分——三维(count+confidence+exact) x query_type权重矩阵。"""
 
 from spma.models.worker_output import WorkerOutput
 
-
-def evaluate_worker_quality(output: WorkerOutput, query_type: str) -> float:
-    """对单个 Worker 输出做三维加权评分 (0-1)。
-
-    维度1: 结果数量 (0-0.3)
-    维度2: Worker自评置信度 (0-0.3)
-    维度3: 精确匹配命中 (0-0.4)
-
-    权重矩阵按 query_type 动态调整 (data_query/search/trace)。
-    """
-    raise NotImplementedError
+QUALITY_WEIGHTS = {
+    "data_query": {"count": 0.3, "confidence": 0.3, "exact_match": 0.4},
+    "search":     {"count": 0.4, "confidence": 0.4, "exact_match": 0.2},
+    "trace":      {"count": 0.2, "confidence": 0.3, "exact_match": 0.5},
+}
 
 
-def should_reschedule(quality_scores: dict[str, float], reschedule_count: int) -> bool:
-    """判断是否需要重调度——有 Worker 评分 < 0.6 且重调度 < 2 次。"""
-    raise NotImplementedError
+def score_worker(worker_output: WorkerOutput, query_type: str) -> float:
+    weights = QUALITY_WEIGHTS.get(query_type, QUALITY_WEIGHTS["search"])
+    result_count = worker_output.get("result_count", 0) or 0
+    count_score = min(1.0, result_count / 3.0) * weights["count"]
+    confidence = worker_output.get("confidence", 0) or 0
+    confidence_score = confidence * weights["confidence"]
+    has_exact = worker_output.get("has_exact_match", False)
+    exact_score = (1.0 if has_exact else 0.0) * weights["exact_match"]
+    return round(count_score + confidence_score + exact_score, 4)
 
 
-def adjust_params(
-    quality_scores: dict[str, float],
+def evaluate_workers(
     worker_outputs: list[WorkerOutput],
-    failed_workers: list[str],
+    query_type: str,
+    threshold: float = 0.6,
 ) -> dict:
-    """重调度时调整检索参数——从成功 Worker 结果中提取桥接实体。"""
-    raise NotImplementedError
+    scores: dict[str, float] = {}
+    passed: list[str] = []
+    failed: list[str] = []
+    for output in worker_outputs:
+        worker_type = output.get("worker_type", "unknown")
+        score = score_worker(output, query_type)
+        scores[worker_type] = score
+        if score >= threshold:
+            passed.append(worker_type)
+        else:
+            failed.append(worker_type)
+    return {"scores": scores, "passed": passed, "failed": failed, "all_pass": len(failed) == 0 and len(passed) > 0}

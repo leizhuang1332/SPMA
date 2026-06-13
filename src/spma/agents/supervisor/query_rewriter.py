@@ -1,34 +1,65 @@
-"""查询改写流水线——6种可插拔改写方案。
+"""Supervisor 查询改写器——标准化、扩展、分解。"""
 
-设计依据: SPMA-design-01 第八节 查询改写设计
-"""
+import json
+import logging
 
-
-async def normalize_query(user_query: str) -> str:
-    """方案1: 标准化——同义词映射表替换。始终开启，~1ms。"""
-    raise NotImplementedError
+logger = logging.getLogger(__name__)
 
 
-async def expand_query(user_query: str) -> list[str]:
-    """方案2: 扩展——LLM生成3-5个相关关键词。始终开启，~300ms。"""
-    raise NotImplementedError
+async def rewrite_queries(
+    query: str,
+    classification: dict,
+    entities: dict,
+    llm,
+    synonym_map: dict | None = None,
+) -> dict[str, str]:
+    result: dict[str, str] = {"original": query}
+    sources = classification.get("sources", [])
+    is_cross_source = classification.get("is_cross_source", False)
+
+    # Short query expansion (<=30 chars)
+    if len(query) <= 30 and llm is not None:
+        try:
+            expanded = await _expand_query(query, llm)
+            if expanded:
+                result["expanded"] = expanded
+        except Exception as e:
+            logger.warning(f"查询扩展失败: {e}")
+
+    # Cross-source decomposition
+    if is_cross_source and len(sources) > 1 and llm is not None:
+        try:
+            sub_queries = await _decompose_query(query, entities, sources, llm)
+            for sq in sub_queries:
+                target = sq.get("target", "")
+                if target in sources:
+                    result[target] = sq.get("query", query)
+        except Exception as e:
+            logger.warning(f"查询分解失败: {e}")
+
+    for source in sources:
+        if source not in result:
+            result[source] = result.get("expanded", query)
+
+    return result
 
 
-async def decompose_query(user_query: str) -> list[dict]:
-    """方案3: 分解——跨源查询时拆分为独立子查询。条件触发，~500ms。"""
-    raise NotImplementedError
+async def _expand_query(query: str, llm) -> str:
+    prompt = f"为以下用户查询生成 3-5 个相关的搜索关键词或术语（仅输出关键词列表，用逗号分隔）。\n查询: {query}\n关键词:"
+    resp = await llm.generate(prompt)
+    keywords = [k.strip() for k in resp.split(",") if k.strip()]
+    return f"{query} {' '.join(keywords[:5])}"
 
 
-async def hyde_generate(user_query: str) -> str:
-    """方案4: HyDE——LLM生成假设性文档用于向量检索。条件触发，~1500ms。"""
-    raise NotImplementedError
-
-
-async def step_back_rewrite(user_query: str) -> str:
-    """方案5: 退一步改写——具体问题→更广泛的背景问题。Phase 3+，~2000ms。"""
-    raise NotImplementedError
-
-
-async def context_aware_rewrite(user_query: str, history: list) -> str:
-    """方案6: 上下文感知改写——多轮对话中指代词消解。Phase 3+。"""
-    raise NotImplementedError
+async def _decompose_query(query: str, entities: dict, sources: list[str], llm) -> list[dict]:
+    entities_str = str({k: v for k, v in entities.items() if v})
+    prompt = f"""将以下复杂查询分解为 2-4 个独立的子查询，每个子查询面向单一数据源。
+已抽取实体: {entities_str}
+可用数据源: {', '.join(sources)}
+用户查询: {query}
+输出 JSON: [{{"query": "子查询", "target": "doc|code|sql"}}, ...]"""
+    resp = await llm.generate(prompt)
+    try:
+        return json.loads(resp)
+    except json.JSONDecodeError:
+        return []
