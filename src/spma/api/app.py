@@ -2,24 +2,140 @@
 
 create_app() → 注册所有路由、中间件、生命周期事件。
 
-设计依据: API-01 端点总览
+设计依据: API-01 端点总览 + Phase 4 hardening design spec §6.3
 """
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Depends, Query
+from pydantic import BaseModel
+
+from spma.infrastructure.degradation import DegradationManager
+from spma.infrastructure.circuit_breaker import get_all_stats, get_circuit_breaker
+from spma.api.dependencies import get_degradation_manager
+
+
+# --- Request/Response Models ---
+
+class DegradationTriggerRequest(BaseModel):
+    level: str  # L0-L5
+    reason: str = "manual trigger"
+    operator: str = "admin"
+
+
+# --- Route Handlers ---
+
+async def get_degradation_status(
+    manager: DegradationManager = Depends(get_degradation_manager),
+):
+    """GET /api/v1/admin/degradation/status — 当前降级状态。"""
+    return manager.get_status()
+
+
+async def trigger_degradation(
+    body: DegradationTriggerRequest,
+    manager: DegradationManager = Depends(get_degradation_manager),
+):
+    """POST /api/v1/admin/degradation/trigger — 手动触发降级。"""
+    valid_levels = ["L0", "L1", "L2", "L3", "L4", "L5"]
+    if body.level not in valid_levels:
+        raise HTTPException(400, f"Invalid level: {body.level}. Must be one of {valid_levels}")
+    await manager.manual_degrade(body.level, body.reason, body.operator)
+    return {"status": "ok", "current_level": manager.current_level}
+
+
+async def recover_degradation(
+    manager: DegradationManager = Depends(get_degradation_manager),
+):
+    """POST /api/v1/admin/degradation/recover — 手动恢复。"""
+    await manager.manual_recover()
+    return {"status": "ok", "current_level": manager.current_level}
+
+
+async def get_degradation_history(
+    limit: int = Query(50, ge=1, le=200),
+    manager: DegradationManager = Depends(get_degradation_manager),
+):
+    """GET /api/v1/admin/degradation/history — 降级历史。"""
+    history = manager.get_history(limit=limit)
+    result = []
+    for h in history:
+        if hasattr(h, '__dict__'):
+            d = {}
+            for k, v in h.__dict__.items():
+                if hasattr(v, 'value'):
+                    d[k] = v.value
+                else:
+                    d[k] = str(v) if not isinstance(v, (int, float, str, list, dict, type(None), bool)) else v
+            result.append(d)
+        else:
+            result.append(h)
+    return result
+
+
+async def list_circuit_breakers():
+    """GET /api/v1/admin/circuit-breakers — 所有熔断器状态。"""
+    stats = get_all_stats()
+    return [
+        {
+            "name": s.name,
+            "state": s.state.value,
+            "failure_count": s.failure_count,
+            "total_failures": s.total_failures,
+            "total_successes": s.total_successes,
+            "opened_at": s.opened_at,
+        }
+        for s in stats
+    ]
+
+
+async def reset_circuit_breaker(name: str):
+    """POST /api/v1/admin/circuit-breakers/{name}/reset — 手动重置熔断器。"""
+    cb = get_circuit_breaker(name)
+    if cb is None:
+        raise HTTPException(404, f"Circuit breaker '{name}' not found")
+    await cb.reset()
+    return {"status": "ok", "name": name, "state": cb.state.value}
 
 
 def create_app() -> FastAPI:
     """创建并配置 FastAPI 应用实例。"""
     app = FastAPI(
         title="SPMA",
-        version="0.1.0",
+        version="0.2.0",
         description="企业级多源RAG智能问答系统",
     )
 
+    # 健康检查
     @app.get("/health")
     async def health_check():
-        """健康检查端点。"""
-        return {"status": "ok", "version": "0.1.0"}
+        return {"status": "ok", "version": "0.2.0"}
+
+    # 管理 API — 降级
+    app.add_api_route(
+        "/api/v1/admin/degradation/status",
+        get_degradation_status, methods=["GET"],
+    )
+    app.add_api_route(
+        "/api/v1/admin/degradation/trigger",
+        trigger_degradation, methods=["POST"],
+    )
+    app.add_api_route(
+        "/api/v1/admin/degradation/recover",
+        recover_degradation, methods=["POST"],
+    )
+    app.add_api_route(
+        "/api/v1/admin/degradation/history",
+        get_degradation_history, methods=["GET"],
+    )
+
+    # 管理 API — 熔断器
+    app.add_api_route(
+        "/api/v1/admin/circuit-breakers",
+        list_circuit_breakers, methods=["GET"],
+    )
+    app.add_api_route(
+        "/api/v1/admin/circuit-breakers/{name}/reset",
+        reset_circuit_breaker, methods=["POST"],
+    )
 
     return app
 
@@ -27,5 +143,4 @@ def create_app() -> FastAPI:
 def main():
     """uvicorn 入口: uv run spma-api"""
     import uvicorn
-
     uvicorn.run("spma.api.app:create_app", host="0.0.0.0", port=8000, factory=True)
