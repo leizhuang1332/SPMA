@@ -25,3 +25,11 @@ agents:
 
   # 降级
   degradation_auto_recovery: true
+
+  # LLM 角色覆盖——运行时切换 provider/model，与 router.set_role() 联动
+  llm_role_overrides: {}
+  # 示例:
+  # llm_role_overrides:
+  #   generation:
+  #     provider: anthropic
+  #     model: claude-sonnet-4-6
