@@ -81,7 +81,7 @@ def _apply_env_overrides(config: LLMConfig) -> LLMConfig:
 def load_llm_config(yaml_path: str) -> LLMConfig:
     """从 YAML 文件加载 LLM 配置，并应用环境变量覆盖。"""
     raw = _load_yaml_config(yaml_path)
-    llm_raw = raw.get("llm")
+    llm_raw = raw.get("llm") or raw.get("spma", {}).get("llm")
     if not llm_raw:
         raise LLMConfigError("缺少 'llm' 配置段")
 

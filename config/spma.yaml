@@ -34,14 +34,63 @@ spma:
   hard_timeout_ms: 10000
 
   llm:
-    classification_model: "claude-haiku-4-5-20251001"
-    generation_model: "claude-sonnet-4-6"
-    completeness_model: "claude-haiku-4-5-20251001"
-    fallback_model: "qwen3-8b-local"
-    local_model_endpoint: "http://vllm.internal:8000/v1"
-    max_retries: 3
-    retry_multiplier_seconds: 0.5
-    max_wait_seconds: 2.0
+    providers:
+      anthropic:
+        type: anthropic
+        api_key: "${ANTHROPIC_API_KEY}"
+        base_url: "https://api.anthropic.com"
+        default_model: "claude-sonnet-4-6"
+
+      deepseek:
+        type: openai_compat
+        api_key: "${DEEPSEEK_API_KEY}"
+        base_url: "https://api.deepseek.com"
+        default_model: "deepseek-v4-pro"
+
+      openai:
+        type: openai_compat
+        api_key: "${OPENAI_API_KEY}"
+        base_url: "https://api.openai.com/v1"
+        default_model: "gpt-4o"
+
+      local_vllm:
+        type: openai_compat
+        api_key: "not-needed"
+        base_url: "http://vllm.internal:8000/v1"
+        default_model: "qwen3-8b-local"
+
+    roles:
+      classification:
+        provider: deepseek
+        model: deepseek-v4-flash
+        max_tokens: 2048
+        temperature: 0.1
+
+      generation:
+        provider: deepseek
+        model: deepseek-v4-pro
+        max_tokens: 4096
+        temperature: 0.3
+        thinking: enabled
+
+      completeness:
+        provider: deepseek
+        model: deepseek-v4-flash
+        max_tokens: 1024
+        temperature: 0.1
+
+      default:
+        provider: deepseek
+        model: deepseek-v4-pro
+
+      fallback:
+        provider: local_vllm
+        model: qwen3-8b-local
+
+    retry:
+      max_retries: 3
+      multiplier_seconds: 0.5
+      max_wait_seconds: 2.0
 
   token_budget:
     single_source_simple: 8
