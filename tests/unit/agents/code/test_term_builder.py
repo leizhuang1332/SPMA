@@ -60,3 +60,11 @@ class TestTermBuilder:
         assert "module" in terms["exact_terms"]
         assert "foo" in terms["exact_terms"]   # first 3 terms → exact
         assert "bar" in terms["fuzzy_terms"]   # terms[3:] → fuzzy
+
+    def test_substring_does_not_trigger_synonym(self):
+        """短子串不应触发同义词映射。比如 '认' 不应触发 '认证' 的同义词。"""
+        entities = {"module": "认"}
+        terms = build_search_terms(entities)
+        assert "auth" not in terms["exact_terms"]
+        assert "authentication" not in terms["exact_terms"]
+        assert "认" in terms["fuzzy_terms"]

@@ -6,6 +6,7 @@
 """
 
 import logging
+import os
 from spma.agents.code.state import SearchTermSet
 
 logger = logging.getLogger(__name__)
@@ -55,8 +56,6 @@ def build_search_terms(
             exact_terms.append(clean)
             # 提取文件名作为 fuzzy term
             if "/" in clean or "\\" in clean:
-                import os
-
                 fname = os.path.splitext(os.path.basename(clean))[0]
                 if fname and fname not in exact_terms:
                     fuzzy_terms.append(fname)
@@ -65,14 +64,21 @@ def build_search_terms(
     for rid in req_ids:
         tag_terms.append(rid)
 
-    # module → 同义词映射
+    # module → 同义词映射（取最长前缀匹配，防止短子串误触发）
     if module:
+        best_key = None
+        best_len = 0
         module_lower = module.lower()
-        for key, terms in synonyms.items():
-            if key in module_lower or module_lower in key:
-                exact_terms.extend(terms[:3])
-                fuzzy_terms.extend(terms[3:])
-                break
+        for key in synonyms:
+            if (module_lower.startswith(key) or key.startswith(module_lower)) and min(len(key), len(module_lower)) >= 2:
+                match_len = min(len(key), len(module_lower))
+                if match_len > best_len:
+                    best_len = match_len
+                    best_key = key
+        if best_key:
+            terms = synonyms[best_key]
+            exact_terms.extend(terms[:3])
+            fuzzy_terms.extend(terms[3:])
         else:
             fuzzy_terms.append(module)
 

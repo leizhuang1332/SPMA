@@ -27,15 +27,18 @@ async def route_repos(
         - route_confidence: str — "high" | "medium" | "low"
     """
     code_refs = entities.get("code_refs", []) or []
-    module = entities.get("module")
+    module = entities.get("module", "")
 
     candidate_repos: set[str] = set()
 
     # 1. code_refs 精确匹配 → 直接定位仓库
-    for ref in code_refs[:3]:
-        matches = await file_path_cache.query_files(ref, limit=5)
-        for m in matches:
-            candidate_repos.add(m["repo_name"])
+    try:
+        for ref in code_refs[:3]:
+            matches = await file_path_cache.query_files(ref, limit=5)
+            for m in matches:
+                candidate_repos.add(m["repo_name"])
+    except Exception:
+        logger.warning("code_refs 路由查询失败，降级到 module 路由", exc_info=True)
 
     if candidate_repos:
         logger.info(f"code_refs 路由: {list(candidate_repos)[:max_candidates]}")
@@ -47,9 +50,12 @@ async def route_repos(
 
     # 2. module 映射 → 查 repo_registry 的 dir_module_map
     if module:
-        matches = await file_path_cache.query_files(module, limit=10)
-        for m in matches:
-            candidate_repos.add(m["repo_name"])
+        try:
+            matches = await file_path_cache.query_files(module, limit=10)
+            for m in matches:
+                candidate_repos.add(m["repo_name"])
+        except Exception:
+            logger.warning("module 路由查询失败，降级到兜底路由", exc_info=True)
 
     if candidate_repos:
         logger.info(f"module 路由: {list(candidate_repos)[:max_candidates]}")
@@ -60,10 +66,18 @@ async def route_repos(
         }
 
     # 3. 兜底：返回所有已注册仓库
-    all_repos = await file_path_cache.list_repos()
-    logger.info(f"兜底路由: {len(all_repos)} repos")
-    return {
-        "candidate_repos": all_repos[:max_candidates],
-        "route_method": "broad_search",
-        "route_confidence": "low",
-    }
+    try:
+        all_repos = await file_path_cache.list_repos()
+        logger.info(f"兜底路由: {len(all_repos)} repos")
+        return {
+            "candidate_repos": all_repos[:max_candidates],
+            "route_method": "broad_search",
+            "route_confidence": "low",
+        }
+    except Exception:
+        logger.warning("兜底 list_repos 查询失败", exc_info=True)
+        return {
+            "candidate_repos": [],
+            "route_method": "broad_search",
+            "route_confidence": "low",
+        }
