@@ -51,7 +51,7 @@ async def generate_sql(
 
     # 如果没有注入 LLM 客户端，使用默认
     if llm_client is None:
-        from spma.llm.clients import chat
+        from spma.llm import chat
         llm_client = chat
 
     response = await llm_client(
@@ -59,7 +59,6 @@ async def generate_sql(
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
-        model="claude-sonnet-4-20250514",
     )
 
     # 清洗输出

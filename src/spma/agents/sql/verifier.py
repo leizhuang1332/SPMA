@@ -103,7 +103,7 @@ async def llm_semantic_verify(
         "passed" 或 "failed: <原因>"
     """
     if llm_client is None:
-        from spma.llm.clients import chat
+        from spma.llm import chat
         llm_client = chat
 
     # 构造样本数据（最多 5 行，避免 token 过大）
