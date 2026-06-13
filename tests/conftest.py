@@ -1,28 +1,51 @@
-"""全局测试 fixtures。
-
-提供的 fixtures:
-- mock_llm: MockLLM 客户端（按预编排序列逐轮返回）
-- test_redis: testcontainers Redis 实例
-- test_pgvector: testcontainers PGVector 实例
-- test_client: FastAPI TestClient
-"""
+"""全局测试 fixtures。"""
 
 import pytest
+from unittest.mock import AsyncMock, MagicMock
+
+
+class MockLLMResponse:
+    """可预编排的 Mock LLM 响应序列。"""
+
+    def __init__(self, response_texts: list[str] | None = None):
+        self._responses = response_texts or ["Mock response"]
+        self._index = 0
+        self.calls: list[dict] = []
+
+    def next(self):
+        result = self._responses[self._index % len(self._responses)]
+        self._index += 1
+        return result
 
 
 @pytest.fixture
 def mock_llm():
     """MockLLM fixture——按预编排响应序列逐轮返回。"""
-    raise NotImplementedError
+    mock = AsyncMock()
+    mock.chat = AsyncMock(return_value="Mock LLM response")
+    mock.ping = AsyncMock(return_value=True)
+    mock.supports_thinking = MagicMock(return_value=False)
+    return mock
 
 
 @pytest.fixture
-def test_redis():
-    """testcontainers Redis 实例——集成测试用。"""
-    raise NotImplementedError
+def mock_router(mock_llm):
+    """Mock LLMRouter fixture——所有 role 路由到同一个 mock provider。"""
+    from spma.llm.router import LLMRouter, LLMConfig
+    from spma.llm.providers.base import ProviderConfig, RoleConfig
 
-
-@pytest.fixture
-def test_pgvector():
-    """testcontainers PGVector 实例——集成测试用。"""
-    raise NotImplementedError
+    config = LLMConfig(
+        providers={
+            "mock": ProviderConfig(type="openai_compat", api_key="sk-test", base_url="https://mock.test"),
+        },
+        roles={
+            "classification": RoleConfig(provider="mock", model="fast-model"),
+            "generation": RoleConfig(provider="mock", model="pro-model"),
+            "completeness": RoleConfig(provider="mock", model="fast-model"),
+            "default": RoleConfig(provider="mock", model="pro-model"),
+            "fallback": RoleConfig(provider="mock", model="fallback-model"),
+        },
+    )
+    router = LLMRouter(config)
+    router._providers["mock"] = mock_llm
+    return router
