@@ -3,16 +3,238 @@
 设计依据: API-01 §2 核心端点
 """
 
+import time
+import uuid
+
 from fastapi import APIRouter
 from pydantic import BaseModel
 
 router = APIRouter()
 
 
+class QueryRequest(BaseModel):
+    query: str
+    session_id: str | None = None
+    conversation_history: str | None = None
+    sources_hint: list[str] | None = None  # ["doc", "code", "sql"]
+
+
 class SqlQueryRequest(BaseModel):
     query: str
     session_id: str | None = None
     auto_confirm: bool = False
+
+
+class QueryResponse(BaseModel):
+    query_id: str
+    status: str
+    answer: str | None = None
+    annotations: list[dict] | None = None
+    worker_results: list[dict] | None = None
+    quality_report: dict | None = None
+    token_usage: dict | None = None
+    latency_ms: int | None = None
+
+
+@router.post("/api/v1/query")
+async def general_query(req: QueryRequest):
+    """通用查询端点——完整 Agent 编排 (Supervisor -> Workers -> Synthesis)。
+
+    Slice 1 演示: 直接分类 + 合成，后续 Slice 接入完整 LangGraph 图。
+    """
+    query_id = str(uuid.uuid4())
+    start_time = time.time()
+    session_id = req.session_id or f"session_{query_id[:8]}"
+
+    # ---- 1. 分类 + 实体抽取 ----
+    from spma.agents.supervisor.classifier_fallback import classify_with_fallback
+    from spma.agents.supervisor.entity_extractor import extract_entities
+    from spma.llm.clients import get_default_llm
+
+    llm = get_default_llm()
+    classification = await classify_with_fallback(
+        query=req.query,
+        primary_llm=llm,
+        conversation_history=req.conversation_history or "",
+    )
+    entities = await extract_entities(req.query, classification, llm)
+
+    # ---- 2. Token 预算管理 ----
+    from spma.llm.token_budget import TokenBudgetManager
+
+    sources = req.sources_hint or classification.get("sources", ["doc"])
+    budget_mgr = TokenBudgetManager(
+        query_type=classification.get("query_type", "search"),
+        num_sources=len(sources),
+    )
+
+    # ---- 3. 查询改写 ----
+    from spma.agents.supervisor.query_rewriter import rewrite_queries
+
+    rewritten = await rewrite_queries(
+        query=req.query,
+        classification=classification,
+        entities=entities,
+        llm=llm,
+    )
+
+    # ---- 4. 派发 Worker (并行) ----
+    import asyncio
+
+    from spma.agents.supervisor.dispatcher import build_dispatches
+
+    dispatches = build_dispatches(
+        classification=classification,
+        entities=entities,
+        rewritten_queries=rewritten,
+        query_id=query_id,
+    )
+
+    worker_outputs: list[dict] = []
+    worker_tasks = []
+
+    for dispatch in dispatches:
+        agent_type = dispatch.metadata.get("agent_type", "doc")
+
+        if not budget_mgr.track_call("workers"):
+            worker_outputs.append({
+                "worker_type": agent_type,
+                "result_count": 0,
+                "confidence": 0,
+                "has_exact_match": False,
+                "error": "token_budget_exhausted",
+            })
+            continue
+
+        async def _run_worker(d=dispatch, at=agent_type) -> dict:
+            if at == "doc":
+                from spma.agents.doc.graph import build_doc_agent_graph
+                g = build_doc_agent_graph(llm)
+                retriever = None  # Slice 2 接入真实 retriever
+                result = await g.ainvoke({
+                    "original_query": req.query,
+                    "rewritten_queries": d.payload.get("queries", [req.query]),
+                    "retriever": retriever,
+                    "query_id": query_id,
+                })
+                return {
+                    "worker_type": at,
+                    "result_count": len(result.get("final_results", [])),
+                    "citations": result.get("final_results", []),
+                    "confidence": result.get("confidence", 0.8),
+                    "has_exact_match": result.get("has_exact_match", False),
+                    "rounds_used": result.get("rounds_used", 1),
+                }
+            elif at == "code":
+                from spma.agents.code.graph import build_code_agent_graph
+                g = build_code_agent_graph(llm)
+                result = await g.ainvoke({
+                    "original_query": req.query,
+                    "rewritten_queries": d.payload.get("queries", [req.query]),
+                    "query_id": query_id,
+                })
+                return {
+                    "worker_type": at,
+                    "result_count": len(result.get("ripgrep_results", [])),
+                    "citations": result.get("ripgrep_results", []),
+                    "confidence": 0.7,
+                    "has_exact_match": result.get("fallback_layer", 99) == 0,
+                    "rounds_used": result.get("rounds_used", 1),
+                }
+            elif at == "sql":
+                return {
+                    "worker_type": at,
+                    "result_count": 0,
+                    "citations": [],
+                    "confidence": 0,
+                    "has_exact_match": False,
+                    "error": "sql_worker_not_implemented",
+                }
+            return {
+                "worker_type": at,
+                "result_count": 0,
+                "citations": [],
+                "confidence": 0,
+                "error": f"unknown_worker_type:{at}",
+            }
+
+        worker_tasks.append(_run_worker())
+
+    if worker_tasks:
+        results = await asyncio.gather(*worker_tasks, return_exceptions=True)
+        for r in results:
+            if isinstance(r, Exception):
+                worker_outputs.append({"error": str(r), "result_count": 0})
+            else:
+                worker_outputs.append(r)
+
+    # ---- 5. 质量评估 ----
+    from spma.agents.supervisor.quality import evaluate_workers
+
+    quality_result = evaluate_workers(
+        worker_outputs,
+        classification.get("query_type", "search"),
+        quality_threshold=0.6,
+    )
+
+    # ---- 6. 合成 (Synthesis Agent) ----
+    from spma.agents.synthesis.graph import build_synthesis_agent_graph
+
+    synthesis_graph = build_synthesis_agent_graph(llm=llm, audit_llm=llm)
+    synthesis_result = await synthesis_graph.ainvoke({
+        "original_query": req.query,
+        "worker_outputs": worker_outputs,
+        "max_rounds": 2,
+        "round": 1,
+    })
+
+    total_latency = int((time.time() - start_time) * 1000)
+
+    # ---- 7. Trace 日志 ----
+    from spma.observability.trace_logger import AgentTraceLogger
+
+    trace_logger = AgentTraceLogger()
+    combined_state = {
+        "session_id": session_id,
+        "original_query": req.query,
+        "classification": classification,
+        "entities": entities,
+        "worker_outputs": worker_outputs,
+        "quality_scores": quality_result.get("scores", {}),
+        "reschedule_count": 0,
+        "total_llm_calls": sum(w.get("rounds_used", 0) for w in worker_outputs),
+        "total_tokens": 0,
+        "convergence_reason": synthesis_result.get("convergence_reason", ""),
+    }
+    await trace_logger.log_query(query_id, combined_state)
+    # 同步写入一轮 round 记录
+    await trace_logger.log_round(query_id, "supervisor", 1, {
+        "action": "classify+dispatch+synthesis",
+        "results": worker_outputs,
+        "assessment": quality_result.get("summary", ""),
+        "confidence": min((s or 0) for s in quality_result.get("scores", {}).values()) if quality_result.get("scores") else 0,
+        "latency_ms": total_latency,
+        "llm_calls": sum(w.get("rounds_used", 0) for w in worker_outputs),
+    })
+
+    return QueryResponse(
+        query_id=query_id,
+        status="completed",
+        answer=synthesis_result.get("final_answer", ""),
+        annotations=synthesis_result.get("annotations", []),
+        worker_results=worker_outputs,
+        quality_report={
+            "scores": quality_result.get("scores", {}),
+            "issues": quality_result.get("issues", []),
+            "confidence": quality_result.get("confidence", 0),
+        },
+        token_usage={
+            "budget": budget_mgr.budget,
+            "used": budget_mgr.used,
+            "remaining": {k: budget_mgr.remaining(k) for k in budget_mgr.budget},
+        },
+        latency_ms=total_latency,
+    )
 
 
 @router.post("/api/v1/sql/query")
