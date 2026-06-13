@@ -65,8 +65,7 @@ async def init_infrastructure(
 
     # 4. 降级动作
     actions = []
-    if llm_client:
-        actions.append(L1LLMDegradation(llm_client))
+    actions.append(L1LLMDegradation())
     actions.append(L2AgentDegradation(ff_service))
     if retrieval_router:
         actions.append(L3RetrievalDegradation(retrieval_router))
