@@ -101,7 +101,17 @@ class RipgrepExecutor:
                     proc = await asyncio.create_subprocess_exec(
                         *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                     )
-                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self._timeout)
+                    try:
+                        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self._timeout)
+                    except asyncio.TimeoutError:
+                        proc.terminate()
+                        try:
+                            await asyncio.wait_for(proc.wait(), timeout=2.0)
+                        except asyncio.TimeoutError:
+                            proc.kill()
+                            await proc.wait()
+                        logger.warning(f"git log timeout for {repo_name} tag={tag}")
+                        continue
                     if proc.returncode == 0:
                         for line in stdout.decode("utf-8", errors="replace").strip().split("\n"):
                             if line:
@@ -113,7 +123,7 @@ class RipgrepExecutor:
                                     "match_type": "gitlog",
                                     "confidence": 0.9 if tag.startswith("author:") else 0.85,
                                 })
-                except (asyncio.TimeoutError, Exception) as e:
+                except Exception as e:
                     logger.warning(f"git log failed for {repo_name} tag={tag}: {e}")
         return results
 
@@ -143,9 +153,19 @@ class RipgrepExecutor:
                 proc = await asyncio.create_subprocess_exec(
                     *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 )
-                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self._timeout)
+                try:
+                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self._timeout)
+                except asyncio.TimeoutError:
+                    proc.terminate()
+                    try:
+                        await asyncio.wait_for(proc.wait(), timeout=2.0)
+                    except asyncio.TimeoutError:
+                        proc.kill()
+                        await proc.wait()
+                    logger.warning(f"rg timeout for {repo_name} term={term}")
+                    continue
                 if proc.returncode not in (0, 1):
-                    logger.warning(f"rg exited {proc.returncode} for {repo_name}: {stderr.decode()[:200]}")
+                    logger.warning(f"rg exited {proc.returncode} for {repo_name}: {stderr.decode('utf-8', errors='replace')[:200]}")
                     continue
 
                 for line in stdout.decode("utf-8", errors="replace").strip().split("\n"):
@@ -168,8 +188,6 @@ class RipgrepExecutor:
                             })
                     except (json.JSONDecodeError, KeyError):
                         continue
-            except asyncio.TimeoutError:
-                logger.warning(f"rg timeout for {repo_name} term={term}")
             except Exception as e:
                 logger.error(f"rg error for {repo_name}: {e}")
 
