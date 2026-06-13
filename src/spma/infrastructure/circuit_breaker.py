@@ -200,6 +200,24 @@ class CircuitBreaker:
 # 全局注册表
 _registry: dict[str, CircuitBreaker] = {}
 
+# 全局默认状态变更回调——所有新熔断器自动注册
+_default_on_state_change: Callable[..., Awaitable[None]] | None = None
+
+
+def set_default_state_change_callback(
+    callback: Callable[..., Awaitable[None]],
+) -> None:
+    """设置全局默认的熔断器状态变更回调。
+
+    设置后，所有新创建的熔断器都会自动注册此回调。
+    已有熔断器也会被更新。
+    """
+    global _default_on_state_change
+    _default_on_state_change = callback
+    # 更新所有已有熔断器
+    for cb in _registry.values():
+        cb._on_state_change = callback
+
 
 def get_circuit_breaker(
     name: str,
@@ -208,7 +226,9 @@ def get_circuit_breaker(
 ) -> CircuitBreaker:
     """获取或创建熔断器实例。幂等——同名返回同一实例。"""
     if name not in _registry:
-        _registry[name] = CircuitBreaker(name, config, on_state_change)
+        # 优先使用传入的回调，否则使用全局默认
+        callback = on_state_change or _default_on_state_change
+        _registry[name] = CircuitBreaker(name, config, callback)
     return _registry[name]
 
 
@@ -239,6 +259,11 @@ def circuit_breaker(
 def get_all_stats() -> list[CircuitBreakerStats]:
     """获取所有熔断器状态（用于管理 API + metrics）。"""
     return [cb.stats for cb in _registry.values()]
+
+
+def has_circuit_breaker(name: str) -> bool:
+    """检查指定名称的熔断器是否已注册。"""
+    return name in _registry
 
 
 def reset_all() -> None:

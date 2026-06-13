@@ -9,7 +9,7 @@ from fastapi import FastAPI, HTTPException, Depends, Query
 from pydantic import BaseModel
 
 from spma.infrastructure.degradation import DegradationManager
-from spma.infrastructure.circuit_breaker import get_all_stats, get_circuit_breaker
+from spma.infrastructure.circuit_breaker import get_all_stats, get_circuit_breaker, has_circuit_breaker
 from spma.api.dependencies import get_degradation_manager
 
 
@@ -89,9 +89,9 @@ async def list_circuit_breakers():
 
 async def reset_circuit_breaker(name: str):
     """POST /api/v1/admin/circuit-breakers/{name}/reset — 手动重置熔断器。"""
-    cb = get_circuit_breaker(name)
-    if cb is None:
+    if not has_circuit_breaker(name):
         raise HTTPException(404, f"Circuit breaker '{name}' not found")
+    cb = get_circuit_breaker(name)
     await cb.reset()
     return {"status": "ok", "name": name, "state": cb.state.value}
 

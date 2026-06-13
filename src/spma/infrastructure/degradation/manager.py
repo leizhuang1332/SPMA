@@ -214,8 +214,13 @@ class DegradationManager:
     def _last_event_time(self, event_type_hint: str) -> float | None:
         """获取指定类型最近事件的时间。"""
         for event in reversed(self._history):
-            if event_type_hint == "recovery" and isinstance(event, RecoveryEvent):
-                return event.timestamp
+            if event_type_hint == "recovery":
+                # 自动恢复: RecoveryEvent
+                if isinstance(event, RecoveryEvent):
+                    return event.timestamp
+                # 手动恢复: DegradationEvent level=L0
+                if isinstance(event, DegradationEvent) and event.level == "L0":
+                    return event.timestamp
             if event_type_hint == "degradation" and isinstance(event, DegradationEvent):
                 if event.level != "L0":
                     return event.timestamp

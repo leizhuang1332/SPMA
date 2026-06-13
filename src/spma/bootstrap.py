@@ -12,7 +12,8 @@ from spma.infrastructure.degradation.actions.l4_cache import L4CacheDegradation
 from spma.infrastructure.degradation.actions.l5_static import L5StaticFallback
 from spma.infrastructure.feature_flags import FeatureFlagService
 from spma.infrastructure.cache import CacheService, get_cache_service
-from spma.infrastructure.audit import AuditLogger, get_audit_logger
+from spma.infrastructure.audit import AuditLogger, get_audit_logger, AuditEvent
+from spma.infrastructure.circuit_breaker import set_default_state_change_callback
 from spma.infrastructure.metrics import degradation_metrics
 from spma.api.dependencies import (
     set_degradation_manager,
@@ -34,7 +35,12 @@ async def init_infrastructure(
     """
 
     # 1. Feature Flag 服务
-    ff_service = FeatureFlagService.from_yaml("config/feature_flags.yaml")
+    import os
+    config_path = os.environ.get(
+        "SPMA_FEATURE_FLAGS_PATH",
+        os.path.join(os.path.dirname(__file__), "..", "..", "config", "feature_flags.yaml"),
+    )
+    ff_service = FeatureFlagService.from_yaml(config_path)
     set_feature_flag_service(ff_service)
 
     # 2. 缓存服务
@@ -43,6 +49,19 @@ async def init_infrastructure(
     # 3. 审计日志
     audit_logger = AuditLogger(db_pool=db_pool)
     await audit_logger.start()
+
+    # 3a. 熔断器状态变更 → 审计日志
+    async def on_circuit_breaker_state_change(name, old_state, new_state):
+        await audit_logger.log(AuditEvent(
+            event_type=f"circuit_breaker.{new_state.value}",
+            details={
+                "breaker_name": name,
+                "old_state": old_state.value,
+                "new_state": new_state.value,
+            },
+        ))
+
+    set_default_state_change_callback(on_circuit_breaker_state_change)
 
     # 4. 降级动作
     actions = []
@@ -60,22 +79,40 @@ async def init_infrastructure(
     # 6. 事件 → 审计日志 + metrics
     async def on_degradation_event(event):
         from spma.infrastructure.audit import AuditEvent
-        event_type = getattr(event, 'event_type', 'degradation.recovered')
-        await audit_logger.log(AuditEvent(
-            event_type=event_type,
-            level=getattr(event, 'level', None),
-            details={
+        from spma.infrastructure.degradation.events import RecoveryEvent
+
+        # 统一提取 event_type、level 和 details
+        if isinstance(event, RecoveryEvent):
+            event_type = "degradation.recovered"
+            level = event.to_level
+            details = {
+                "reason": event.reason,
+                "from_level": event.from_level,
+                "to_level": event.to_level,
+                "checks_passed": event.checks_passed,
+            }
+        else:
+            event_type = getattr(event, 'event_type', 'degradation.triggered')
+            level = getattr(event, 'level', None)
+            details = {
                 "reason": getattr(event, "reason", ""),
                 "previous_level": getattr(event, "previous_level", None),
                 "triggered_by": getattr(event, "triggered_by", "auto"),
                 "operator": getattr(event, "operator", None),
-            },
+            }
+
+        await audit_logger.log(AuditEvent(
+            event_type=event_type,
+            level=level,
+            details=details,
         ))
+
         # 更新 metrics
-        level = getattr(event, 'level', None)
         if level:
-            if hasattr(event, 'event_type') and 'recover' in str(event.event_type):
+            if isinstance(event, RecoveryEvent):
                 degradation_metrics.record_recovery(level)
+            elif hasattr(event, 'event_type') and event.level == "L0":
+                degradation_metrics.record_recovery("L0")
             else:
                 degradation_metrics.record_degradation(level)
 

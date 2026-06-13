@@ -27,3 +27,8 @@ class RecoveryEvent:
     reason: str
     timestamp: float = field(default_factory=time.time)
     checks_passed: int = 0  # 连续健康检查通过次数
+
+    @property
+    def level(self) -> DegradationLevel:
+        """恢复到目标级别，等同于 level 语义，供统一的事件处理使用。"""
+        return self.to_level

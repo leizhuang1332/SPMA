@@ -6,8 +6,7 @@
 设计依据: SPMA-design-06 §5 Agent回滚机制 + API-06 §3 Feature Flags
 """
 
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass
 import logging
 
 logger = logging.getLogger(__name__)
