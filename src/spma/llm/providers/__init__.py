@@ -4,7 +4,7 @@
 通过 name 查找已注册的 provider 实例。
 """
 
-from spma.llm.providers.base import LLMProvider, RoleConfig
+from spma.llm.providers.base import LLMProvider
 
 _registry: dict[str, "LLMProvider"] = {}
 

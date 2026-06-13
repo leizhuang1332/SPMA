@@ -6,6 +6,7 @@ from spma.llm.providers.base import (
     LLMProvider,
     RoleConfig,
     ProviderConfig,
+    RetryConfig,
     LLMRateLimitError,
     LLMServiceError,
     LLMClientError,
@@ -60,7 +61,9 @@ class TestRoleConfig:
 
 class TestProviderConfig:
     def test_minimal_config(self):
-        cfg = ProviderConfig(type="openai_compat", api_key="sk-xxx", base_url="https://api.example.com")
+        cfg = ProviderConfig(
+            type="openai_compat", api_key="sk-xxx", base_url="https://api.example.com"
+        )
         assert cfg.type == "openai_compat"
         assert cfg.api_key == "sk-xxx"
         assert cfg.default_model is None
@@ -77,14 +80,12 @@ class TestProviderConfig:
 
 class TestRetryConfig:
     def test_default_values(self):
-        from spma.llm.providers.base import RetryConfig
         cfg = RetryConfig()
         assert cfg.max_retries == 3
         assert cfg.multiplier_seconds == 0.5
         assert cfg.max_wait_seconds == 2.0
 
     def test_custom_values(self):
-        from spma.llm.providers.base import RetryConfig
         cfg = RetryConfig(max_retries=5, multiplier_seconds=1.0, max_wait_seconds=10.0)
         assert cfg.max_retries == 5
         assert cfg.multiplier_seconds == 1.0
@@ -93,7 +94,6 @@ class TestRetryConfig:
 
 class TestRoleConfigFromDict:
     def test_from_dict_extracts_known_fields(self):
-        from spma.llm.providers.base import RoleConfig
         data = {"provider": "deepseek", "model": "deepseek-v4-pro", "max_tokens": 2048, "temperature": 0.1, "thinking": "enabled"}
         cfg = RoleConfig.from_dict(data)
         assert cfg.provider == "deepseek"
@@ -103,13 +103,11 @@ class TestRoleConfigFromDict:
         assert cfg.thinking == "enabled"
 
     def test_from_dict_unknown_fields_go_to_extra_kwargs(self):
-        from spma.llm.providers.base import RoleConfig
         data = {"provider": "test", "model": "test-model", "custom_param": "custom_value", "another_param": 123}
         cfg = RoleConfig.from_dict(data)
         assert cfg.extra_kwargs == {"custom_param": "custom_value", "another_param": 123}
 
     def test_from_dict_missing_optional_fields(self):
-        from spma.llm.providers.base import RoleConfig
         data = {"provider": "test", "model": "test-model"}
         cfg = RoleConfig.from_dict(data)
         assert cfg.max_tokens == 4096
