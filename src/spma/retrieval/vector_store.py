@@ -4,3 +4,4 @@
 距离: cosine
 能力: 向量检索 + SQL JOIN 元数据过滤（同一事务内）
 """
+from spma.infrastructure.circuit_breaker import circuit_breaker

@@ -8,6 +8,8 @@ from typing import Any
 
 from elasticsearch import AsyncElasticsearch
 
+from spma.infrastructure.circuit_breaker import circuit_breaker
+
 
 class ESClient:
     """Elasticsearch 异步客户端，实现 BM25Interface Protocol。"""
@@ -21,6 +23,7 @@ class ESClient:
         self._client = AsyncElasticsearch(hosts)
         self.index_name = index_name
 
+    @circuit_breaker("elasticsearch")
     async def search(
         self,
         query: str,
