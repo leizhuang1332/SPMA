@@ -218,3 +218,161 @@ class TestAnthropicProvider:
         from langchain_anthropic import ChatAnthropic
         assert isinstance(client, ChatAnthropic)
         assert client.model == "claude-sonnet-4-6"
+
+
+class TestOpenAICompatProvider:
+    @pytest.fixture
+    def provider(self):
+        from spma.llm.providers.openai_compat import OpenAICompatProvider
+        from spma.llm.providers.base import ProviderConfig
+
+        cfg = ProviderConfig(
+            type="openai_compat",
+            api_key="sk-deepseek-test",
+            base_url="https://api.deepseek.com",
+            default_model="deepseek-v4-pro",
+        )
+        return OpenAICompatProvider("test_deepseek", cfg)
+
+    def test_name(self, provider):
+        assert provider.name == "test_deepseek"
+
+    def test_supports_thinking_is_true_for_deepseek(self, provider):
+        assert provider.supports_thinking() is True
+
+    def test_supports_thinking_is_false_for_vllm(self):
+        from spma.llm.providers.openai_compat import OpenAICompatProvider
+        from spma.llm.providers.base import ProviderConfig
+
+        cfg = ProviderConfig(
+            type="openai_compat",
+            api_key="not-needed",
+            base_url="http://vllm.internal:8000/v1",
+            default_model="qwen3-8b-local",
+        )
+        provider = OpenAICompatProvider("test_vllm", cfg)
+        assert provider.supports_thinking() is False
+
+    @pytest.mark.asyncio
+    async def test_chat_returns_text(self, provider):
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Hello from DeepSeek"
+        mock_response.choices = [mock_choice]
+
+        with patch.object(provider, '_client') as mock_client:
+            mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
+            result = await provider.chat(
+                [{"role": "user", "content": "Hi"}],
+                model="deepseek-v4-pro",
+            )
+            assert result == "Hello from DeepSeek"
+
+    @pytest.mark.asyncio
+    async def test_chat_passes_thinking_for_deepseek(self, provider):
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Thinking result"
+        mock_response.choices = [mock_choice]
+
+        with patch.object(provider, '_client') as mock_client:
+            mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
+            await provider.chat(
+                [{"role": "user", "content": "Complex"}],
+                model="deepseek-v4-pro",
+                thinking={"type": "enabled"},
+            )
+            call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+            assert call_kwargs["extra_body"] == {"thinking": {"type": "enabled"}}
+
+    @pytest.mark.asyncio
+    async def test_chat_ignores_thinking_for_vllm(self):
+        from spma.llm.providers.openai_compat import OpenAICompatProvider
+        from spma.llm.providers.base import ProviderConfig
+
+        cfg = ProviderConfig(
+            type="openai_compat",
+            api_key="not-needed",
+            base_url="http://vllm.internal:8000/v1",
+        )
+        provider = OpenAICompatProvider("test_vllm", cfg)
+
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Normal result"
+        mock_response.choices = [mock_choice]
+
+        with patch.object(provider, '_client') as mock_client:
+            mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
+            await provider.chat(
+                [{"role": "user", "content": "Hi"}],
+                model="qwen3-8b",
+                thinking={"type": "enabled"},
+            )
+            call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+            assert "extra_body" not in call_kwargs
+
+    @pytest.mark.asyncio
+    async def test_ping_returns_true(self, provider):
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "pong"
+        mock_response.choices = [mock_choice]
+
+        with patch.object(provider, '_client') as mock_client:
+            mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
+            result = await provider.ping()
+            assert result is True
+
+    @pytest.mark.asyncio
+    async def test_ping_returns_false_on_error(self, provider):
+        with patch.object(provider, '_client') as mock_client:
+            mock_client.chat.completions.create = AsyncMock(
+                side_effect=Exception("connection refused")
+            )
+            result = await provider.ping()
+            assert result is False
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_error_raised(self, provider):
+        import httpx
+
+        with patch.object(provider, '_client') as mock_client:
+            mock_client.chat.completions.create = AsyncMock(
+                side_effect=httpx.HTTPStatusError(
+                    "429 Too Many Requests",
+                    request=MagicMock(),
+                    response=MagicMock(status_code=429, headers={"Retry-After": "2"}),
+                )
+            )
+            with pytest.raises(Exception):
+                await provider.chat([{"role": "user", "content": "Hi"}], model="test")
+
+    @pytest.mark.asyncio
+    async def test_chat_extracts_system_message(self, provider):
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Answer"
+        mock_response.choices = [mock_choice]
+
+        with patch.object(provider, '_client') as mock_client:
+            mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
+            await provider.chat(
+                [
+                    {"role": "system", "content": "You are helpful."},
+                    {"role": "user", "content": "Hi"},
+                ],
+                model="deepseek-v4-pro",
+            )
+            call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+            messages = call_kwargs["messages"]
+            assert messages[0]["role"] == "system"
+            assert messages[0]["content"] == "You are helpful."
+            assert messages[1]["role"] == "user"
+            assert messages[1]["content"] == "Hi"
+
+    def test_get_langchain_client(self, provider):
+        client = provider.get_langchain_client("deepseek-v4-pro")
+        from langchain_openai import ChatOpenAI
+        assert isinstance(client, ChatOpenAI)
+        assert client.model_name == "deepseek-v4-pro"
