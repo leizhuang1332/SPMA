@@ -20,9 +20,6 @@ DEFAULT_TIMEOUT_MS = {
     "hard_limit": 10000,
 }
 
-MODEL_HAIKU = "claude-haiku-4-5-20251001"
-MODEL_SONNET = "claude-sonnet-4-6"
-MODEL_LOCAL_FALLBACK = "qwen3-8b-local"
 
 QUALITY_THRESHOLD = 0.6
 MAX_RESCHEDULE_ATTEMPTS = 2
