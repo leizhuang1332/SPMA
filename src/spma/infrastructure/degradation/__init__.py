@@ -8,8 +8,10 @@ from spma.infrastructure.degradation.events import (
     DegradationLevel,
     RecoveryEvent,
 )
+from spma.infrastructure.degradation.manager import DegradationManager
 
 __all__ = [
+    "DegradationManager",
     "DegradationLevel",
     "DegradationEvent",
     "RecoveryEvent",
