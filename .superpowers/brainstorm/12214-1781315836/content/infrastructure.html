@@ -1,0 +1,178 @@
+<h2>基础设施设计</h2>
+<p class="subtitle">Postgres 冷 Trace 存储 + Agent Dashboard + 告警</p>
+
+<div class="section">
+  <h3>1. Postgres 冷 Trace 存储</h3>
+  <p>参照 <code>SearchLogger</code> 的 async queue + DB write 模式。查询结束后异步写入，不阻塞 Agent 循环。</p>
+
+  <div class="mockup">
+    <div class="mockup-header">agent_traces 表 + agent_rounds 表</div>
+    <div class="mockup-body">
+      <pre style="font-size:11px;line-height:1.6;background:#1a1a2e;color:#e0e0e0;padding:16px;border-radius:8px;">
+<span style="color:#888;">-- 查询级 trace（一次用户查询对应一条）</span>
+CREATE TABLE <strong>agent_traces</strong> (
+    query_id UUID PRIMARY KEY,
+    session_id VARCHAR(255),
+    original_query TEXT NOT NULL,
+    classification JSONB,            <span style="color:#888;">-- ClassificationResult</span>
+    entities JSONB,                  <span style="color:#888;">-- ExtractedEntities</span>
+    rewritten_queries JSONB,         <span style="color:#888;">-- {source: rewritten_query}</span>
+    worker_outputs JSONB,            <span style="color:#888;">-- WorkerOutput[]</span>
+    quality_scores JSONB,            <span style="color:#888;">-- {worker_type: score}</span>
+    reschedule_count INT DEFAULT 0,
+    final_answer TEXT,
+    synthesis_output JSONB,          <span style="color:#888;">-- SynthesisOutput</span>
+    total_latency_ms INT,
+    total_llm_calls INT,
+    total_tokens INT,
+    convergence_reason VARCHAR(255),
+    degradation_level VARCHAR(10),   <span style="color:#888;">-- L0-L5</span>
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+<span style="color:#888;">-- 轮次级 trace（每个 Agent 的每轮状态快照）</span>
+CREATE TABLE <strong>agent_rounds</strong> (
+    id SERIAL PRIMARY KEY,
+    query_id UUID REFERENCES agent_traces(query_id),
+    agent_type VARCHAR(50),          <span style="color:#888;">-- supervisor/doc/code/sql/synthesis</span>
+    round_num INT,
+    action VARCHAR(100),             <span style="color:#888;">-- search/assess/expand/generate/audit</span>
+    results_summary JSONB,           <span style="color:#888;">-- 本轮结果摘要（截断 ≤2KB）</span>
+    assessment VARCHAR(50),
+    confidence FLOAT,
+    latency_ms INT,
+    llm_calls INT,
+    tokens_used INT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_agent_rounds_query ON agent_rounds(query_id, agent_type, round_num);
+CREATE INDEX idx_agent_traces_created ON agent_traces(created_at);</pre>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>TraceLogger 设计</h3>
+  <pre style="font-size:12px;line-height:1.6;background:#f5f5f5;padding:12px;border-radius:8px;">
+<span style="color:#888;"># src/spma/observability/trace_logger.py</span>
+class <strong>AgentTraceLogger</strong>:  <span style="color:#888;"># 参照 SearchLogger 模式</span>
+    def __init__(self, db_pool, max_queue=500)
+    async def start()              <span style="color:#888;"># 启动后台 worker</span>
+    async def log_query(query_id, state_snapshot)  <span style="color:#888;"># 查询结束后写入</span>
+    async def log_round(query_id, agent, round_num, snapshot)  <span style="color:#888;"># 每轮写入</span>
+    async def get_trace(query_id) → AgentTrace  <span style="color:#888;"># 读取完整 trace</span>
+    async def stop()               <span style="color:#888;"># 排空队列后停止</span>
+
+<span style="color:#888;"># 写入时机: Supervisor 图.ainvoke() 返回后 + Synthesis 图返回后</span>
+<span style="color:#888;"># 写入策略: Write-back（异步，不阻塞 Agent 循环）</span>
+<span style="color:#888;"># 延迟目标: 查询结束后 &lt; 5s 内 trace 落库</span></pre>
+</div>
+
+<div class="section">
+  <h3>2. Agent Dashboard（Langfuse + Grafana）</h3>
+  <table style="width:100%;font-size:12px;">
+    <tr><th>面板</th><th>类型</th><th>数据源</th><th>价值</th></tr>
+    <tr style="background:#f5f5f5;">
+      <td><strong>收敛轮次分布</strong></td><td>Histogram per agent</td><td>agent_rounds</td>
+      <td>看哪个 Agent 最"纠结"</td>
+    </tr>
+    <tr>
+      <td><strong>虚假信心率趋势</strong></td><td>Line chart</td><td>agent_rounds (confidence高但无结果)</td>
+      <td>发现 LLM 过度自信</td>
+    </tr>
+    <tr style="background:#f5f5f5;">
+      <td><strong>Token 成本热力图</strong></td><td>Heatmap by query_type</td><td>agent_traces</td>
+      <td>按查询类型看成本分布</td>
+    </tr>
+    <tr>
+      <td><strong>降级/早停率</strong></td><td>Stacked area</td><td>agent_traces.degradation_level</td>
+      <td>看系统健康度</td>
+    </tr>
+    <tr style="background:#f5f5f5;">
+      <td><strong>Supervisor 重调度率</strong></td><td>Gauge</td><td>agent_traces.reschedule_count</td>
+      <td>看编排是否稳定</td>
+    </tr>
+    <tr>
+      <td><strong>意图分类准确率</strong></td><td>Time series</td><td>人工标注 vs 实际分类</td>
+      <td>看分类器质量</td>
+    </tr>
+    <tr style="background:#f5f5f5;">
+      <td><strong>Agent 超时率</strong></td><td>Gauge by agent</td><td>agent_rounds (latency_ms > timeout)</td>
+      <td>看超时趋势</td>
+    </tr>
+    <tr>
+      <td><strong>P50/P95/P99 延迟</strong></td><td>Time series by query_type</td><td>OpenTelemetry → Grafana</td>
+      <td>SLO 监控</td>
+    </tr>
+  </table>
+</div>
+
+<div class="section">
+  <h3>3. 告警规则（prometheus-alerting → alerts.yaml）</h3>
+  <table style="width:100%;font-size:12px;">
+    <tr><th>告警</th><th>条件</th><th>严重级别</th><th>通知通道</th></tr>
+    <tr style="background:#fce4ec;">
+      <td>虚假信心率过高</td><td>滚动1h内虚假信心率 > 15%</td><td><span style="color:#c62828;">🔥 Critical</span></td>
+      <td>PagerDuty</td>
+    </tr>
+    <tr style="background:#fff3e0;">
+      <td>重调度率过高</td><td>滚动1h内重调度率 > 30%</td><td><span style="color:#ef6c00;">⚠️ Warning</span></td>
+      <td>Slack #spma-alerts</td>
+    </tr>
+    <tr style="background:#fff3e0;">
+      <td>Agent 超时率过高</td><td>滚动1h内超时率 > 5%</td><td><span style="color:#ef6c00;">⚠️ Warning</span></td>
+      <td>Slack #spma-alerts</td>
+    </tr>
+    <tr style="background:#fce4ec;">
+      <td>分类准确率下降</td><td>日环比下降 > 10%</td><td><span style="color:#c62828;">🔥 Critical</span></td>
+      <td>Slack + PagerDuty</td>
+    </tr>
+    <tr style="background:#fff3e0;">
+      <td>P95 延迟超标</td><td>滚动30min P95 > 12s</td><td><span style="color:#ef6c00;">⚠️ Warning</span></td>
+      <td>Slack #spma-alerts</td>
+    </tr>
+    <tr style="background:#e3f2fd;">
+      <td>Trace 写入队列满</td><td>队列使用率 > 80%</td><td><span style="color:#1565c0;">ℹ️ Info</span></td>
+      <td>Slack #spma-ops</td>
+    </tr>
+  </table>
+</div>
+
+<div class="section">
+  <h3>4. 整体部署拓扑</h3>
+  <div class="mockup">
+    <div class="mockup-header">Phase 3 完整部署视图</div>
+    <div class="mockup-body">
+      <pre style="font-size:11px;line-height:1.6;background:#1a1a2e;color:#e0e0e0;padding:16px;border-radius:8px;">
+                    <span style="color:#4fc3f7;">┌──────────┐</span>
+                    <span style="color:#4fc3f7;">│  Nginx    │</span>
+                    <span style="color:#4fc3f7;">└─────┬─────┘</span>
+                          │
+               <span style="color:#888;">┌──────────┼──────────┐</span>
+               ▼          ▼          ▼
+        <span style="color:#81c784;">┌────────┐ ┌────────┐ ┌────────┐</span>
+        <span style="color:#81c784;">│FastAPI │ │FastAPI │ │FastAPI │</span>  <span style="color:#888;">(3 副本)</span>
+        <span style="color:#81c784;">│:8000   │ │:8001   │ │:8002   │</span>
+        <span style="color:#81c784;">└───┬────┘ └───┬────┘ └───┬────┘</span>
+            │         │         │
+            ▼         ▼         ▼
+   <span style="color:#888;">┌─────────────────────────────────────┐</span>
+   <span style="color:#888;">│           Redis (State Store)       │</span>
+   <span style="color:#888;">└─────────────────────────────────────┘</span>
+            │         │         │
+            ▼         ▼         ▼
+   <span style="color:#888;">┌────────┐ ┌────────┐ ┌────────┐ ┌──────────┐</span>
+   <span style="color:#888;">│PostgreSQL│ │PGVector│ │Elasticsearch│ │Git Repos│</span>
+   <span style="color:#888;">│(trace+  │ │(向量)  │ │(文档BM25)   │ │(本地磁盘)│</span>
+   <span style="color:#888;">│ metadata)│ │        │ │             │ │         │</span>
+   <span style="color:#888;">└────────┘ └────────┘ └────────┘ └──────────┘</span>
+            │
+            ▼
+   <span style="color:#888;">┌────────────────┐ ┌────────────────┐</span>
+   <span style="color:#888;">│   Langfuse     │ │   Grafana      │</span>
+   <span style="color:#888;">│ (Agent追踪)    │ │ (面板+告警)    │</span>
+   <span style="color:#888;">└────────────────┘ └────────────────┘</span></pre>
+    </div>
+  </div>
+</div>

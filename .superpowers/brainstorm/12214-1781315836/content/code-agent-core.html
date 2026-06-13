@@ -1,0 +1,133 @@
+<h2>Code Agent 设计 — 第 1/3 段：核心循环</h2>
+<p class="subtitle">ripgrep 搜索 → 完备度判断 → AST 扩展循环</p>
+
+<div class="section">
+  <h3>Graph 结构（参照 Doc Agent 模式）</h3>
+  <div class="mockup">
+    <div class="mockup-header">build_code_agent_graph() — 5 节点 + 条件边</div>
+    <div class="mockup-body">
+      <pre style="font-size:12px;line-height:1.6;background:#1a1a2e;color:#e0e0e0;padding:16px;border-radius:8px;">
+<span style="color:#888;"># 参照 Doc Agent 的 route→search→aggregate→assess→expand 模式</span>
+<span style="color:#888;"># Code Agent: route → search → assess → [expand → search] 循环</span>
+
+<span style="color:#f0c040;">graph = StateGraph(CodeAgentState)</span>
+
+<span style="color:#4fc3f7;">graph.add_node("route", route_node)</span>          <span style="color:#888;"># Phase 0: 仓库路由</span>
+<span style="color:#4fc3f7;">graph.add_node("search", search_node)</span>        <span style="color:#888;"># Phase 1+2: 搜索词构造 + ripgrep</span>
+<span style="color:#4fc3f7;">graph.add_node("assess", assess_node)</span>        <span style="color:#888;"># 完备度判断 (L1/L2/L3)</span>
+<span style="color:#4fc3f7;">graph.add_node("expand", expand_node)</span>        <span style="color:#888;"># AST 调用图扩展</span>
+
+<span style="color:#4fc3f7;">graph.set_entry_point("route")</span>
+<span style="color:#4fc3f7;">graph.add_edge("route", "search")</span>
+<span style="color:#4fc3f7;">graph.add_edge("search", "assess")</span>
+<span style="color:#4fc3f7;">graph.add_conditional_edges("assess", should_continue,</span>
+<span style="color:#4fc3f7;">    {"expand": "expand", "END": END})</span>
+<span style="color:#4fc3f7;">graph.add_edge("expand", "search")</span></pre>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>5 个节点的职责</h3>
+  <table style="width:100%;font-size:14px;">
+    <tr>
+      <th style="text-align:left;padding:8px;">节点</th>
+      <th style="text-align:left;padding:8px;">职责</th>
+      <th style="text-align:left;padding:8px;">LLM?</th>
+      <th style="text-align:left;padding:8px;">关键输出</th>
+    </tr>
+    <tr style="background:#f5f5f5;">
+      <td style="padding:8px;"><strong>route</strong></td>
+      <td style="padding:8px;">file_path_cache 查表 → 确定候选仓库（500→5）</td>
+      <td style="padding:8px;">❌</td>
+      <td style="padding:8px;">candidate_repos[]</td>
+    </tr>
+    <tr>
+      <td style="padding:8px;"><strong>search</strong></td>
+      <td style="padding:8px;">搜索词构造 + ripgrep 分层执行（首次走 exact，后续走当前 fallback_layer）</td>
+      <td style="padding:8px;">按需(Haiku翻译)</td>
+      <td style="padding:8px;">ripgrep_results[], fallback_layer</td>
+    </tr>
+    <tr style="background:#f5f5f5;">
+      <td style="padding:8px;"><strong>assess</strong></td>
+      <td style="padding:8px;">L1确定性→L2精确命中→L3 LLM兜底</td>
+      <td style="padding:8px;">仅L3(Haiku)</td>
+      <td style="padding:8px;">assessment, convergence_reason</td>
+    </tr>
+    <tr>
+      <td style="padding:8px;"><strong>expand</strong></td>
+      <td style="padding:8px;">read_file + TreeSitter → calls/called_by/imports</td>
+      <td style="padding:8px;">❌</td>
+      <td style="padding:8px;">expanded_context[], 新搜索词</td>
+    </tr>
+    <tr style="background:#f5f5f5;">
+      <td style="padding:8px;"><strong>should_continue</strong></td>
+      <td style="padding:8px;">条件边：assessment==converge OR round≥max → END</td>
+      <td style="padding:8px;">❌</td>
+      <td style="padding:8px;">"expand" | "END"</td>
+    </tr>
+  </table>
+</div>
+
+<div class="section">
+  <h3>完备度判断——3 级递进（参照 Doc Agent）</h3>
+  <table style="width:100%;font-size:14px;">
+    <tr>
+      <th style="text-align:left;padding:8px;">级别</th>
+      <th style="text-align:left;padding:8px;">条件</th>
+      <th style="text-align:left;padding:8px;">结论</th>
+      <th style="text-align:left;padding:8px;">LLM?</th>
+    </tr>
+    <tr style="background:#e8f5e9;">
+      <td style="padding:8px;"><strong>L1 确定性</strong></td>
+      <td style="padding:8px;">结果≥3 AND code_refs 精确命中</td>
+      <td style="padding:8px;">立即收敛</td>
+      <td style="padding:8px;">❌</td>
+    </tr>
+    <tr style="background:#fff3e0;">
+      <td style="padding:8px;"><strong>L2 调用深度</strong></td>
+      <td style="padding:8px;">结果≥3 AND (call_depth≥2 OR 本轮无新增文件)</td>
+      <td style="padding:8px;">收敛</td>
+      <td style="padding:8px;">❌</td>
+    </tr>
+    <tr style="background:#fce4ec;">
+      <td style="padding:8px;"><strong>L3 LLM 兜底</strong></td>
+      <td style="padding:8px;">以上都不满足</td>
+      <td style="padding:8px;">Haiku 判断充足/不足</td>
+      <td style="padding:8px;">✅ Haiku</td>
+    </tr>
+  </table>
+</div>
+
+<div class="section">
+  <h3>渐进式回退——4 层 fallback_layer</h3>
+  <div class="mockup">
+    <div class="mockup-header">search_node 内部：按 fallback_layer 选择搜索策略</div>
+    <div class="mockup-body">
+      <pre style="font-size:12px;line-height:1.6;background:#1a1a2e;color:#e0e0e0;padding:16px;border-radius:8px;">
+<span style="color:#f0c040;">fallback_layer=0 (exact):</span>  ripgrep -w -F "exact_term" --json
+<span style="color:#f0c040;">  ↓ 结果&lt;3</span>
+<span style="color:#ff8a65;">fallback_layer=1 (stem):</span>   ripgrep -w "stem_split_term" --json
+<span style="color:#ff8a65;">  ↓ 结果&lt;3</span>
+<span style="color:#ef5350;">fallback_layer=2 (fuzzy):</span>  ripgrep -i "fuzzy_pattern" --json
+<span style="color:#ef5350;">  ↓ 结果&lt;3</span>
+<span style="color:#ce93d8;">fallback_layer=3 (llm):</span>    Haiku 生成新搜索词 → ripgrep</pre>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>收敛条件</h3>
+  <pre style="font-size:13px;line-height:1.6;background:#f5f5f5;padding:12px;border-radius:8px;">
+def <strong>should_converge</strong>(state: CodeAgentState) -> bool:
+    # 1. 精确命中 → 直接收敛
+    if state.get("fallback_layer") == 0 and len(state["ripgrep_results"]) >= 3:
+        return True
+    # 2. 调用深度达到上限
+    if state.get("call_depth", 0) >= 2:
+        return True
+    # 3. 本轮无新增文件
+    if state.get("new_files_this_round", 0) == 0:
+        return True
+    return False  # 触发 LLM 完备度判断</pre>
+</div>

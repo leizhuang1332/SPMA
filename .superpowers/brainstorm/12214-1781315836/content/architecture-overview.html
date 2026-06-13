@@ -1,0 +1,155 @@
+<h2>Phase 3: 5-Agent 全链路架构</h2>
+<p class="subtitle">Supervisor → Workers → Synthesis 编排全景图</p>
+
+<div class="section">
+  <h3>核心编排流程</h3>
+  <div class="mockup">
+    <div class="mockup-header">Supervisor 编排循环 (LangGraph StateGraph + Send API)</div>
+    <div class="mockup-body">
+      <pre style="font-size:12px;line-height:1.6;background:#1a1a2e;color:#e0e0e0;padding:16px;border-radius:8px;overflow-x:auto;">
+┌─────────────────────────────────────────────────────────┐
+│                    <span style="color:#f0c040;">用户 Query</span>                              │
+└──────────────────────┬──────────────────────────────────┘
+                       ▼
+┌─────────────────────────────────────────────────────────┐
+│  <span style="color:#4fc3f7;">Supervisor Agent</span> (编排循环, ≤5轮, 5s超时)          │
+│                                                          │
+│  Round 1:                                                │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐              │
+│  │ 意图分类  │→│ 实体抽取  │→│ 查询改写  │              │
+│  └──────────┘  └──────────┘  └──────────┘              │
+│        │                                                │
+│        ▼                                                │
+│  ┌──────────────────────────────────────┐               │
+│  │  <span style="color:#ff8a65;">Send API 并行派发</span> (3 Worker)        │               │
+│  │  ┌─────────┐ ┌─────────┐ ┌────────┐ │               │
+│  │  │Doc Agent│ │Code Agt │ │SQL Agt │ │               │
+│  │  └────┬────┘ └────┬────┘ └───┬────┘ │               │
+│  │       ▼           ▼          ▼      │               │
+│  │  WorkerOutput WorkerOutput WorkerOut│               │
+│  └──────────────────────────────────────┘               │
+│        │                                                │
+│        ▼                                                │
+│  ┌──────────────────────────────────────┐               │
+│  │  <span style="color:#81c784;">质量评分</span> (三维评分 × query_type权重)  │               │
+│  │  score &lt; 0.6 AND round &lt; 2 → <span style="color:#ef5350;">重调度</span>        │               │
+│  │  score ≥ 0.6 OR round ≥ 2 → <span style="color:#81c784;">收敛</span>          │               │
+│  └──────────────────────────────────────┘               │
+└──────────────────────┬──────────────────────────────────┘
+                       ▼
+┌─────────────────────────────────────────────────────────┐
+│  <span style="color:#ce93d8;">Synthesis Agent</span> (fuse → generate → audit)          │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐              │
+│  │ 融合引用  │→│ 生成答案  │→│ 审计校验  │              │
+│  └──────────┘  └──────────┘  └──────────┘              │
+└──────────────────────┬──────────────────────────────────┘
+                       ▼
+┌─────────────────────────────────────────────────────────┐
+│                   <span style="color:#f0c040;">最终答案 + 溯源引用</span>                 │
+└─────────────────────────────────────────────────────────┘</pre>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>关键数据流</h3>
+  <table style="width:100%;font-size:14px;">
+    <tr>
+      <th style="text-align:left;padding:8px;">阶段</th>
+      <th style="text-align:left;padding:8px;">输入</th>
+      <th style="text-align:left;padding:8px;">输出</th>
+      <th style="text-align:left;padding:8px;">LLM</th>
+    </tr>
+    <tr style="background:#f5f5f5;">
+      <td style="padding:8px;">意图分类+实体抽取</td>
+      <td style="padding:8px;">原始 query</td>
+      <td style="padding:8px;">ClassificationResult + ExtractedEntities</td>
+      <td style="padding:8px;">Haiku (1次调用)</td>
+    </tr>
+    <tr>
+      <td style="padding:8px;">查询改写</td>
+      <td style="padding:8px;">query + entities</td>
+      <td style="padding:8px;">WorkerDispatch[] (per source)</td>
+      <td style="padding:8px;">Haiku (按需扩展/分解)</td>
+    </tr>
+    <tr style="background:#f5f5f5;">
+      <td style="padding:8px;">Worker 并行执行</td>
+      <td style="padding:8px;">WorkerDispatch[]</td>
+      <td style="padding:8px;">WorkerOutput[] (Send API fan-in)</td>
+      <td style="padding:8px;">各 Agent 内部 LLM</td>
+    </tr>
+    <tr>
+      <td style="padding:8px;">质量评分</td>
+      <td style="padding:8px;">WorkerOutput[], 原始query</td>
+      <td style="padding:8px;">QualityScore[] (确定性代码)</td>
+      <td style="padding:8px;">无</td>
+    </tr>
+    <tr style="background:#f5f5f5;">
+      <td style="padding:8px;">重调度(可选)</td>
+      <td style="padding:8px;">失败Worker + 成功实体</td>
+      <td style="padding:8px;">新WorkerDispatch</td>
+      <td style="padding:8px;">无/Haiku</td>
+    </tr>
+    <tr>
+      <td style="padding:8px;">融合生成</td>
+      <td style="padding:8px;">WorkerOutput[] (跨源)</td>
+      <td style="padding:8px;">最终答案</td>
+      <td style="padding:8px;">Sonnet</td>
+    </tr>
+  </table>
+</div>
+
+<div class="section">
+  <h3>Code Agent 内部循环</h3>
+  <div class="mockup">
+    <div class="mockup-header">Code Agent: ripgrep → 完备度判断 → AST扩展 循环</div>
+    <div class="mockup-body">
+      <pre style="font-size:12px;line-height:1.6;background:#1a1a2e;color:#e0e0e0;padding:16px;border-radius:8px;">
+┌─────────────────────────────────────────┐
+│ WorkerDispatch (entities.search_terms)   │
+└──────────────────┬──────────────────────┘
+                   ▼
+┌─────────────────────────────────────────┐
+│ Phase 0: file_path_cache 路由            │
+│ 500 repos → 5 候选                      │
+└──────────────────┬──────────────────────┘
+                   ▼
+┌─────────────────────────────────────────┐
+│ Phase 1: 搜索词构造                      │
+│ code_refs → exact_terms                 │
+│ module → 中文→英文翻译 → exact_terms     │
+└──────────────────┬──────────────────────┘
+                   ▼
+┌─────────────────────────────────────────┐
+│ Phase 2: ripgrep 分层搜索               │
+│ Layer 1: exact (weight≥0.8)             │
+│   ↓ 不够                                 │
+│ Layer 2: stem_split                     │
+│   ↓ 不够                                 │
+│ Layer 3: fuzzy (0.4≤w&lt;0.8)              │
+│   ↓ 不够                                 │
+│ Layer 4: llm_retry (w&lt;0.4)              │
+└──────────────────┬──────────────────────┘
+                   ▼
+┌─────────────────────────────────────────┐
+│ 完备度判断                               │
+│ 结果≥3 AND (深度≤2 OR 无新增) → 收敛     │
+│ 不够 → AST 调用图扩展 → 回 Phase 1       │
+└──────────────────┬──────────────────────┘
+                   ▼
+              WorkerOutput</pre>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>5 个 Agent 之间的契约</h3>
+  <p>所有 Agent 通过 <code>WorkerDispatch</code> 和 <code>WorkerOutput</code> 通信，确保松耦合：</p>
+  <ul>
+    <li><strong>Supervisor</strong>：生产 WorkerDispatch[], 消费 WorkerOutput[]</li>
+    <li><strong>Doc Agent</strong>：消费 WorkerDispatch(code="doc"), 生产 WorkerOutput</li>
+    <li><strong>Code Agent</strong>：消费 WorkerDispatch(code="code"), 生产 WorkerOutput</li>
+    <li><strong>SQL Agent</strong>：消费 WorkerDispatch(code="sql"), 生产 WorkerOutput</li>
+    <li><strong>Synthesis Agent</strong>：消费 WorkerOutput[], 生产最终答案</li>
+  </ul>
+</div>

@@ -1,0 +1,129 @@
+<h2>Code Agent 设计 — 第 2/3 段：摄入管道</h2>
+<p class="subtitle">Git 仓库管理 + 文件路径缓存 + AST 元数据 + Webhook 增量更新</p>
+
+<div class="section">
+  <h3>摄入管道全景</h3>
+  <div class="mockup">
+    <div class="mockup-header">Code Ingestion Pipeline — 参照 Doc Pipeline 的模式</div>
+    <div class="mockup-body">
+      <pre style="font-size:12px;line-height:1.6;background:#1a1a2e;color:#e0e0e0;padding:16px;border-radius:8px;">
+<span style="color:#888;"># 入口: APScheduler job (同 schema_polling 模式)</span>
+
+┌──────────────────────────────────────────────┐
+│ <span style="color:#4fc3f7;">触发源</span>                                      │
+│ ├─ Webhook (push event) → 10s 防抖          │
+│ ├─ Cron: 每日凌晨全量刷新                      │
+│ └─ 手动: API 触发                             │
+└────────────────────┬─────────────────────────┘
+                     ▼
+┌──────────────────────────────────────────────┐
+│ <span style="color:#f0c040;">git_manager.py</span>                              │
+│ ├─ clone/repo 管理                            │
+│ ├─ git pull (增量同步)                        │
+│ └─ 仓库健康检查                                │
+└────────────────────┬─────────────────────────┘
+                     ▼
+         ┌───────────┴───────────┐
+         ▼                       ▼
+┌─────────────────┐    ┌──────────────────────┐
+│ <span style="color:#81c784;">file_path_cache</span>  │    │ <span style="color:#ce93d8;">ast_parser.py</span>       │
+│ ├─ git ls-files   │    │ ├─ TreeSitter 解析    │
+│ ├─ file_type 推断  │    │ ├─ calls/called_by   │
+│ └─ 写入 DB        │    │ ├─ imports           │
+└────────┬──────────┘    │ └─ 写入 code_metadata│
+         │                └──────────┬───────────┘
+         │                           │
+         ▼                           ▼
+┌──────────────────────────────────────────────┐
+│ <span style="color:#ff8a65;">PostgreSQL</span>                                  │
+│ ├─ file_path_cache 表 (repo, file_path, type)│
+│ ├─ code_metadata 表 (calls/called_by/imports)│
+│ └─ repo_registry 表 (dir→module 映射)         │
+└──────────────────────────────────────────────┘</pre>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>4 个核心组件</h3>
+  <table style="width:100%;font-size:14px;">
+    <tr>
+      <th style="text-align:left;padding:8px;">文件</th>
+      <th style="text-align:left;padding:8px;">职责</th>
+      <th style="text-align:left;padding:8px;">关键接口</th>
+    </tr>
+    <tr style="background:#f5f5f5;">
+      <td style="padding:8px;"><strong>git_manager.py</strong></td>
+      <td style="padding:8px;">git clone / pull / Webhook 接收</td>
+      <td style="padding:8px;"><code>clone_repo(url) → path</code><br><code>pull_repo(name)</code><br><code>handle_webhook(payload)</code></td>
+    </tr>
+    <tr>
+      <td style="padding:8px;"><strong>file_path_cache.py</strong></td>
+      <td style="padding:8px;">git ls-files → DB 缓存</td>
+      <td style="padding:8px;"><code>build_cache(repo) → int</code><br><code>query_files(keyword) → list</code><br><code>incremental_update(changed_files)</code></td>
+    </tr>
+    <tr style="background:#f5f5f5;">
+      <td style="padding:8px;"><strong>ast_parser.py</strong></td>
+      <td style="padding:8px;">TreeSitter 解析 → 调用图</td>
+      <td style="padding:8px;"><code>parse_file(path, lang) → ASTResult</code><br><code>extract_call_graph(ast) → CallsGraph</code></td>
+    </tr>
+    <tr>
+      <td style="padding:8px;"><strong>gitlog_req_extractor.py</strong></td>
+      <td style="padding:8px;">commit message 匹配 REQ-XXXXX</td>
+      <td style="padding:8px;"><code>extract_req_links(repo) → dict</code><br><code>get_files_for_req(req_id) → list</code></td>
+    </tr>
+  </table>
+</div>
+
+<div class="section">
+  <h3>数据库表设计（新增 3 张表）</h3>
+  <pre style="font-size:13px;line-height:1.6;background:#f5f5f5;padding:12px;border-radius:8px;">
+<span style="color:#888;">-- 文件路径缓存——供 repo_router 快速定位</span>
+CREATE TABLE <strong>file_path_cache</strong> (
+    id SERIAL PRIMARY KEY,
+    repo_name VARCHAR(255) NOT NULL,
+    file_path TEXT NOT NULL,
+    file_type VARCHAR(50),        <span style="color:#888;">-- py, java, go, ts, ...</span>
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(repo_name, file_path)
+);
+CREATE INDEX idx_fpc_file_path ON file_path_cache USING gin(file_path gin_trgm_ops);
+
+<span style="color:#888;">-- 代码元数据——AST 调用图</span>
+CREATE TABLE <strong>code_metadata</strong> (
+    id SERIAL PRIMARY KEY,
+    repo_name VARCHAR(255) NOT NULL,
+    file_path TEXT NOT NULL,
+    function_name VARCHAR(255),
+    calls JSONB DEFAULT '[]',      <span style="color:#888;">-- [{"func": "x", "file": "y.py"}]</span>
+    called_by JSONB DEFAULT '[]',
+    imports JSONB DEFAULT '[]',
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(repo_name, file_path, function_name)
+);
+
+<span style="color:#888;">-- 仓库注册表——目录→模块映射</span>
+CREATE TABLE <strong>repo_registry</strong> (
+    id SERIAL PRIMARY KEY,
+    repo_name VARCHAR(255) NOT NULL UNIQUE,
+    repo_url TEXT NOT NULL,
+    local_path TEXT NOT NULL,
+    dir_module_map JSONB DEFAULT '{}', <span style="color:#888;">-- {"src/auth/": "认证模块"}</span>
+    languages JSONB DEFAULT '[]',      <span style="color:#888;">-- ["python", "typescript"]</span>
+    last_indexed_at TIMESTAMPTZ,
+    enabled BOOLEAN DEFAULT true
+);</pre>
+</div>
+
+<div class="section">
+  <h3>Webhook 增量更新流程</h3>
+  <pre style="font-size:13px;line-height:1.6;background:#f5f5f5;padding:12px;border-radius:8px;">
+1. Git push → Webhook POST 到达
+2. <strong>git_manager.handle_webhook()</strong> 解析 payload，提取 repo_name + changed_files
+3. <strong>10s 防抖</strong>（合并同一 push 的多次 webhook）
+4. <strong>git pull</strong> 仓库到最新
+5. <strong>file_path_cache.incremental_update(changed_files)</strong> → 增量更新路径缓存
+6. <strong>ast_parser.parse_files(changed_files)</strong> → 增量更新调用图
+7. <strong>gitlog_req_extractor.extract_new_links()</strong> → 提取新 commit 的 REQ 关联
+8. 写入 search_logger: "code ingestion: {repo} +{n} files"</pre>
+</div>

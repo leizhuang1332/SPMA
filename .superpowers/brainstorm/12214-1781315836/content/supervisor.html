@@ -1,0 +1,133 @@
+<h2>Supervisor Agent 设计 — 编排循环</h2>
+<p class="subtitle">分类+抽取 → 查询改写 → Send API 并行派发 → 质量评分 → 重调度</p>
+
+<div class="section">
+  <h3>Graph 结构：6 节点 + 条件边</h3>
+  <div class="mockup">
+    <div class="mockup-header">build_supervisor_graph() — LangGraph StateGraph + Send API</div>
+    <div class="mockup-body">
+      <pre style="font-size:11px;line-height:1.6;background:#1a1a2e;color:#e0e0e0;padding:16px;border-radius:8px;">
+<span style="color:#f0c040;">graph = StateGraph(SupervisorState)</span>
+
+<span style="color:#888;"># 节点</span>
+<span style="color:#4fc3f7;">graph.add_node("classify_and_extract", classify_and_extract_node)</span>  <span style="color:#888;"># 共享 Haiku 调用</span>
+<span style="color:#4fc3f7;">graph.add_node("rewrite", rewrite_node)</span>                      <span style="color:#888;"># 查询标准化+扩展+分解</span>
+<span style="color:#4fc3f7;">graph.add_node("dispatch", dispatch_node)</span>                    <span style="color:#888;"># 构造 WorkerDispatch[] → Send()</span>
+<span style="color:#4fc3f7;">graph.add_node("doc_worker", doc_worker_wrapper)</span>              <span style="color:#888;"># 调用 DocAgent 子图</span>
+<span style="color:#4fc3f7;">graph.add_node("code_worker", code_worker_wrapper)</span>            <span style="color:#888;"># 调用 CodeAgent 子图</span>
+<span style="color:#4fc3f7;">graph.add_node("sql_worker", sql_worker_wrapper)</span>              <span style="color:#888;"># 调用 SQLAgent 子图</span>
+<span style="color:#4fc3f7;">graph.add_node("score", score_node)</span>                          <span style="color:#888;"># 三维质量评分 (确定性)</span>
+<span style="color:#4fc3f7;">graph.add_node("reschedule", reschedule_node)</span>                <span style="color:#888;"># 注入 hints → 重派</span>
+
+<span style="color:#888;"># 边</span>
+<span style="color:#4fc3f7;">graph.set_entry_point("classify_and_extract")</span>
+<span style="color:#4fc3f7;">graph.add_edge("classify_and_extract", "rewrite")</span>
+<span style="color:#4fc3f7;">graph.add_edge("rewrite", "dispatch")</span>
+<span style="color:#888;"># dispatch 返回 Send(doc/code/sql_worker) → 并行执行</span>
+<span style="color:#888;"># worker_outputs 通过 operator.add reducer 自动合并</span>
+<span style="color:#4fc3f7;">graph.add_edge("dispatch", "score")</span>
+<span style="color:#4fc3f7;">graph.add_conditional_edges("score", should_reschedule, {</span>
+<span style="color:#4fc3f7;">    "reschedule": "reschedule",</span>
+<span style="color:#4fc3f7;">    "converge": END,</span>
+<span style="color:#4fc3f7;">})</span>
+<span style="color:#4fc3f7;">graph.add_edge("reschedule", "dispatch")</span></pre>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>节点职责矩阵</h3>
+  <table style="width:100%;font-size:13px;">
+    <tr><th>节点</th><th>LLM?</th><th>关键逻辑</th><th>输出字段</th></tr>
+    <tr style="background:#f5f5f5;">
+      <td><strong>classify_and_extract</strong></td>
+      <td>✅ Haiku 1次</td>
+      <td>单次 LLM 调用同时输出分类+实体<br>规则兜底: 正则+关键词</td>
+      <td>classification, entities</td>
+    </tr>
+    <tr>
+      <td><strong>rewrite</strong></td>
+      <td>按需 Haiku</td>
+      <td>同义词映射 → 标准化<br>短query(≤30字) → 扩展3-5词<br>跨源 → 分解为子查询</td>
+      <td>rewritten_queries, expanded_terms</td>
+    </tr>
+    <tr style="background:#f5f5f5;">
+      <td><strong>dispatch</strong></td>
+      <td>❌</td>
+      <td>按 classification.sources 构造<br>WorkerDispatch[] → Send() 并行派发</td>
+      <td>Send(doc_worker), Send(code_worker), Send(sql_worker)</td>
+    </tr>
+    <tr>
+      <td><strong>doc/code/sql_worker</strong></td>
+      <td>各Agent内部</td>
+      <td>调用编译好的子图 .ainvoke()<br>超时 → 返回部分结果+降级标注</td>
+      <td>worker_outputs (reducer 合并)</td>
+    </tr>
+    <tr style="background:#f5f5f5;">
+      <td><strong>score</strong></td>
+      <td>❌</td>
+      <td>三维评分: count+confidence+exact<br>× query_type 权重矩阵</td>
+      <td>quality_scores</td>
+    </tr>
+    <tr>
+      <td><strong>reschedule</strong></td>
+      <td>仅构造hints</td>
+      <td>从成功Worker提取实体<br>注入失败Worker → 重派</td>
+      <td>reschedule_count++, hints_from_other_workers</td>
+    </tr>
+  </table>
+</div>
+
+<div class="section">
+  <h3>分类+实体抽取（共享 Haiku 调用）</h3>
+  <p>这是整个流程中最重要的 LLM 调用。一次 Haiku 调用，<code>with_structured_output</code> 同时产出两份结果：</p>
+  <pre style="font-size:12px;line-height:1.6;background:#f5f5f5;padding:12px;border-radius:8px;">
+classify_and_extract(query) → (ClassificationResult, ExtractedEntities):
+    1. Haiku + with_structured_output → 同时输出两个 Pydantic 模型
+    2. 规则兜底: 4条硬规则逐条检查——有遗漏则补刀
+       - 含"多少/统计/报表" → 补 sql
+       - 含 REQ-XXXXX → 补 doc
+       - 含 .py/.java/.go/函数名 → 补 code
+       - 极短模糊查询(<8字) → 三源全查
+    3. 降级: Haiku 不可用 → Qwen3-8B → 纯规则</pre>
+</div>
+
+<div class="section">
+  <h3>质量评分——三维 × 权重矩阵（确定性代码）</h3>
+  <table style="width:100%;font-size:13px;">
+    <tr><th>维度</th><th>权重</th><th>计算方式</th></tr>
+    <tr style="background:#f5f5f5;"><td><strong>count</strong></td><td>0-0.4</td><td>min(1.0, result_count / 3) × weight</td></tr>
+    <tr><td><strong>confidence</strong></td><td>0-0.4</td><td>Worker 自评 confidence × weight</td></tr>
+    <tr style="background:#f5f5f5;"><td><strong>exact_match</strong></td><td>0-0.5</td><td>has_exact_match ? 1×weight : 0</td></tr>
+  </table>
+  <br>
+  <table style="width:100%;font-size:13px;">
+    <tr><th>query_type</th><th>count</th><th>confidence</th><th>exact_match</th><th>阈值</th></tr>
+    <tr style="background:#e8f5e9;"><td><strong>data_query</strong></td><td>0.3</td><td>0.3</td><td>0.4</td><td>0.6</td></tr>
+    <tr style="background:#fff3e0;"><td><strong>search</strong></td><td>0.4</td><td>0.4</td><td>0.2</td><td>0.6</td></tr>
+    <tr style="background:#e3f2fd;"><td><strong>trace</strong></td><td>0.2</td><td>0.3</td><td>0.5</td><td>0.6</td></tr>
+  </table>
+</div>
+
+<div class="section">
+  <h3>重调度策略</h3>
+  <pre style="font-size:13px;line-height:1.6;background:#f5f5f5;padding:12px;border-radius:8px;">
+def should_reschedule(state) → "reschedule" | "converge":
+    for worker_type, score in state.quality_scores.items():
+        if score < 0.6 and state.reschedule_count < 2:
+            # 从成功 Worker 提取 hints
+            hints = extract_discovered_entities(state.successful_workers)
+            return "reschedule"  # → reschedule_node → dispatch
+    return "converge"  # → END, 流向 Synthesis Agent</pre>
+</div>
+
+<div class="section">
+  <h3>超时与降级路径</h3>
+  <table style="width:100%;font-size:13px;">
+    <tr><th>场景</th><th>触发条件</th><th>行为</th></tr>
+    <tr style="background:#f5f5f5;"><td>Supervisor 5s 超时</td><td>编排循环总耗时 > 5s</td><td>取已完成 Worker 的 best result + "部分结果"标注</td></tr>
+    <tr><td>Code Agent 2s 超时</td><td>Code Agent 子图 > 2s</td><td>返回当前 round 的 ripgrep_results + degradation=L2</td></tr>
+    <tr style="background:#f5f5f5;"><td>Haiku 不可用</td><td>API 调用失败</td><td>Qwen3-8B → 纯规则 classification</td></tr>
+    <tr><td>Worker 全部失败</td><td>所有 Worker score < 0.6 且 reschedule≥2</td><td>返回空结果 + "未能检索到相关信息" + 反问建议</td></tr>
+  </table>
+</div>

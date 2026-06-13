@@ -1,0 +1,190 @@
+<h2>Supervisor Prompt 设计</h2>
+<p class="subtitle">4 个核心 Prompt + 结构化输出模型</p>
+
+<div class="section">
+  <h3>Prompt 1: 分类+实体抽取（共享 Haiku 调用）——核心</h3>
+  <p>一次调用同时产出分类和实体，用 <code>with_structured_output</code> 绑定 Pydantic 模型。</p>
+  <div class="mockup">
+    <div class="mockup-header">classification_and_extraction_prompt</div>
+    <div class="mockup-body">
+      <pre style="font-size:11px;line-height:1.6;background:#1a1a2e;color:#e0e0e0;padding:16px;border-radius:8px;overflow-x:auto;">
+<span style="color:#888;"># === 系统角色 ===</span>
+你是一个企业级查询路由器和分析师。你需要同时完成两项任务：
+1. 判断用户问题需要查询哪些数据源
+2. 从问题中抽取结构化的检索实体
+
+<span style="color:#888;"># === 数据源定义 ===</span>
+- <span style="color:#81c784;">doc</span>: PRD文档、产品需求、功能规格、需求变更记录、设计文档
+- <span style="color:#4fc3f7;">code</span>: 代码实现、函数、类、方法、文件路径、bug修复、架构实现
+- <span style="color:#ce93d8;">sql</span>: 业务数据查询、统计报表、指标分析、数据量/频率/趋势
+
+<span style="color:#888;"># === 分类规则（按优先级）===</span>
+1. 含需求ID格式 [REQ-XXXXX] 或 REQ-XXXXX → sources 至少包含 "doc"
+2. 含表名(如 users/orders/products)、列名、SQL关键词(SELECT/GROUP BY) → sources 至少包含 "sql"
+3. 含统计词(多少/数量/占比/趋势/排行/TOP) → sources 至少包含 "sql"
+4. 含文件路径(*.py/*.java/*.go/*.ts)、函数名(带括号调用)、类名、代码关键词(bug/异常/报错/实现) → sources 至少包含 "code"
+5. 含"影响"/"对应"/"关联"/"改了哪些"/"涉及"等跨域关系词 → is_cross_source=true
+6. 极短模糊查询(≤8字)且无明确指向 → 三源全查(sources=["doc","code","sql"]), query_type="search"
+7. 问"为什么"/"怎么做"/"逻辑" → query_type="explain"
+
+<span style="color:#888;"># === 实体抽取规则 ===</span>
+- <span style="color:#f0c040;">req_ids</span>: 匹配 REQ-\d+ 或 "需求XXX" 格式
+- <span style="color:#f0c040;">code_refs</span>: 匹配 *.py, *.java, *.go, *.ts 文件路径; 函数名(下划线/驼峰); 类名(大写开头)
+- <span style="color:#f0c040;">table_names</span>: 匹配已知表名列表 {known_tables}; 中文表名如"用户表"→users
+- <span style="color:#f0c040;">column_names</span>: 匹配已知列名 {known_columns}; 中文列名如"创建时间"→created_at
+- <span style="color:#f0c040;">module</span>: 匹配功能域: 认证/支付/订单/用户/库存/消息/搜索/报表/管理后台
+- <span style="color:#f0c040;">time_range</span>: 匹配时间表达式: "上周"/"本月"/"最近X天"/"2024年X月"/"从X到Y"
+- <span style="color:#f0c040;">person</span>: 匹配人名模式: "XX写的"/"XX改的"/"XX负责"/英文名
+- <span style="color:#f0c040;">version</span>: 匹配版本号: v1.2.3 / 分支名 / "上线版本"
+- <span style="color:#f0c040;">metrics</span>: 匹配指标词: 数量/占比/转化率/增长率/平均值/总额
+- <span style="color:#f0c040;">group_by</span>: 匹配分组词: "按XX分组"/"每个XX"/"各XX"
+- <span style="color:#f0c040;">doc_types</span>: 匹配文档类型: PRD/技术方案/接口文档/上线方案/复盘
+- <span style="color:#f0c040;">未找到的字段</span>: 设为 null 或空列表，不要编造
+
+<span style="color:#888;"># === 用户问题 ===</span>
+{user_query}
+
+<span style="color:#888;"># === 对话历史（如有）===</span>
+{conversation_history}
+
+<span style="color:#888;"># === 输出格式 ===</span>
+严格按以下 JSON Schema 输出：
+{
+  "sources": ["doc", "code", "sql"],    <span style="color:#888;">// 至少1个，最多3个</span>
+  "is_cross_source": true/false,
+  "query_type": "search|data_query|trace|explain",
+  "entities": {
+    "module": "string|null",
+    "req_ids": ["string"],
+    "time_range": "string|null",
+    "version": "string|null",
+    "table_names": ["string"],
+    "column_names": ["string"],
+    "metrics": ["string"],
+    "group_by": "string|null",
+    "code_refs": ["string"],
+    "person": "string|null",
+    "doc_types": ["string"]
+  }
+}</pre>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>Prompt 2: 查询扩展（短查询 ≤30 字时触发）</h3>
+  <div class="mockup">
+    <div class="mockup-header">query_expansion_prompt</div>
+    <div class="mockup-body">
+      <pre style="font-size:11px;line-height:1.6;background:#1a1a2e;color:#e0e0e0;padding:16px;border-radius:8px;">
+你是一个搜索增强助手。用户的查询较短，请生成 3-5 个相关的搜索词或同义表达，
+帮助提高检索召回率。
+
+<span style="color:#888;"># === 规则 ===</span>
+- 保留原查询的核心意图
+- 添加同义词、英文对应词、常见缩写/全称
+- 添加领域术语变体
+- 每个关键词 ≤15 字
+- 只输出关键词列表，用逗号分隔，不要任何解释
+
+<span style="color:#888;"># === 同义词参考（部分）===</span>
+{synonym_examples}
+
+<span style="color:#888;"># === 用户查询 ===</span>
+{query}
+
+关键词:</pre>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>Prompt 3: 跨源查询分解</h3>
+  <div class="mockup">
+    <div class="mockup-header">query_decomposition_prompt</div>
+    <div class="mockup-body">
+      <pre style="font-size:11px;line-height:1.6;background:#1a1a2e;color:#e0e0e0;padding:16px;border-radius:8px;">
+你是一个查询分解专家。用户的查询需要跨多个数据源检索，请将其分解为
+针对每个数据源的独立子查询。
+
+<span style="color:#888;"># === 数据源及其能力 ===</span>
+- <span style="color:#81c784;">doc</span>: 可查 PRD文档、需求规格、设计文档。适合查"XX功能的需求是什么"
+- <span style="color:#4fc3f7;">code</span>: 可查代码实现、函数、文件。适合查"XX功能的代码在哪/怎么实现的"
+- <span style="color:#ce93d8;">sql</span>: 可查数据库表结构、业务数据。适合查"XX表的结构/XX数据有多少"
+
+<span style="color:#888;"># === 分解规则 ===</span>
+- 每个子查询面向单一数据源，使用该数据源的检索术语
+- 保持子查询之间的逻辑关联（例如 doc 子查询找到需求 → code 子查询找对应实现）
+- doc 子查询用中文需求术语；code 子查询用代码标识符；sql 子查询用表名/列名
+- 输出 2-4 个子查询
+
+<span style="color:#888;"># === 已抽取实体 ===</span>
+{entities}
+
+<span style="color:#888;"># === 用户查询 ===</span>
+{query}
+
+<span style="color:#888;"># === 输出（JSON 数组）===</span>
+[{"query": "子查询内容", "target": "doc|code|sql"}, ...]</pre>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>Prompt 4: 上下文感知改写（多轮对话）</h3>
+  <div class="mockup">
+    <div class="mockup-header">context_rewrite_prompt</div>
+    <div class="mockup-body">
+      <pre style="font-size:11px;line-height:1.6;background:#1a1a2e;color:#e0e0e0;padding:16px;border-radius:8px;">
+你是一个多轮对话上下文专家。用户的当前消息可能省略了上文提到的实体，
+请将当前消息重写为自包含的独立查询。
+
+<span style="color:#888;"># === 对话历史 ===</span>
+{conversation_history}
+
+<span style="color:#888;"># === 当前用户消息 ===</span>
+{current_query}
+
+<span style="color:#888;"># === 上一轮抽取的实体 ===</span>
+{previous_entities}
+
+<span style="color:#888;"># === 重写规则 ===</span>
+1. 如果当前消息含"它"/"这个"/"那"/"这些"等指代词 → 替换为上一轮的具体实体
+2. 如果当前消息省略了主语/宾语 → 从上一轮继承
+3. 如果当前消息是全新的独立问题 → 保持原样
+4. 输出: 只输出重写后的完整查询，不要任何解释
+
+重写后的查询:</pre>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>结构化输出 Pydantic 模型</h3>
+  <pre style="font-size:12px;line-height:1.6;background:#f5f5f5;padding:12px;border-radius:8px;">
+from pydantic import BaseModel, Field
+from typing import Literal
+
+class <strong>EntityOutput</strong>(BaseModel):
+    module: str | None = None
+    req_ids: list[str] = Field(default_factory=list)
+    time_range: str | None = None
+    version: str | None = None
+    table_names: list[str] = Field(default_factory=list)
+    column_names: list[str] = Field(default_factory=list)
+    metrics: list[str] = Field(default_factory=list)
+    group_by: str | None = None
+    code_refs: list[str] = Field(default_factory=list)
+    person: str | None = None
+    doc_types: list[str] = Field(default_factory=list)
+
+class <strong>ClassifyAndExtractOutput</strong>(BaseModel):
+    <span style="color:#888;">"""一次 Haiku 调用同时产出的结构化结果"""</span>
+    sources: list[Literal["doc", "code", "sql"]]  <span style="color:#888;"># 1-3个</span>
+    is_cross_source: bool
+    query_type: Literal["search", "data_query", "trace", "explain"]
+    entities: EntityOutput
+
+<span style="color:#888;"># 使用方式</span>
+<span style="color:#888;"># llm.with_structured_output(ClassifyAndExtractOutput).invoke(prompt)</span></pre>
+</div>
