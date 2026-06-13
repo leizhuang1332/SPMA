@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from spma.infrastructure.degradation import DegradationManager
 from spma.infrastructure.circuit_breaker import get_all_stats, get_circuit_breaker, has_circuit_breaker
 from spma.api.dependencies import get_degradation_manager
+from spma.api.routes.llm_admin import router as llm_admin_router
 
 
 # --- Request/Response Models ---
@@ -107,6 +108,9 @@ def create_app() -> FastAPI:
     # 注册查询路由
     from spma.api.routes.query import router as query_router
     app.include_router(query_router)
+
+    # 管理 API — LLM 路由
+    app.include_router(llm_admin_router)
 
     # 健康检查
     @app.get("/health")
