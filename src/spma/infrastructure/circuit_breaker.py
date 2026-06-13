@@ -89,7 +89,7 @@ class CircuitBreaker:
             name=self.name,
             state=self._state,
             failure_count=self._failure_count,
-            success_count=0,
+            success_count=self._total_successes,
             last_failure_time=self._last_failure_time,
             last_success_time=self._last_success_time,
             opened_at=self._opened_at,
