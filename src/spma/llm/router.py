@@ -7,22 +7,23 @@
 4. 支持运行时 set_role() 热切换
 """
 
-import os
 import logging
+import os
 import threading
 from dataclasses import dataclass, field
 
 import yaml
 
-from spma.llm.providers.base import (
-    ProviderConfig,
-    RoleConfig,
-    RetryConfig,
-    LLMConfigError,
-    LLMUnavailableError,
-)
-from spma.llm.providers import register, by_name
+from spma.llm.providers import register
 from spma.llm.providers.anthropic import AnthropicProvider
+from spma.llm.providers.base import (
+    LLMConfigError,
+    LLMProvider,
+    LLMUnavailableError,
+    ProviderConfig,
+    RetryConfig,
+    RoleConfig,
+)
 from spma.llm.providers.openai_compat import OpenAICompatProvider
 
 logger = logging.getLogger(__name__)
@@ -45,7 +46,7 @@ class LLMConfig:
 
 def _load_yaml_config(path: str) -> dict:
     """加载 YAML 配置文件。"""
-    with open(path, "r") as f:
+    with open(path) as f:
         return yaml.safe_load(f) or {}
 
 
@@ -145,7 +146,7 @@ class LLMRouter:
         self._lock = threading.RLock()
         self._config = config
         self._roles: dict[str, RoleConfig] = dict(config.roles)
-        self._providers: dict[str, "LLMProvider"] = {}
+        self._providers: dict[str, LLMProvider] = {}
 
         for pname, pcfg in config.providers.items():
             factory = _PROVIDER_FACTORIES.get(pcfg.type)
@@ -181,8 +182,8 @@ class LLMRouter:
 
         try:
             provider = self._providers[provider_name]
-        except KeyError:
-            raise LLMConfigError(f"Provider '{provider_name}' 不存在")
+        except KeyError as err:
+            raise LLMConfigError(f"Provider '{provider_name}' 不存在") from err
 
         try:
             return await provider.chat(messages, model=resolved_model, **resolved_kwargs)
@@ -203,7 +204,7 @@ class LLMRouter:
                 except Exception as e2:
                     raise LLMUnavailableError(
                         f"fallback provider '{fallback_cfg.provider}' 也失败: {e2}", cause=e2
-                    )
+                    ) from e2
         raise LLMUnavailableError(f"Provider '{provider_name}' 不可用且无可用 fallback")
 
     def set_role(self, role: str, provider: str, model: str, **kwargs) -> None:

@@ -1,7 +1,9 @@
 """⚠️ DEPRECATED: 此模块已废弃，请使用 spma.llm 模块。"""
 
 import warnings
-from spma.llm import chat as _router_chat, get_langchain_client as _router_get_client
+
+from spma.llm import chat as _router_chat
+from spma.llm import get_langchain_client as _router_get_client
 
 
 def get_default_llm():

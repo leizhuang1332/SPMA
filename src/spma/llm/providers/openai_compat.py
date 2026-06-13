@@ -6,16 +6,17 @@ thinking 参数通过 extra_body 传递给 DeepSeek API。
 """
 
 import logging
+
 import httpx
-from openai import AsyncOpenAI
 from langchain_openai import ChatOpenAI
+from openai import AsyncOpenAI
 
 from spma.llm.providers.base import (
+    LLMClientError,
     LLMProvider,
-    ProviderConfig,
     LLMRateLimitError,
     LLMServiceError,
-    LLMClientError,
+    ProviderConfig,
 )
 
 logger = logging.getLogger(__name__)

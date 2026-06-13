@@ -8,7 +8,6 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
-
 # ── 异常类 ──────────────────────────────────────────────────────────────────
 
 class LLMError(Exception):

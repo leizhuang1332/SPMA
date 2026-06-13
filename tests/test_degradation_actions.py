@@ -136,48 +136,96 @@ class MockCacheService:
         return len(self.cached_qa)
 
 
+class MockRouter:
+    """Mock LLMRouter——供 L1 降级测试验证 set_role 调用。"""
+
+    def __init__(self):
+        from spma.llm.providers.base import RoleConfig
+        self._roles = {
+            "generation": RoleConfig(provider="mock_a", model="claude-sonnet"),
+            "fallback": RoleConfig(provider="mock_b", model="qwen3-8b-local"),
+        }
+        self.set_role_calls: list[tuple[str, str, str]] = []
+        self._providers = {}
+
+    def get_role_config(self, role: str):
+        return self._roles.get(role)
+
+    def set_role(self, role: str, provider: str, model: str, **kwargs):
+        self.set_role_calls.append((role, provider, model))
+        from spma.llm.providers.base import RoleConfig
+        self._roles[role] = RoleConfig(provider=provider, model=model)
+
+    def list_roles(self):
+        return dict(self._roles)
+
+
 class TestL1LLMDegradation:
-    """L1: LLM 切换 Sonnet→Qwen3-8B。"""
+    """L1: LLM 切换——通过 router set_role() 实现。"""
+
+    @pytest.fixture
+    def mock_router(self):
+        return MockRouter()
 
     def test_level_is_l1(self):
         from spma.infrastructure.degradation.actions.l1_llm import L1LLMDegradation
-        action = L1LLMDegradation(MockLLMClient())
+        action = L1LLMDegradation()
         assert action.level == "L1"
 
     @pytest.mark.asyncio
-    async def test_health_check_returns_false_when_unhealthy(self):
+    async def test_health_check_returns_false_when_unhealthy(self, monkeypatch):
         from spma.infrastructure.degradation.actions.l1_llm import L1LLMDegradation
-        client = MockLLMClient(healthy=False)
-        action = L1LLMDegradation(client)
+        from unittest.mock import AsyncMock, MagicMock
+
+        router = MockRouter()
+        router._providers["mock_a"] = MagicMock()
+        router._providers["mock_a"].ping = AsyncMock(return_value=False)
+        monkeypatch.setattr("spma.llm.router.LLMRouter.get_instance", lambda: router)
+
+        action = L1LLMDegradation()
         assert await action.health_check() is False
 
     @pytest.mark.asyncio
-    async def test_execute_switches_model(self):
+    async def test_execute_switches_to_fallback(self, mock_router, monkeypatch):
         from spma.infrastructure.degradation.actions.l1_llm import L1LLMDegradation
-        client = MockLLMClient()
-        action = L1LLMDegradation(client)
+        monkeypatch.setattr("spma.llm.router.LLMRouter.get_instance", lambda: mock_router)
+
+        action = L1LLMDegradation()
         await action.execute("LLM timeout > 10%")
-        assert client.model == "qwen3-8b-local"
         assert action.is_active is True
+        assert len(mock_router.set_role_calls) == 1
+        role, provider, model = mock_router.set_role_calls[0]
+        assert role == "generation"
+        assert model == "qwen3-8b-local"
 
     @pytest.mark.asyncio
-    async def test_execute_is_idempotent(self):
+    async def test_execute_is_idempotent(self, mock_router, monkeypatch):
         from spma.infrastructure.degradation.actions.l1_llm import L1LLMDegradation
-        client = MockLLMClient()
-        action = L1LLMDegradation(client)
+        monkeypatch.setattr("spma.llm.router.LLMRouter.get_instance", lambda: mock_router)
+
+        action = L1LLMDegradation()
         await action.execute("first")
         await action.execute("second")
-        assert client.model == "qwen3-8b-local"
+        assert action.is_active is True
+        # Idempotent: second execute returns early without calling set_role again
+        assert len(mock_router.set_role_calls) == 1
 
     @pytest.mark.asyncio
-    async def test_recover_switches_back(self):
+    async def test_recover_switches_back(self, mock_router, monkeypatch):
         from spma.infrastructure.degradation.actions.l1_llm import L1LLMDegradation
-        client = MockLLMClient()
-        action = L1LLMDegradation(client)
+        monkeypatch.setattr("spma.llm.router.LLMRouter.get_instance", lambda: mock_router)
+
+        action = L1LLMDegradation()
         await action.execute("timeout")
         result = await action.recover()
         assert result is True
-        assert client.model == "claude-sonnet"
+        assert action.is_active is False
+        # Expect 2 calls: execute (generation -> fallback) + recover (fallback -> original)
+        assert len(mock_router.set_role_calls) == 2
+        # Last call should restore the original model
+        role, provider, model = mock_router.set_role_calls[-1]
+        assert role == "generation"
+        assert model == "claude-sonnet"
 
 
 class TestL2AgentDegradation:

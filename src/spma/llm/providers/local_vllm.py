@@ -5,8 +5,8 @@
 禁用 thinking mode。
 """
 
-from spma.llm.providers.openai_compat import OpenAICompatProvider
 from spma.llm.providers.base import ProviderConfig
+from spma.llm.providers.openai_compat import OpenAICompatProvider
 
 
 class LocalVLLMProvider(OpenAICompatProvider):

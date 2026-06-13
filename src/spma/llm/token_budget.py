@@ -11,9 +11,8 @@ BUDGET_MATRIX = {
 }
 
 
-class TokenBudgetExhausted(Exception):
+class TokenBudgetExhaustedError(Exception):
     """Token 预算耗尽异常。"""
-    pass
 
 
 class TokenBudgetManager:

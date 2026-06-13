@@ -5,6 +5,7 @@
 """
 
 import logging
+
 from anthropic import AsyncAnthropic
 from langchain_anthropic import ChatAnthropic
 
@@ -58,10 +59,7 @@ class AnthropicProvider(LLMProvider):
                 max_tokens=10,
                 messages=[{"role": "user", "content": "ping"}],
             )
-            for block in response.content:
-                if block.type == "text":
-                    return True
-            return False
+            return any(block.type == "text" for block in response.content)
         except Exception as e:
             logger.warning(f"Anthropic ping 失败: {e}")
             return False
