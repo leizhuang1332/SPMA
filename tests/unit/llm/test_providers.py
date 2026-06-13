@@ -73,3 +73,46 @@ class TestProviderConfig:
             default_model="claude-sonnet-4-6",
         )
         assert cfg.default_model == "claude-sonnet-4-6"
+
+
+class TestRetryConfig:
+    def test_default_values(self):
+        from spma.llm.providers.base import RetryConfig
+        cfg = RetryConfig()
+        assert cfg.max_retries == 3
+        assert cfg.multiplier_seconds == 0.5
+        assert cfg.max_wait_seconds == 2.0
+
+    def test_custom_values(self):
+        from spma.llm.providers.base import RetryConfig
+        cfg = RetryConfig(max_retries=5, multiplier_seconds=1.0, max_wait_seconds=10.0)
+        assert cfg.max_retries == 5
+        assert cfg.multiplier_seconds == 1.0
+        assert cfg.max_wait_seconds == 10.0
+
+
+class TestRoleConfigFromDict:
+    def test_from_dict_extracts_known_fields(self):
+        from spma.llm.providers.base import RoleConfig
+        data = {"provider": "deepseek", "model": "deepseek-v4-pro", "max_tokens": 2048, "temperature": 0.1, "thinking": "enabled"}
+        cfg = RoleConfig.from_dict(data)
+        assert cfg.provider == "deepseek"
+        assert cfg.model == "deepseek-v4-pro"
+        assert cfg.max_tokens == 2048
+        assert cfg.temperature == 0.1
+        assert cfg.thinking == "enabled"
+
+    def test_from_dict_unknown_fields_go_to_extra_kwargs(self):
+        from spma.llm.providers.base import RoleConfig
+        data = {"provider": "test", "model": "test-model", "custom_param": "custom_value", "another_param": 123}
+        cfg = RoleConfig.from_dict(data)
+        assert cfg.extra_kwargs == {"custom_param": "custom_value", "another_param": 123}
+
+    def test_from_dict_missing_optional_fields(self):
+        from spma.llm.providers.base import RoleConfig
+        data = {"provider": "test", "model": "test-model"}
+        cfg = RoleConfig.from_dict(data)
+        assert cfg.max_tokens == 4096
+        assert cfg.temperature == 0.3
+        assert cfg.thinking is None
+        assert cfg.extra_kwargs == {}
