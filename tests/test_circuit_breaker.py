@@ -50,10 +50,13 @@ class TestCircuitBreakerStateMachine:
             await cb.call(lambda: _ok("ok"))
 
     async def test_transitions_to_half_open_after_duration(self):
-        """OPEN 持续时间到达 → HALF_OPEN。"""
+        """OPEN 持续时间到达 → HALF_OPEN → 单次探测成功 → CLOSED。"""
         cb = CircuitBreaker(
             "test",
-            CircuitBreakerConfig(failure_threshold=1, open_duration_seconds=0.01),
+            CircuitBreakerConfig(
+                failure_threshold=1, open_duration_seconds=0.01,
+                half_open_probe_count=1, half_open_success_threshold=1,
+            ),
         )
         with pytest.raises(ValueError):
             await cb.call(lambda: _raise(ValueError("fail")))
@@ -86,6 +89,27 @@ class TestCircuitBreakerStateMachine:
         with pytest.raises(ValueError):
             await cb.call(lambda: _raise(ValueError("fail")))
         assert cb.state == CircuitState.OPEN
+
+    async def test_half_open_requires_multiple_probes_to_close(self):
+        """HALF_OPEN 需要足够多的探测且足够多的成功才关闭。"""
+        cb = CircuitBreaker(
+            "test",
+            CircuitBreakerConfig(
+                failure_threshold=1,
+                open_duration_seconds=0.01,
+                half_open_probe_count=3,
+                half_open_success_threshold=2,
+            ),
+        )
+        with pytest.raises(ValueError):
+            await cb.call(lambda: _raise(ValueError("fail")))
+        await asyncio.sleep(0.02)
+        # HALF_OPEN: 2 次成功, 1 次失败 → 应关闭 (2/3 >= 2)
+        await cb.call(lambda: _ok("ok"))
+        await cb.call(lambda: _ok("ok"))
+        with pytest.raises(ValueError):
+            await cb.call(lambda: _raise(ValueError("fail")))
+        assert cb.state == CircuitState.CLOSED
 
     async def test_manual_reset(self):
         """手动 reset 恢复 CLOSED。"""

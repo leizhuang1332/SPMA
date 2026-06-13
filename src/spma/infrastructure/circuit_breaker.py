@@ -27,8 +27,8 @@ class CircuitState(Enum):
 class CircuitBreakerConfig:
     failure_threshold: int = 5
     open_duration_seconds: float = 30.0
-    half_open_probe_count: int = 1
-    half_open_success_threshold: int = 1
+    half_open_probe_count: int = 3
+    half_open_success_threshold: int = 2
 
 
 @dataclass
@@ -166,8 +166,12 @@ class CircuitBreaker:
             elif self._state == CircuitState.HALF_OPEN:
                 self._half_open_probe_count += 1
                 if self._half_open_probe_count >= self.config.half_open_probe_count:
-                    await self._transition_to(CircuitState.OPEN)
-                    self._opened_at = time.time()
+                    if self._half_open_success_count >= self.config.half_open_success_threshold:
+                        await self._transition_to(CircuitState.CLOSED)
+                        self._failure_count = 0
+                    else:
+                        await self._transition_to(CircuitState.OPEN)
+                        self._opened_at = time.time()
 
     async def _transition_to(self, new_state: CircuitState) -> None:
         old_state = self._state
