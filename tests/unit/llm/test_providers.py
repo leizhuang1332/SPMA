@@ -376,3 +376,69 @@ class TestOpenAICompatProvider:
         from langchain_openai import ChatOpenAI
         assert isinstance(client, ChatOpenAI)
         assert client.model_name == "deepseek-v4-pro"
+
+
+class TestLocalVLLMProvider:
+    @pytest.fixture
+    def provider(self):
+        from spma.llm.providers.local_vllm import LocalVLLMProvider
+        from spma.llm.providers.base import ProviderConfig
+
+        cfg = ProviderConfig(
+            type="openai_compat",
+            api_key="not-needed",
+            base_url="http://vllm.internal:8000/v1",
+            default_model="qwen3-8b-local",
+        )
+        return LocalVLLMProvider("test_local", cfg)
+
+    def test_name(self, provider):
+        assert provider.name == "test_local"
+
+    def test_supports_thinking_is_false(self, provider):
+        assert provider.supports_thinking() is False
+
+    def test_default_base_url(self):
+        from spma.llm.providers.local_vllm import LocalVLLMProvider
+        from spma.llm.providers.base import ProviderConfig
+
+        cfg = ProviderConfig(
+            type="openai_compat",
+            api_key="not-needed",
+            base_url="",
+        )
+        provider = LocalVLLMProvider("test_local", cfg)
+        assert "vllm" in provider._config.base_url or provider._config.base_url == "http://localhost:8000/v1"
+
+    @pytest.mark.asyncio
+    async def test_chat_returns_text(self, provider):
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Local model response"
+        mock_response.choices = [mock_choice]
+
+        with patch.object(provider, '_client') as mock_client:
+            mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
+            result = await provider.chat(
+                [{"role": "user", "content": "Hi"}],
+                model="qwen3-8b-local",
+            )
+            assert result == "Local model response"
+
+    @pytest.mark.asyncio
+    async def test_ping_returns_true(self, provider):
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "pong"
+        mock_response.choices = [mock_choice]
+
+        with patch.object(provider, '_client') as mock_client:
+            mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
+            result = await provider.ping()
+            assert result is True
+
+    def test_get_langchain_client(self, provider):
+        client = provider.get_langchain_client("qwen3-8b-local")
+        from langchain_openai import ChatOpenAI
+        assert isinstance(client, ChatOpenAI)
+        assert client.model_name == "qwen3-8b-local"
