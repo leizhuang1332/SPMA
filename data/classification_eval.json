@@ -1,0 +1,10 @@
+[
+  {"query": "REQ-187 改了哪些代码和表", "golden_sources": ["doc", "code", "sql"], "is_cross_source": true, "query_type": "trace"},
+  {"query": "oauth.py 里 token_refresh 函数的实现", "golden_sources": ["code"], "is_cross_source": false, "query_type": "search"},
+  {"query": "用户登录怎么做的", "golden_sources": ["doc", "code", "sql"], "is_cross_source": true, "query_type": "explain"},
+  {"query": "上个月订单量有多少", "golden_sources": ["sql"], "is_cross_source": false, "query_type": "data_query"},
+  {"query": "张三上周改了哪些代码", "golden_sources": ["code"], "is_cross_source": false, "query_type": "search"},
+  {"query": "支付模块的退款流程", "golden_sources": ["doc", "code"], "is_cross_source": true, "query_type": "explain"},
+  {"query": "users 表结构", "golden_sources": ["sql"], "is_cross_source": false, "query_type": "search"},
+  {"query": "那个影响了哪些表", "golden_sources": ["doc", "code", "sql"], "is_cross_source": true, "query_type": "trace"}
+]
