@@ -52,9 +52,9 @@ async def general_query(req: QueryRequest):
     # ---- 1. 分类 + 实体抽取 ----
     from spma.agents.supervisor.classifier_fallback import classify_with_fallback
     from spma.agents.supervisor.entity_extractor import extract_entities
-    from spma.llm.clients import get_default_llm
+    from spma.llm import get_langchain_client
 
-    llm = get_default_llm()
+    llm = get_langchain_client(role="generation")
     classification = await classify_with_fallback(
         query=req.query,
         primary_llm=llm,
