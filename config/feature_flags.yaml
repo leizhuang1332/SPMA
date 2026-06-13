@@ -1,12 +1,15 @@
-# Feature Flags——运行时动态开关，秒级生效
+# Feature Flags 默认配置
+# 启动时加载到 FeatureFlagService，运行时修改秒级生效
 
 agents:
+  # Agentic 模式开关
   sql_agentic: false
   doc_agentic: false
   code_agentic: false
   supervisor_agentic: false
   synth_agentic: false
 
+  # 查询改写功能开关
   query_normalization: true
   query_expansion: true
   query_decomposition: false
@@ -14,14 +17,11 @@ agents:
   query_step_back: false
   query_context_aware: false
 
+  # 检索增强
   hybrid_search_weighted: false
   code_fallback: true
   sql_user_confirmation: true
   cross_reranker: false
 
+  # 降级
   degradation_auto_recovery: true
-
-rollback_triggers:
-  false_confidence_rate_threshold: 0.15
-  p99_latency_degradation_threshold: 0.30
-  token_cost_degradation_threshold: 0.50
