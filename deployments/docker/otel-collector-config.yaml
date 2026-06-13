@@ -1,0 +1,49 @@
+# OpenTelemetry Collector 配置
+# 接收 OTLP → 导出到 Prometheus + 可选 Langfuse
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    send_batch_size: 512
+    timeout: 5s
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+
+exporters:
+  # 导出为 Prometheus 可抓取的 metrics
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+    namespace: spma
+
+  # 调试日志 (开发用，生产请移除)
+  debug:
+    verbosity: basic
+
+  # OTLP 回送 (供 Langfuse 等消费)
+  otlp:
+    endpoint: "langfuse-server:4317"
+    tls:
+      insecure: true
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [debug, otlp]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [prometheus, debug]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [debug]
