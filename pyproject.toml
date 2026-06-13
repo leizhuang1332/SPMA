@@ -29,6 +29,7 @@ dependencies = [
     "tenacity",
     "httpx",
     "pyyaml",
+    "langchain-anthropic>=1.4.6",
 ]
 
 [project.optional-dependencies]

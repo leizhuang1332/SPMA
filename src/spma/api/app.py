@@ -104,6 +104,10 @@ def create_app() -> FastAPI:
         description="企业级多源RAG智能问答系统",
     )
 
+    # 注册查询路由
+    from spma.api.routes.query import router as query_router
+    app.include_router(query_router)
+
     # 健康检查
     @app.get("/health")
     async def health_check():

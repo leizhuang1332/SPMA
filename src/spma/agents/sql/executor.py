@@ -68,18 +68,19 @@ class MockExecutor:
 
 # ============================================================
 # PostgreSQL 只读副本执行器——Slice 2+ 使用
+# 注意: psycopg2 为可选依赖，仅在需要 PostgresExecutor 时导入
 # ============================================================
 
-import psycopg2
-import psycopg2.pool
 from contextlib import contextmanager
-from datetime import datetime, timezone
 
 
 class PostgresExecutor:
     """PostgreSQL 只读副本执行器——Slice 2+ 使用。"""
 
     def __init__(self, connection_string: str, min_connections: int = 2, max_connections: int = 10):
+        import psycopg2
+        import psycopg2.pool
+
         if "options" not in connection_string.lower():
             connection_string += " options='-c default_transaction_read_only=on'"
         self.pool = psycopg2.pool.ThreadedConnectionPool(
@@ -99,6 +100,7 @@ class PostgresExecutor:
     def execute(self, sql: str, timeout_ms: int = 2000) -> QueryResult:
         """在只读副本上执行 SQL，含超时控制和数据新鲜度记录。"""
         import time
+        from datetime import datetime, timezone
 
         start = time.time()
         with self._get_conn() as conn:

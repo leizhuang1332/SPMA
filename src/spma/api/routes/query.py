@@ -3,11 +3,14 @@
 设计依据: API-01 §2 核心端点
 """
 
+import logging
 import time
 import uuid
 
 from fastapi import APIRouter
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -57,7 +60,7 @@ async def general_query(req: QueryRequest):
         primary_llm=llm,
         conversation_history=req.conversation_history or "",
     )
-    entities = await extract_entities(req.query, classification, llm)
+    entities = await extract_entities(req.query, classification)
 
     # ---- 2. Token 预算管理 ----
     from spma.llm.token_budget import TokenBudgetManager
@@ -94,7 +97,9 @@ async def general_query(req: QueryRequest):
     worker_tasks = []
 
     for dispatch in dispatches:
-        agent_type = dispatch.metadata.get("agent_type", "doc")
+        # LangGraph Send 对象: .node = worker 节点名, .arg = WorkerDispatch dict
+        dispatch_arg = dispatch.arg if hasattr(dispatch, 'arg') else dispatch
+        agent_type = dispatch_arg.get("agent_type", "doc")
 
         if not budget_mgr.track_call("workers"):
             worker_outputs.append({
@@ -106,42 +111,54 @@ async def general_query(req: QueryRequest):
             })
             continue
 
-        async def _run_worker(d=dispatch, at=agent_type) -> dict:
-            if at == "doc":
-                from spma.agents.doc.graph import build_doc_agent_graph
-                g = build_doc_agent_graph(llm)
-                retriever = None  # Slice 2 接入真实 retriever
-                result = await g.ainvoke({
-                    "original_query": req.query,
-                    "rewritten_queries": d.payload.get("queries", [req.query]),
-                    "retriever": retriever,
-                    "query_id": query_id,
-                })
+        async def _run_worker(d=dispatch_arg, at=agent_type) -> dict:
+            rewritten_query = d.get("rewritten_query", d.get("original_query", req.query))
+            try:
+                if at == "doc":
+                    from spma.agents.doc.graph import build_doc_agent_graph
+                    g = build_doc_agent_graph(llm)
+                    result = await g.ainvoke({
+                        "original_query": req.query,
+                        "rewritten_queries": [rewritten_query],
+                        "retriever": None,
+                        "query_id": query_id,
+                    })
+                    return {
+                        "worker_type": at,
+                        "result_count": len(result.get("final_results", [])),
+                        "citations": result.get("final_results", []),
+                        "confidence": result.get("confidence", 0.8),
+                        "has_exact_match": result.get("has_exact_match", False),
+                        "rounds_used": result.get("rounds_used", 1),
+                    }
+                elif at == "code":
+                    from spma.agents.code.graph import build_code_agent_graph
+                    g = build_code_agent_graph(llm)
+                    result = await g.ainvoke({
+                        "original_query": req.query,
+                        "rewritten_queries": [rewritten_query],
+                        "query_id": query_id,
+                    })
+                    return {
+                        "worker_type": at,
+                        "result_count": len(result.get("ripgrep_results", [])),
+                        "citations": result.get("ripgrep_results", []),
+                        "confidence": 0.7,
+                        "has_exact_match": result.get("fallback_layer", 99) == 0,
+                        "rounds_used": result.get("rounds_used", 1),
+                    }
+            except Exception as e:
+                logger.warning(f"Worker '{at}' 执行失败: {e}")
                 return {
                     "worker_type": at,
-                    "result_count": len(result.get("final_results", [])),
-                    "citations": result.get("final_results", []),
-                    "confidence": result.get("confidence", 0.8),
-                    "has_exact_match": result.get("has_exact_match", False),
-                    "rounds_used": result.get("rounds_used", 1),
+                    "result_count": 0,
+                    "citations": [],
+                    "confidence": 0.5,
+                    "has_exact_match": False,
+                    "error": f"worker_not_ready:{str(e)[:100]}",
                 }
-            elif at == "code":
-                from spma.agents.code.graph import build_code_agent_graph
-                g = build_code_agent_graph(llm)
-                result = await g.ainvoke({
-                    "original_query": req.query,
-                    "rewritten_queries": d.payload.get("queries", [req.query]),
-                    "query_id": query_id,
-                })
-                return {
-                    "worker_type": at,
-                    "result_count": len(result.get("ripgrep_results", [])),
-                    "citations": result.get("ripgrep_results", []),
-                    "confidence": 0.7,
-                    "has_exact_match": result.get("fallback_layer", 99) == 0,
-                    "rounds_used": result.get("rounds_used", 1),
-                }
-            elif at == "sql":
+
+            if at == "sql":
                 return {
                     "worker_type": at,
                     "result_count": 0,
@@ -174,48 +191,59 @@ async def general_query(req: QueryRequest):
     quality_result = evaluate_workers(
         worker_outputs,
         classification.get("query_type", "search"),
-        quality_threshold=0.6,
+        threshold=0.6,
     )
 
     # ---- 6. 合成 (Synthesis Agent) ----
-    from spma.agents.synthesis.graph import build_synthesis_agent_graph
+    try:
+        from spma.agents.synthesis.graph import build_synthesis_agent_graph
 
-    synthesis_graph = build_synthesis_agent_graph(llm=llm, audit_llm=llm)
-    synthesis_result = await synthesis_graph.ainvoke({
-        "original_query": req.query,
-        "worker_outputs": worker_outputs,
-        "max_rounds": 2,
-        "round": 1,
-    })
+        synthesis_graph = build_synthesis_agent_graph(llm=llm, audit_llm=llm)
+        synthesis_result = await synthesis_graph.ainvoke({
+            "original_query": req.query,
+            "worker_outputs": worker_outputs,
+            "max_rounds": 2,
+            "round": 1,
+        })
+    except Exception as e:
+        logger.warning(f"Synthesis agent 失败: {e}")
+        synthesis_result = {
+            "final_answer": f"[Slice 1 预览] 针对查询 '{req.query}' 已分类为 {classification.get('sources', [])} 源，"
+                            f"Worker 输出 {len(worker_outputs)} 条结果。完整合成等待后续 Slice 实现。",
+            "annotations": [],
+            "convergence_reason": "synthesis_not_implemented",
+        }
 
     total_latency = int((time.time() - start_time) * 1000)
 
     # ---- 7. Trace 日志 ----
-    from spma.observability.trace_logger import AgentTraceLogger
+    try:
+        from spma.observability.trace_logger import AgentTraceLogger
 
-    trace_logger = AgentTraceLogger()
-    combined_state = {
-        "session_id": session_id,
-        "original_query": req.query,
-        "classification": classification,
-        "entities": entities,
-        "worker_outputs": worker_outputs,
-        "quality_scores": quality_result.get("scores", {}),
-        "reschedule_count": 0,
-        "total_llm_calls": sum(w.get("rounds_used", 0) for w in worker_outputs),
-        "total_tokens": 0,
-        "convergence_reason": synthesis_result.get("convergence_reason", ""),
-    }
-    await trace_logger.log_query(query_id, combined_state)
-    # 同步写入一轮 round 记录
-    await trace_logger.log_round(query_id, "supervisor", 1, {
-        "action": "classify+dispatch+synthesis",
-        "results": worker_outputs,
-        "assessment": quality_result.get("summary", ""),
-        "confidence": min((s or 0) for s in quality_result.get("scores", {}).values()) if quality_result.get("scores") else 0,
-        "latency_ms": total_latency,
-        "llm_calls": sum(w.get("rounds_used", 0) for w in worker_outputs),
-    })
+        trace_logger = AgentTraceLogger()
+        combined_state = {
+            "session_id": session_id,
+            "original_query": req.query,
+            "classification": classification,
+            "entities": entities,
+            "worker_outputs": worker_outputs,
+            "quality_scores": quality_result.get("scores", {}),
+            "reschedule_count": 0,
+            "total_llm_calls": sum(w.get("rounds_used", 0) for w in worker_outputs),
+            "total_tokens": 0,
+            "convergence_reason": synthesis_result.get("convergence_reason", ""),
+        }
+        await trace_logger.log_query(query_id, combined_state)
+        await trace_logger.log_round(query_id, "supervisor", 1, {
+            "action": "classify+dispatch+synthesis",
+            "results": worker_outputs,
+            "assessment": quality_result.get("summary", ""),
+            "confidence": min((s or 0) for s in quality_result.get("scores", {}).values()) if quality_result.get("scores") else 0,
+            "latency_ms": total_latency,
+            "llm_calls": sum(w.get("rounds_used", 0) for w in worker_outputs),
+        })
+    except Exception as e:
+        logger.warning(f"Trace 日志记录失败: {e}")
 
     return QueryResponse(
         query_id=query_id,
