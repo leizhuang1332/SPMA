@@ -114,3 +114,107 @@ class TestRoleConfigFromDict:
         assert cfg.temperature == 0.3
         assert cfg.thinking is None
         assert cfg.extra_kwargs == {}
+
+
+from unittest.mock import AsyncMock, patch, MagicMock
+
+
+class TestAnthropicProvider:
+    @pytest.fixture
+    def provider(self):
+        from spma.llm.providers.anthropic import AnthropicProvider
+        from spma.llm.providers.base import ProviderConfig
+
+        cfg = ProviderConfig(
+            type="anthropic",
+            api_key="sk-test",
+            base_url="https://api.anthropic.com",
+            default_model="claude-sonnet-4-6",
+        )
+        return AnthropicProvider("test_anthropic", cfg)
+
+    def test_name(self, provider):
+        assert provider.name == "test_anthropic"
+
+    def test_supports_thinking(self, provider):
+        assert provider.supports_thinking() is True
+
+    @pytest.mark.asyncio
+    async def test_chat_returns_text(self, provider):
+        mock_response = MagicMock()
+        mock_content = MagicMock()
+        mock_content.type = "text"
+        mock_content.text = "Hello from Claude"
+        mock_response.content = [mock_content]
+
+        with patch.object(provider, '_client') as mock_client:
+            mock_client.messages.create = AsyncMock(return_value=mock_response)
+            result = await provider.chat(
+                [{"role": "user", "content": "Hi"}],
+                model="claude-sonnet-4-6",
+            )
+            assert result == "Hello from Claude"
+
+    @pytest.mark.asyncio
+    async def test_chat_strips_thinking_blocks(self, provider):
+        mock_response = MagicMock()
+        thinking_block = MagicMock()
+        thinking_block.type = "thinking"
+        text_block = MagicMock()
+        text_block.type = "text"
+        text_block.text = "Final answer"
+        mock_response.content = [thinking_block, text_block]
+
+        with patch.object(provider, '_client') as mock_client:
+            mock_client.messages.create = AsyncMock(return_value=mock_response)
+            result = await provider.chat(
+                [{"role": "user", "content": "Hi"}],
+                model="claude-sonnet-4-6",
+            )
+            assert result == "Final answer"
+
+    @pytest.mark.asyncio
+    async def test_chat_passes_thinking_param(self, provider):
+        mock_response = MagicMock()
+        mock_content = MagicMock()
+        mock_content.type = "text"
+        mock_content.text = "Deep thinking result"
+        mock_response.content = [mock_content]
+
+        with patch.object(provider, '_client') as mock_client:
+            mock_client.messages.create = AsyncMock(return_value=mock_response)
+            await provider.chat(
+                [{"role": "user", "content": "Complex question"}],
+                model="claude-sonnet-4-6",
+                thinking={"type": "enabled", "budget_tokens": 2048},
+                max_tokens=4096,
+            )
+            call_kwargs = mock_client.messages.create.call_args.kwargs
+            assert call_kwargs["thinking"] == {"type": "enabled", "budget_tokens": 2048}
+            assert call_kwargs["max_tokens"] == 4096
+
+    @pytest.mark.asyncio
+    async def test_ping_returns_true(self, provider):
+        mock_response = MagicMock()
+        mock_content = MagicMock()
+        mock_content.type = "text"
+        mock_content.text = "pong"
+        mock_response.content = [mock_content]
+
+        with patch.object(provider, '_client') as mock_client:
+            mock_client.messages.create = AsyncMock(return_value=mock_response)
+            result = await provider.ping()
+            assert result is True
+
+    @pytest.mark.asyncio
+    async def test_ping_returns_false_on_error(self, provider):
+        with patch.object(provider, '_client') as mock_client:
+            mock_client.messages.create = AsyncMock(side_effect=Exception("connection refused"))
+            result = await provider.ping()
+            assert result is False
+
+    def test_get_langchain_client(self, provider):
+        client = provider.get_langchain_client("claude-sonnet-4-6")
+        from langchain_anthropic import ChatAnthropic
+        assert isinstance(client, ChatAnthropic)
+        assert client.model == "claude-sonnet-4-6"
