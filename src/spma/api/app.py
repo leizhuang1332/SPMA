@@ -145,6 +145,19 @@ def create_app() -> FastAPI:
         reset_circuit_breaker, methods=["POST"],
     )
 
+    # 启动时初始化 LLMRouter 单例
+    @app.on_event("startup")
+    async def startup_llm_router():
+        """启动时初始化 LLMRouter 单例。"""
+        import os
+        from spma.llm.router import LLMRouter
+
+        yaml_path = os.environ.get(
+            "SPMA_CONFIG_PATH",
+            os.path.join(os.path.dirname(__file__), "..", "..", "..", "config", "spma.yaml"),
+        )
+        LLMRouter.initialize(os.path.abspath(yaml_path))
+
     return app
 
 
