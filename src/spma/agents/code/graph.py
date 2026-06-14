@@ -38,7 +38,8 @@ def build_code_agent_graph(
             try:
                 query = state.get("query", "")
                 prompt = f"为以下查询生成 3 个代码搜索关键词: {query}\n关键词:"
-                resp = await llm.generate(prompt)
+                resp_obj = await llm.ainvoke(prompt)
+                resp = resp_obj.content
                 new_terms = [t.strip() for t in resp.split(",") if t.strip()]
                 search_terms["fuzzy_terms"] = list(set(
                     list(search_terms.get("fuzzy_terms", [])) + new_terms

@@ -46,7 +46,8 @@ async def rewrite_queries(
 
 async def _expand_query(query: str, llm) -> str:
     prompt = f"为以下用户查询生成 3-5 个相关的搜索关键词或术语（仅输出关键词列表，用逗号分隔）。\n查询: {query}\n关键词:"
-    resp = await llm.generate(prompt)
+    resp_obj = await llm.ainvoke(prompt)
+    resp = resp_obj.content
     keywords = [k.strip() for k in resp.split(",") if k.strip()]
     return f"{query} {' '.join(keywords[:5])}"
 
@@ -58,7 +59,8 @@ async def _decompose_query(query: str, entities: dict, sources: list[str], llm) 
 可用数据源: {', '.join(sources)}
 用户查询: {query}
 输出 JSON: [{{"query": "子查询", "target": "doc|code|sql"}}, ...]"""
-    resp = await llm.generate(prompt)
+    resp_obj = await llm.ainvoke(prompt)
+    resp = resp_obj.content
     try:
         return json.loads(resp)
     except json.JSONDecodeError:

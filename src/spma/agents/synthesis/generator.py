@@ -7,7 +7,8 @@ async def generate_draft_answer(original_query: str, fused_citations: list[dict]
     doc_results = _format_results([c for c in fused_citations if c.get("source_type") == "prd"], "文档")
     sql_results = _format_results([c for c in fused_citations if c.get("source_type") == "sql"], "数据库")
     prompt = GENERATION_PROMPT.format(original_query=original_query, doc_results=doc_results, sql_results=sql_results)
-    return await llm.generate(prompt)
+    resp_obj = await llm.ainvoke(prompt)
+    return resp_obj.content
 
 
 def _format_results(citations: list[dict], label: str) -> str:

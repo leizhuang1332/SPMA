@@ -51,7 +51,8 @@ async def llm_based_expand(original_query: str, results: list[dict], llm) -> str
 扩展搜索方向（每个方向一行，直接写关键词/短语，不用编号）:"""
 
     try:
-        resp = await llm.generate(prompt)
+        resp_obj = await llm.ainvoke(prompt)
+        resp = resp_obj.content
         directions = [line.strip() for line in resp.strip().split("\n") if line.strip() and len(line.strip()) > 2]
         expanded = original_query + " " + " ".join(directions[:3])
         return expanded

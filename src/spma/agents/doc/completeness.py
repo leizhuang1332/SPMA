@@ -61,7 +61,8 @@ async def _llm_completeness_check(results, entities, llm) -> tuple[str, str]:
 只输出 JSON: {{"assessment": "sufficient" 或 "insufficient", "reason": "判断理由"}}"""
 
     try:
-        resp = await llm.generate(prompt)
+        resp_obj = await llm.ainvoke(prompt)
+        resp = resp_obj.content
         data = json.loads(resp)
         assessment = data.get("assessment", "insufficient")
         if assessment == "sufficient":

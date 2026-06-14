@@ -57,11 +57,18 @@ def embedder():
     return emb
 
 
+def _make_ainvoke_return(text: str):
+    """构造 ainvoke 返回值（含 .content 属性）。"""
+    return MagicMock(content=text)
+
+
 @pytest.fixture
 def llm():
     """Mock LLM——完备度判断和线索扩展用。"""
     mock = MagicMock()
-    mock.generate = AsyncMock(return_value='{"assessment": "sufficient", "reason": "结果充足"}')
+    mock.ainvoke = AsyncMock(return_value=_make_ainvoke_return(
+        '{"assessment": "sufficient", "reason": "结果充足"}'
+    ))
     return mock
 
 
@@ -69,7 +76,9 @@ def llm():
 def hyde_llm():
     """Mock HyDE LLM——短查询时生成假设文档。"""
     mock = MagicMock()
-    mock.generate = AsyncMock(return_value="假设的文档内容用于增强检索")
+    mock.ainvoke = AsyncMock(return_value=_make_ainvoke_return(
+        "假设的文档内容用于增强检索"
+    ))
     return mock
 
 
@@ -174,7 +183,7 @@ class TestDocAgentCompleteness:
 
         assert result["assessment"] == "converge"
         # L1 收敛时不应调用 LLM
-        llm.generate.assert_not_called()
+        llm.ainvoke.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_l2_converge_by_vector_threshold(self, es_client, vector_store, embedder, llm):
@@ -198,7 +207,7 @@ class TestDocAgentCompleteness:
 
         assert result["assessment"] == "converge"
         # L2 收敛时也不应调用 LLM
-        llm.generate.assert_not_called()
+        llm.ainvoke.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_l3_llm_judged_insufficient_triggers_expand(self, es_client, vector_store, embedder, llm):
@@ -212,7 +221,7 @@ class TestDocAgentCompleteness:
         ])
 
         # LLM 判断 insufficient → 需要扩展
-        llm.generate = AsyncMock(return_value='{"assessment": "insufficient", "reason": "结果不足"}')
+        llm.ainvoke = AsyncMock(return_value=_make_ainvoke_return('{"assessment": "insufficient", "reason": "结果不足"}'))
 
         from spma.agents.doc.graph import build_doc_agent_graph
         graph = build_doc_agent_graph(es_client, vector_store, embedder, llm)
@@ -252,7 +261,7 @@ class TestDocAgentHyDE:
         })
 
         assert result["hyde_enabled"] is True
-        hyde_llm.generate.assert_called_once_with("支付流程")
+        hyde_llm.ainvoke.assert_called_once_with("支付流程")
 
     @pytest.mark.asyncio
     async def test_hyde_disabled_for_long_query(self, es_client, vector_store, embedder, llm, hyde_llm):
@@ -290,7 +299,7 @@ class TestDocAgentExpansion:
         vector_store.search = AsyncMock(return_value=[])
 
         # LLM 判断 insufficient 触发 expand
-        llm.generate = AsyncMock(return_value='{"assessment": "insufficient", "reason": "不够"}')
+        llm.ainvoke = AsyncMock(return_value=_make_ainvoke_return('{"assessment": "insufficient", "reason": "不够"}'))
 
         from spma.agents.doc.graph import build_doc_agent_graph
         graph = build_doc_agent_graph(es_client, vector_store, embedder, llm)
@@ -314,7 +323,7 @@ class TestDocAgentExpansion:
         vector_store.search = AsyncMock(return_value=[])
 
         # 始终判断 insufficient
-        llm.generate = AsyncMock(return_value='{"assessment": "insufficient", "reason": "始终不够"}')
+        llm.ainvoke = AsyncMock(return_value=_make_ainvoke_return('{"assessment": "insufficient", "reason": "始终不够"}'))
 
         from spma.agents.doc.graph import build_doc_agent_graph
         graph = build_doc_agent_graph(es_client, vector_store, embedder, llm)
@@ -378,7 +387,7 @@ class TestDocAgentErrorHandling:
         ])
 
         # LLM 爆炸
-        llm.generate = AsyncMock(side_effect=Exception("LLM timeout"))
+        llm.ainvoke = AsyncMock(side_effect=Exception("LLM timeout"))
 
         from spma.agents.doc.graph import build_doc_agent_graph
         graph = build_doc_agent_graph(es_client, vector_store, embedder, llm)

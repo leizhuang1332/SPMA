@@ -5,8 +5,9 @@ from spma.agents.synthesis.auditor import audit_answer, AuditResult
 class MockLLM:
     def __init__(self, json_response):
         self.json_response = json_response
-    async def generate(self, prompt):
-        return self.json_response
+    async def ainvoke(self, prompt):
+        from unittest.mock import MagicMock
+        return MagicMock(content=self.json_response)
 
 
 class TestAuditAnswer:

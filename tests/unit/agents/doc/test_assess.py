@@ -2,17 +2,20 @@ import pytest
 from spma.agents.doc.completeness import assess_completeness, CompletenessResult
 
 
+from unittest.mock import MagicMock
+
+
 class MockLLM:
     def __init__(self, responses=None):
         self.responses = responses or {}
         self.call_count = 0
 
-    async def generate(self, prompt):
+    async def ainvoke(self, prompt):
         self.call_count += 1
         for key, resp in self.responses.items():
             if key in prompt:
-                return resp
-        return '{"assessment": "sufficient", "reason": "ok"}'
+                return MagicMock(content=resp)
+        return MagicMock(content='{"assessment": "sufficient", "reason": "ok"}')
 
     async def is_available(self):
         return True

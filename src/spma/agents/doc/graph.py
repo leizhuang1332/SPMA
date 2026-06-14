@@ -52,7 +52,8 @@ def build_doc_agent_graph(es_client, vector_store, embedder, llm, hyde_llm=None,
         hyde_results = []
         if state.get("hyde_enabled") and hyde_llm:
             try:
-                hyde_text = await hyde_llm.generate(query)
+                hyde_obj = await hyde_llm.ainvoke(query)
+                hyde_text = hyde_obj.content
                 hyde_emb = await embedder.embed([hyde_text])
                 hyde_results = await vector_store.search(embedding=hyde_emb[0], top_k=10, table="chunk_embeddings")
             except Exception:

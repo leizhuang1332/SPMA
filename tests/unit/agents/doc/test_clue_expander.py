@@ -32,9 +32,11 @@ class TestLLMBasedExpand:
     async def test_generates_expansion_queries(self):
         results = [{"content": "支付流程包括下单和回调两个阶段"}]
 
+        from unittest.mock import MagicMock
+
         class MockLLM:
-            async def generate(self, prompt):
-                return "订单状态管理\n支付异常处理\n退款流程设计"
+            async def ainvoke(self, prompt):
+                return MagicMock(content="订单状态管理\n支付异常处理\n退款流程设计")
 
         new_query = await llm_based_expand("支付流程", results, MockLLM())
         assert "订单" in new_query or "退款" in new_query

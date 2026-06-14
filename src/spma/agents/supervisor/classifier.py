@@ -85,7 +85,9 @@ async def classify_and_extract(
         # json_mode: 让模型直接输出 JSON，不依赖 function calling
         # DeepSeek V4 对 function calling 支持有限，json_mode 兼容性更好
         structured_llm = llm.with_structured_output(CLASSIFY_SCHEMA, method="json_mode")
+        print(f"structured_llm: {structured_llm}")
         raw_result = await structured_llm.ainvoke(prompt)
+        print(f"raw_result: {raw_result}")
 
         sources = raw_result.get("sources", ["doc", "code", "sql"])
         entities = raw_result.get("entities", {})

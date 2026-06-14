@@ -60,7 +60,8 @@ async def _llm_code_completeness_check(ripgrep_results, expanded_context, entiti
 只输出 JSON: {{"assessment": "sufficient" 或 "insufficient", "reason": "判断理由"}}"""
 
     try:
-        resp = await llm.generate(prompt)
+        resp_obj = await llm.ainvoke(prompt)
+        resp = resp_obj.content
         data = json.loads(resp)
         if data.get("assessment") == "sufficient":
             return "converge", "llm_judged_sufficient"

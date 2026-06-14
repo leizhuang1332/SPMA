@@ -32,7 +32,8 @@ async def audit_answer(draft_answer: str, original_query: str, fused_citations: 
 {{"citation_coverage": 0.xx, "unverified_claims": [...], "contradictions": [{{"claim_a": "...", "claim_b": "...", "source_a": "...", "source_b": "..."}}], "coverage_gaps": [...], "verdict": "pass" | "fix" | "contradiction" | "gap"}}"""
 
     try:
-        resp = await llm.generate(prompt)
+        resp_obj = await llm.ainvoke(prompt)
+        resp = resp_obj.content
         data = json.loads(resp)
         result = AuditResult(
             verdict=data.get("verdict", "fix"),
