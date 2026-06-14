@@ -1,0 +1,134 @@
+# SPMA 基础设施 Docker Compose — 仅包含 Elasticsearch + PGVector
+#
+# 一键启动:
+#   docker compose -f docker-compose.infrastructure.yml up -d
+#
+# 首次启动需要安装 jieba 分词器:
+#   docker compose -f docker-compose.infrastructure.yml --profile setup up
+#   docker compose -f docker-compose.infrastructure.yml restart elasticsearch
+#
+# 停止/清理:
+#   docker compose -f docker-compose.infrastructure.yml down           # 停止容器
+#   docker compose -f docker-compose.infrastructure.yml down -v        # 停止并删除数据
+
+services:
+  # ============================================================
+  # Elasticsearch 9.4.1 + jieba 中文分词
+  # ============================================================
+
+  elasticsearch:
+    image: elasticsearch:9.4.1
+    container_name: spma-es
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      xpack.security.enrollment.enabled: "false"
+      xpack.security.http.ssl.enabled: "false"
+      xpack.security.transport.ssl.enabled: "false"
+      ES_JAVA_OPTS: "-Xms1g -Xmx2g"
+    ports:
+      - "9200:9200"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+      - es_plugins:/usr/share/elasticsearch/plugins
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 60s
+    networks:
+      - spma-infra
+    deploy:
+      resources:
+        limits:
+          memory: 4Gi
+        reservations:
+          memory: 1Gi
+
+  # jieba 分词器安装 (一次性任务)
+  elasticsearch-jieba-setup:
+    profiles: ["setup"]
+    image: alpine:3
+    container_name: spma-es-jieba-setup
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    entrypoint: |
+      /bin/sh -c '
+        PLUGIN_DIR="/usr/share/elasticsearch/plugins/jieba"
+        if [ -f "$$PLUGIN_DIR/plugin-descriptor.properties" ]; then
+          echo "jieba plugin already installed, skipping."
+          exit 0
+        fi
+        echo "Installing jieba analyzer..."
+        # 尝试从 GitHub 下载
+        JIEBA_URL="https://github.com/sing1ee/elasticsearch-jieba-plugin/releases/download/v9.4.1/elasticsearch-jieba-plugin-9.4.1.zip"
+        if wget -q --timeout=30 "$$JIEBA_URL" -O /tmp/jieba.zip && [ -s /tmp/jieba.zip ]; then
+          mkdir -p /es-plugins/jieba
+          unzip -qo /tmp/jieba.zip -d /es-plugins/jieba/ 2>/dev/null || true
+          echo "Done. Run: docker compose -f docker-compose.infrastructure.yml restart elasticsearch"
+        else
+          echo "============================================="
+          echo "WARNING: GitHub download failed."
+          echo "Install manually inside ES container:"
+          echo "  docker exec -it spma-es elasticsearch-plugin install \\"
+          echo "    https://github.com/sing1ee/elasticsearch-jieba-plugin/releases/download/v9.4.1/elasticsearch-jieba-plugin-9.4.1.zip"
+          echo "============================================="
+        fi
+      '
+    volumes:
+      - es_plugins:/es-plugins
+    networks:
+      - spma-infra
+
+  # ============================================================
+  # PGVector — PostgreSQL 17 + pgvector 扩展
+  # ============================================================
+
+  pgvector:
+    image: pgvector/pgvector:pg17
+    container_name: spma-pgvector
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: spma
+      POSTGRES_PASSWORD: spma123
+      POSTGRES_DB: spma
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgvector_data:/var/lib/postgresql/data
+      - ./init-infra.sql:/docker-entrypoint-initdb.d/01-init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U spma -d spma"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    networks:
+      - spma-infra
+    deploy:
+      resources:
+        limits:
+          memory: 4Gi
+        reservations:
+          memory: 1Gi
+
+# ============================================================
+# 持久化卷
+# ============================================================
+volumes:
+  es_data:
+    driver: local
+  es_plugins:
+    driver: local
+  pgvector_data:
+    driver: local
+
+# ============================================================
+# 网络
+# ============================================================
+networks:
+  spma-infra:
+    driver: bridge
