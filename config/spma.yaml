@@ -47,12 +47,6 @@ spma:
         base_url: "https://api.deepseek.com"
         default_model: "deepseek-v4-pro"
 
-      openai:
-        type: openai_compat
-        api_key: "${OPENAI_API_KEY}"
-        base_url: "https://api.openai.com/v1"
-        default_model: "gpt-4o"
-
       local_vllm:
         type: openai_compat
         api_key: "not-needed"

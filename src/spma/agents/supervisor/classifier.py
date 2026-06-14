@@ -80,8 +80,11 @@ async def classify_and_extract(
     ).replace("{known_tables}", tables_str)
 
     try:
-        structured_llm = llm.with_structured_output(CLASSIFY_SCHEMA)
-        raw_result = await structured_llm.invoke(prompt)
+        # json_mode: 让模型直接输出 JSON，不依赖 function calling
+        # DeepSeek V4 对 function calling 支持有限，json_mode 兼容性更好
+        structured_llm = llm.with_structured_output(CLASSIFY_SCHEMA, method="json_mode")
+        raw_result = await structured_llm.ainvoke(prompt)
+
         sources = raw_result.get("sources", ["doc", "code", "sql"])
         entities = raw_result.get("entities", {})
         for key in ["req_ids", "table_names", "column_names", "metrics", "code_refs", "doc_types"]:
