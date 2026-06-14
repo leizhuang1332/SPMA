@@ -43,9 +43,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 4Gi
+          memory: 4G
         reservations:
-          memory: 1Gi
+          memory: 1G
 
   # jieba 分词器安装 (一次性任务)
   elasticsearch-jieba-setup:
@@ -96,7 +96,7 @@ services:
       POSTGRES_PASSWORD: spma123
       POSTGRES_DB: spma
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - pgvector_data:/var/lib/postgresql/data
       - ./init-infra.sql:/docker-entrypoint-initdb.d/01-init.sql
@@ -111,9 +111,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 4Gi
+          memory: 4G
         reservations:
-          memory: 1Gi
+          memory: 1G
 
 # ============================================================
 # 持久化卷
