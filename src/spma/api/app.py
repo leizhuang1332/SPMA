@@ -148,14 +148,17 @@ def create_app() -> FastAPI:
     # 启动时初始化 LLMRouter 单例
     @app.on_event("startup")
     async def startup_llm_router():
-        """启动时初始化 LLMRouter 单例。"""
+        """启动时初始化 LLMRouter 单例。优先级: 环境变量 > spma.local.yaml > spma.yaml"""
         import os
         from spma.llm.router import LLMRouter
 
-        yaml_path = os.environ.get(
-            "SPMA_CONFIG_PATH",
-            os.path.join(os.path.dirname(__file__), "..", "..", "..", "config", "spma.yaml"),
-        )
+        yaml_path = os.environ.get("SPMA_CONFIG_PATH", "")
+        if not yaml_path:
+            config_dir = os.path.join(os.path.dirname(__file__), "..", "..", "..", "config")
+            local_config = os.path.join(config_dir, "spma.local.yaml")
+            default_config = os.path.join(config_dir, "spma.yaml")
+            yaml_path = local_config if os.path.exists(local_config) else default_config
+
         LLMRouter.initialize(os.path.abspath(yaml_path))
 
     return app

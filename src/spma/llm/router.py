@@ -149,6 +149,11 @@ class LLMRouter:
         self._providers: dict[str, LLMProvider] = {}
 
         for pname, pcfg in config.providers.items():
+            # 跳过未配置 API Key 的 provider（允许配置文件中保留占位）
+            if not pcfg.api_key or pcfg.api_key == "not-needed":
+                if pcfg.api_key != "not-needed":
+                    logger.debug("跳过 provider '%s': API Key 未配置", pname)
+                    continue
             factory = _PROVIDER_FACTORIES.get(pcfg.type)
             if factory is None:
                 raise LLMConfigError(f"未知的 provider 类型: {pcfg.type}")
