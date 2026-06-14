@@ -19,7 +19,7 @@ services:
   # ============================================================
 
   postgres:
-    image: pgvector/pgvector:pg16
+    image: pgvector/pgvector:pg17
     container_name: spma-postgres
     restart: unless-stopped
     environment:
@@ -195,7 +195,7 @@ services:
 
   elasticsearch:
     profiles: ["es"]
-    image: elasticsearch:8.17.0
+    image: elasticsearch:9.4.1
     container_name: spma-elasticsearch
     restart: unless-stopped
     environment:
@@ -205,8 +205,6 @@ services:
       xpack.security.http.ssl.enabled: "false"
       xpack.security.transport.ssl.enabled: "false"
       ES_JAVA_OPTS: "-Xms1g -Xmx2g"
-      ELASTIC_USERNAME: ${ES_USER:-elastic}
-      ELASTIC_PASSWORD: ${ES_PASSWORD:-elastic}
     ports:
       - "${ES_PORT:-9200}:9200"
       - "9300:9300"
@@ -228,24 +226,25 @@ services:
         reservations:
           memory: 1Gi
 
-  # IK 分词器安装 (一次性任务)
-  elasticsearch-ik-installer:
+  # jieba 分词器安装 (一次性任务)
+  elasticsearch-jieba-installer:
     profiles: ["es"]
     image: alpine:3
-    container_name: spma-es-ik-installer
+    container_name: spma-es-jieba-installer
     depends_on:
       elasticsearch:
         condition: service_healthy
     entrypoint: |
       /bin/sh -c '
-        echo "Installing IK analyzer..."
-        wget -q https://github.com/infinilabs/analysis-ik/releases/download/v8.17.0/elasticsearch-analysis-ik-8.17.0.zip -O /tmp/ik.zip
-        if [ -f /tmp/ik.zip ]; then
-          mkdir -p /es-plugins/ik
-          unzip -qo /tmp/ik.zip -d /es-plugins/ik/ 2>/dev/null || true
-          echo "IK plugin downloaded. Restart elasticsearch to activate: docker compose --profile es restart elasticsearch"
+        echo "Installing jieba analyzer..."
+        wget -q https://github.com/sing1ee/elasticsearch-jieba-plugin/releases/download/v9.4.1/elasticsearch-jieba-plugin-9.4.1.zip -O /tmp/jieba.zip
+        if [ -f /tmp/jieba.zip ] && [ -s /tmp/jieba.zip ]; then
+          mkdir -p /es-plugins/jieba
+          unzip -qo /tmp/jieba.zip -d /es-plugins/jieba/ 2>/dev/null || true
+          echo "jieba plugin downloaded. Run: docker compose --profile es restart elasticsearch"
         else
-          echo "WARNING: Could not download IK plugin. Install manually."
+          echo "WARNING: Could not download jieba plugin from GitHub."
+          echo "Install manually: elasticsearch-plugin install https://github.com/sing1ee/elasticsearch-jieba-plugin/releases/download/v9.4.1/elasticsearch-jieba-plugin-9.4.1.zip"
         fi
       '
     volumes:

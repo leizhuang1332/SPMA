@@ -87,3 +87,20 @@ CREATE TABLE IF NOT EXISTS search_log (
 );
 
 CREATE INDEX IF NOT EXISTS idx_search_log_created_at ON search_log(created_at);
+
+-- 8. chunk embeddings 表 (匹配 config/spma.yaml pgvector 参数)
+CREATE TABLE IF NOT EXISTS chunk_embeddings (
+    id          SERIAL PRIMARY KEY,
+    chunk_id    TEXT NOT NULL UNIQUE,
+    source_id   TEXT,
+    source_type TEXT,
+    content     TEXT,
+    embedding   vector(1024),
+    metadata    JSONB DEFAULT '{}',
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS chunk_embedding_hnsw_idx
+    ON chunk_embeddings
+    USING hnsw (embedding vector_cosine_ops)
+    WITH (m = 16, ef_construction = 200);
