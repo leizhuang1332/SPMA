@@ -43,7 +43,7 @@ spma:
 
       deepseek:
         type: openai_compat
-        api_key: "${DEEPSEEK_API_KEY}"
+        api_key: "sk-a3097afe3ab94f439c016c69d25f39ce"
         base_url: "https://api.deepseek.com"
         default_model: "deepseek-v4-pro"
 

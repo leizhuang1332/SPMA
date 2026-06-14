@@ -11,8 +11,8 @@ authors = [
 keywords = ["rag", "llm", "agent", "langgraph", "text-to-sql"]
 
 dependencies = [
-    "langchain>=1.0",
-    "langgraph>=1.0",
+    "langchain==1.3.4",
+    "langgraph==1.2.4",
     "fastapi>=0.115",
     "uvicorn[standard]",
     "psycopg[binary,pool]",

@@ -38,10 +38,16 @@ def build_doc_agent_graph(es_client, vector_store, embedder, llm, hyde_llm=None,
         if mode == "precise" and entities.get("req_ids"):
             es_filters = {"req_ids": entities["req_ids"]}
 
-        es_future = es_client.search(query, top_k=20, filters=es_filters)
-        query_embedding = await embedder.embed([query])
-        vector_future = vector_store.search(embedding=query_embedding[0], top_k=20, table="chunk_embeddings")
-        bm25_results, vector_results = await asyncio.gather(es_future, vector_future)
+        bm25_results: list[dict] = []
+        vector_results: list[dict] = []
+
+        try:
+            es_future = es_client.search(query, top_k=20, filters=es_filters)
+            query_embedding = await embedder.embed([query])
+            vector_future = vector_store.search(embedding=query_embedding[0], top_k=20, table="chunk_embeddings")
+            bm25_results, vector_results = await asyncio.gather(es_future, vector_future)
+        except Exception:
+            pass
 
         hyde_results = []
         if state.get("hyde_enabled") and hyde_llm:
@@ -92,6 +98,14 @@ def build_doc_agent_graph(es_client, vector_store, embedder, llm, hyde_llm=None,
         )
         state["assessment"] = outcome.verdict
         state["convergence_reason"] = f"{outcome.level}:{outcome.reason}"
+
+        # 收敛或达到最大轮数 → 设置终止状态
+        round_num = state.get("round", 1)
+        max_rounds = state.get("max_rounds", 3)
+        if outcome.verdict == "converge" or round_num >= max_rounds:
+            state["rounds_used"] = round_num
+            state["final_results"] = state.get("accumulated_results", [])
+
         return state
 
     async def expand_node(state: DocAgentState) -> dict:
@@ -111,13 +125,10 @@ def build_doc_agent_graph(es_client, vector_store, embedder, llm, hyde_llm=None,
         return state
 
     def should_continue(state: DocAgentState) -> Literal["expand", "END"]:
-        assessment = state.get("assessment", "converge")
-        round_num = state.get("round", 1)
-        max_rounds = state.get("max_rounds", 3)
-        if assessment == "converge" or round_num >= max_rounds:
-            state["rounds_used"] = round_num
-            state["final_results"] = state.get("accumulated_results", [])
+        # 如果 assess_node 已设置 final_results，说明已终止
+        if state.get("final_results") is not None:
             return "END"
+        # 否则继续扩展
         return "expand"
 
     graph = StateGraph(DocAgentState)
@@ -132,4 +143,4 @@ def build_doc_agent_graph(es_client, vector_store, embedder, llm, hyde_llm=None,
     graph.add_edge("aggregate", "assess")
     graph.add_conditional_edges("assess", should_continue, {"expand": "expand", "END": END})
     graph.add_edge("expand", "search")
-    return graph
+    return graph.compile()

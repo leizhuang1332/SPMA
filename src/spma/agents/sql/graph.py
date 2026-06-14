@@ -165,4 +165,4 @@ def build_sql_agent_graph() -> StateGraph:
         {"generate": "generate", "END": END},
     )
 
-    return graph
+    return graph.compile()

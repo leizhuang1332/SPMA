@@ -71,4 +71,4 @@ def build_synthesis_agent_graph(llm, audit_llm) -> StateGraph:
     graph.add_edge("fuse", "generate")
     graph.add_edge("generate", "audit")
     graph.add_conditional_edges("audit", should_continue, {"generate": "generate", "END": END})
-    return graph
+    return graph.compile()
