@@ -86,6 +86,28 @@ async def general_query(req: QueryRequest):
 
     from spma.agents.supervisor.dispatcher import build_dispatches
 
+    # 初始化检索基础设施（es_client/vector_store/embedder 由各 worker 共享）
+    es_client = None
+    vector_store = None
+    embedder = None
+    try:
+        from spma.retrieval.es_client import ESClient
+        es_client = ESClient()
+    except Exception as e:
+        logger.warning("ES 客户端初始化失败: %s", e)
+
+    try:
+        from spma.retrieval.vector_store import PGVectorStore
+        vector_store = PGVectorStore()
+    except Exception as e:
+        logger.warning("PGVector 客户端初始化失败: %s", e)
+
+    try:
+        from spma.retrieval.embedder import BGEM3Embedder
+        embedder = await BGEM3Embedder.create()
+    except Exception as e:
+        logger.warning("Embedder 初始化失败: %s", e)
+
     dispatches = build_dispatches(
         classification=classification,
         entities=entities,
@@ -116,7 +138,12 @@ async def general_query(req: QueryRequest):
             try:
                 if at == "doc":
                     from spma.agents.doc.graph import build_doc_agent_graph
-                    g = build_doc_agent_graph(llm)
+                    g = build_doc_agent_graph(
+                        es_client=es_client,
+                        vector_store=vector_store,
+                        embedder=embedder,
+                        llm=llm,
+                    )
                     result = await g.ainvoke({
                         "original_query": req.query,
                         "rewritten_queries": [rewritten_query],
@@ -133,7 +160,12 @@ async def general_query(req: QueryRequest):
                     }
                 elif at == "code":
                     from spma.agents.code.graph import build_code_agent_graph
-                    g = build_code_agent_graph(llm)
+                    g = build_code_agent_graph(
+                        file_path_cache=None,
+                        ripgrep_executor=None,
+                        ast_parser=None,
+                        llm=llm,
+                    )
                     result = await g.ainvoke({
                         "original_query": req.query,
                         "rewritten_queries": [rewritten_query],
