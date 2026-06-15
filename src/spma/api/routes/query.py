@@ -262,7 +262,7 @@ async def general_query(req: QueryRequest):
             "original_query": req.query,
             "worker_outputs": worker_outputs,
             "max_rounds": 2,
-            "round": 1,
+            "round": 0,
         })
         print(f"synthesis_result: {synthesis_result}")
     except Exception as e:

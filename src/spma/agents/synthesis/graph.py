@@ -32,6 +32,12 @@ def build_synthesis_agent_graph(llm, audit_llm) -> StateGraph:
             fused_citations=state.get("fused_citations", []),
             llm=audit_llm,
         )
+        worker_failures = [str(w.get("worker_type", "unknown")) for w in state.get("worker_outputs", []) if not w.get("citations")]
+        annotations = generate_transparency_annotations(audit_result=result, worker_failures=worker_failures)
+
+        # 在节点中递增 round（LangGraph 节点的返回值会被合并到 state，路由函数中的修改则不生效）
+        next_round = state.get("round", 0) + 1
+        state["round"] = next_round
         state["audit_result"] = {
             "verdict": result.verdict,
             "citation_coverage": result.citation_coverage,
@@ -42,20 +48,17 @@ def build_synthesis_agent_graph(llm, audit_llm) -> StateGraph:
         state["citation_coverage"] = result.citation_coverage
         state["contradictions"] = result.contradictions
         state["coverage_gaps"] = result.coverage_gaps
-
-        worker_failures = [str(w.get("worker_type", "unknown")) for w in state.get("worker_outputs", []) if not w.get("citations")]
-        annotations = generate_transparency_annotations(audit_result=result, worker_failures=worker_failures)
         state["annotations"] = annotations
         return state
 
     def should_continue(state: SynthesisAgentState) -> Literal["generate", "END"]:
-        round_num = state.get("round", 1)
+        round_num = state.get("round", 0)
         max_rounds = state.get("max_rounds", 2)
         verdict = state.get("audit_result", {}).get("verdict", "pass")
+        # 纯路由——不修改 state（条件边路由函数中的修改不会被 LangGraph 持久化）
         if verdict == "fix" and round_num < max_rounds:
-            state["round"] = round_num + 1
-            state["convergence_reason"] = "retry_fix"
             return "generate"
+        # 终止：拼接 final_answer
         draft = state.get("draft_answer", "")
         annotations = state.get("annotations", [])
         annotation_text = "\n\n---\n" + "\n".join(f"{a['icon']} **{a['message']}**: {a.get('details', '')}" for a in annotations) if annotations else ""

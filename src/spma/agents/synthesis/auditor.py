@@ -36,7 +36,7 @@ async def audit_answer(draft_answer: str, original_query: str, fused_citations: 
         resp = resp_obj.content
         data = json.loads(resp)
         result = AuditResult(
-            verdict=data.get("verdict", "fix"),
+            verdict=data.get("verdict", "pass"),
             citation_coverage=data.get("citation_coverage", 0.0),
             unverified_claims=data.get("unverified_claims", []),
             contradictions=data.get("contradictions", []),
