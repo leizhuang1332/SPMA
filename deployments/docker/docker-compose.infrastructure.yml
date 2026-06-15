@@ -4,7 +4,7 @@
 #   docker compose -f docker-compose.infrastructure.yml up -d
 #
 # 首次启动需要安装 jieba 分词器:
-#   docker compose -f docker-compose.infrastructure.yml --profile setup up
+#   docker compose -f docker-compose.infrastructure.yml --profile setup up -d
 #   docker compose -f docker-compose.infrastructure.yml restart elasticsearch
 #
 # 停止/清理:
@@ -114,6 +114,34 @@ services:
           memory: 4G
         reservations:
           memory: 1G
+  
+  redis:
+    image: redis:7-alpine
+    container_name: spma-redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --save ""
+      --appendonly no
+      --maxmemory 512m
+      --maxmemory-policy allkeys-lru
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - spma-infra
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 256M
 
 # ============================================================
 # 持久化卷
@@ -124,6 +152,8 @@ volumes:
   es_plugins:
     driver: local
   pgvector_data:
+    driver: local
+  redis_data:
     driver: local
 
 # ============================================================
