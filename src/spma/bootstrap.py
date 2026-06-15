@@ -136,6 +136,8 @@ async def init_code_agent_deps(db_pool, repo_base: str = "/repos") -> None:
 
     从 file_path_cache 表推导 repo_paths 映射（约定: {repo_base}/{repo_name}），
     然后创建 RipgrepExecutor 和 ASTParser，注入到 dependencies.py。
+
+    全量或全无：任一步骤失败时回滚所有已设置的全局单例并关闭 db_pool。
     """
     from spma.api.dependencies import (
         set_db_pool,
@@ -147,28 +149,38 @@ async def init_code_agent_deps(db_pool, repo_base: str = "/repos") -> None:
     from spma.agents.code.searcher import RipgrepExecutor
     from spma.ingestion.code.ast_parser import ASTParser
 
-    # 1. DB Pool
+    # 1. DB Pool（第一步，失败让调用方处理）
     set_db_pool(db_pool)
 
-    # 2. FilePathCache
-    file_path_cache = FilePathCache(db_pool)
-    set_file_path_cache(file_path_cache)
-
-    # 3. 从 file_path_cache 表获取已注册仓库列表
     try:
-        repos = await file_path_cache.list_repos()
+        # 2. FilePathCache
+        file_path_cache = FilePathCache(db_pool)
+        set_file_path_cache(file_path_cache)
+
+        # 3. 从 file_path_cache 表获取已注册仓库列表
+        try:
+            repos = await file_path_cache.list_repos()
+        except Exception:
+            logger.warning("file_path_cache.list_repos() 失败，repo_paths 为空", exc_info=True)
+            repos = []
+
+        # 4. 推导 repo_paths + 创建 RipgrepExecutor
+        repo_paths = {name: f"{repo_base.rstrip('/')}/{name}" for name in repos}
+        ripgrep_executor = RipgrepExecutor(repo_paths)
+        set_ripgrep_executor(ripgrep_executor)
+
+        # 5. ASTParser（零外部依赖）
+        ast_parser = ASTParser()
+        set_ast_parser(ast_parser)
+
     except Exception:
-        logger.warning("file_path_cache.list_repos() 失败，repo_paths 为空", exc_info=True)
-        repos = []
-
-    # 4. 推导 repo_paths + 创建 RipgrepExecutor
-    repo_paths = {name: f"{repo_base.rstrip('/')}/{name}" for name in repos}
-    ripgrep_executor = RipgrepExecutor(repo_paths)
-    set_ripgrep_executor(ripgrep_executor)
-
-    # 5. ASTParser（零外部依赖）
-    ast_parser = ASTParser()
-    set_ast_parser(ast_parser)
+        # 回滚：任一步骤失败，重置所有已设置的全局单例
+        set_db_pool(None)
+        set_file_path_cache(None)
+        set_ripgrep_executor(None)
+        set_ast_parser(None)
+        await db_pool.close()
+        raise
 
     logger.info(
         "Code Agent 依赖初始化完成: db_pool=%s, repos=%d, repo_paths=%s",

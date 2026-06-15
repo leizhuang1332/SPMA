@@ -208,13 +208,12 @@ def create_app() -> FastAPI:
             logger.warning("db_pool 创建失败，跳过 Code Agent 依赖初始化: %s", e)
             return
 
-        # 3. 调用 init_code_agent_deps
+        # 3. 调用 init_code_agent_deps（内部已做全量或全无 + 失败清理）
         try:
             from spma.bootstrap import init_code_agent_deps
             await init_code_agent_deps(db_pool, repo_base=repo_base)
         except Exception as e:
-            logger.warning("Code Agent 依赖初始化失败，关闭 db_pool: %s", e)
-            await db_pool.close()
+            logger.warning("Code Agent 依赖初始化失败: %s", e)
 
     return app
 
