@@ -42,18 +42,27 @@ class BGEM3Embedder:
 
         def _load():
             import os
-            # 优先从 ModelScope 下载
             os.environ.setdefault("SENTENCE_TRANSFORMERS_HOME", os.path.expanduser("~/.cache/modelscope/hub"))
 
-            from modelscope import snapshot_download
             from sentence_transformers import SentenceTransformer
 
-            # 从 ModelScope 下载到本地缓存
-            local_path = snapshot_download(MODEL_ID, cache_dir="~/.cache/modelscope/hub")
+            cache_root = os.path.expanduser("~/.cache/modelscope/hub")
+            model_dir = os.path.join(cache_root, MODEL_ID)
+
+            if os.path.isdir(model_dir) and os.listdir(model_dir):
+                logger.info("BGE-M3 已在本地缓存，跳过下载: %s", model_dir)
+                return SentenceTransformer(model_dir, device=device)
+
+            logger.info("本地缓存未命中，从 ModelScope 下载 BGE-M3...")
+            import logging as _logging
+            _logging.getLogger("modelscope").setLevel(_logging.WARNING)
+
+            from modelscope import snapshot_download
+            local_path = snapshot_download(MODEL_ID, cache_dir=cache_root)
             return SentenceTransformer(local_path, device=device)
 
         model = await asyncio.get_event_loop().run_in_executor(pool, _load)
-        logger.info("BGE-M3 加载完成，维度: %d", model.get_sentence_embedding_dimension())
+        logger.info("BGE-M3 加载完成，维度: %d", model.get_embedding_dimension())
         return cls(model, pool)
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
