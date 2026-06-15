@@ -5,6 +5,10 @@ create_app() → 注册所有路由、中间件、生命周期事件。
 设计依据: API-01 端点总览 + Phase 4 hardening design spec §6.3
 """
 
+import logging
+import os
+
+import yaml
 from fastapi import FastAPI, HTTPException, Depends, Query
 from pydantic import BaseModel
 
@@ -12,6 +16,19 @@ from spma.infrastructure.degradation import DegradationManager
 from spma.infrastructure.circuit_breaker import get_all_stats, get_circuit_breaker, has_circuit_breaker
 from spma.api.dependencies import get_degradation_manager
 from spma.api.routes.llm_admin import router as llm_admin_router
+
+logger = logging.getLogger(__name__)
+
+
+def _resolve_config_path() -> str:
+    """解析 spma 配置文件路径。优先级: 环境变量 > spma.local.yaml > spma.yaml"""
+    yaml_path = os.environ.get("SPMA_CONFIG_PATH", "")
+    if yaml_path:
+        return yaml_path
+    config_dir = os.path.join(os.path.dirname(__file__), "..", "..", "..", "config")
+    local_config = os.path.join(config_dir, "spma.local.yaml")
+    default_config = os.path.join(config_dir, "spma.yaml")
+    return local_config if os.path.exists(local_config) else default_config
 
 
 # --- Request/Response Models ---
@@ -148,17 +165,10 @@ def create_app() -> FastAPI:
     # 启动时初始化 LLMRouter 单例
     @app.on_event("startup")
     async def startup_llm_router():
-        """启动时初始化 LLMRouter 单例。优先级: 环境变量 > spma.local.yaml > spma.yaml"""
-        import os
+        """启动时初始化 LLMRouter 单例。"""
         from spma.llm.router import LLMRouter
 
-        yaml_path = os.environ.get("SPMA_CONFIG_PATH", "")
-        if not yaml_path:
-            config_dir = os.path.join(os.path.dirname(__file__), "..", "..", "..", "config")
-            local_config = os.path.join(config_dir, "spma.local.yaml")
-            default_config = os.path.join(config_dir, "spma.yaml")
-            yaml_path = local_config if os.path.exists(local_config) else default_config
-
+        yaml_path = _resolve_config_path()
         LLMRouter.initialize(os.path.abspath(yaml_path))
 
     # 启动时初始化 Code Agent 基础设施依赖
@@ -169,31 +179,20 @@ def create_app() -> FastAPI:
         复用 spma.yaml 的 connections.postgres.readonly_replica DSN。
         任一组件初始化失败优雅降级，不阻塞应用启动。
         """
-        import os
-        import logging
-        import yaml
 
-        _logger = logging.getLogger(__name__)
-
-        # 1. 读取配置（复用与 LLMRouter 相同的路径解析逻辑）
-        yaml_path = os.environ.get("SPMA_CONFIG_PATH", "")
-        if not yaml_path:
-            config_dir = os.path.join(os.path.dirname(__file__), "..", "..", "..", "config")
-            local_config = os.path.join(config_dir, "spma.local.yaml")
-            default_config = os.path.join(config_dir, "spma.yaml")
-            yaml_path = local_config if os.path.exists(local_config) else default_config
-
+        # 1. 读取配置
         try:
+            yaml_path = _resolve_config_path()
             with open(yaml_path) as f:
                 raw = yaml.safe_load(f) or {}
         except Exception as e:
-            _logger.warning("无法读取 YAML 配置，跳过 Code Agent 依赖初始化: %s", e)
+            logger.warning("无法读取 YAML 配置，跳过 Code Agent 依赖初始化: %s", e)
             return
 
         postgres_cfg = raw.get("spma", {}).get("connections", {}).get("postgres", {})
         dsn = postgres_cfg.get("readonly_replica", "")
         if not dsn:
-            _logger.warning("connections.postgres.readonly_replica 未配置，跳过 Code Agent 依赖初始化")
+            logger.warning("connections.postgres.readonly_replica 未配置，跳过 Code Agent 依赖初始化")
             return
 
         repo_base = os.environ.get(
@@ -206,7 +205,7 @@ def create_app() -> FastAPI:
             import asyncpg
             db_pool = await asyncpg.create_pool(dsn, min_size=2, max_size=10)
         except Exception as e:
-            _logger.warning("db_pool 创建失败，跳过 Code Agent 依赖初始化: %s", e)
+            logger.warning("db_pool 创建失败，跳过 Code Agent 依赖初始化: %s", e)
             return
 
         # 3. 调用 init_code_agent_deps
@@ -214,7 +213,8 @@ def create_app() -> FastAPI:
             from spma.bootstrap import init_code_agent_deps
             await init_code_agent_deps(db_pool, repo_base=repo_base)
         except Exception as e:
-            _logger.warning("Code Agent 依赖初始化失败: %s", e)
+            logger.warning("Code Agent 依赖初始化失败，关闭 db_pool: %s", e)
+            await db_pool.close()
 
     return app
 
