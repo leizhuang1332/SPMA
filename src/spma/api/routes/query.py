@@ -178,6 +178,7 @@ async def general_query(req: QueryRequest):
                             "citations": [],
                             "confidence": 0,
                             "has_exact_match": False,
+                            "rounds_used": 0,
                             "error": f"worker_not_ready:{str(e)[:100]}",
                         }
 
@@ -206,9 +207,10 @@ async def general_query(req: QueryRequest):
                     "worker_type": at,
                     "result_count": 0,
                     "citations": [],
-                    "confidence": 0.5,
+                    "confidence": 0,
                     "has_exact_match": False,
-                    "error": f"worker_not_ready:{str(e)[:100]}",
+                    "rounds_used": 0,
+                    "error": f"worker_failed:{str(e)[:100]}",
                 }
 
             if at == "sql":
