@@ -115,6 +115,7 @@ spma:
     postgres:
       readonly_replica: "${POSTGRES_READONLY_URL}"
       vector_db: "${PGVECTOR_URL}"
+      repo_base: "/repos"
     redis:
       url: "${REDIS_URL}"
       db: 0
