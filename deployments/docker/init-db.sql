@@ -10,6 +10,7 @@ GRANT ALL PRIVILEGES ON DATABASE spma_vector TO spma;
 
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 -- 3. 中文分词 (需要 zhparser 扩展已安装)
 -- 如果 zhparser 不可用会报错，暂时注释掉，需要时手动安装
@@ -64,6 +65,20 @@ CREATE TABLE IF NOT EXISTS sessions (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- file_path_cache: Code Agent 文件路径路由缓存
+CREATE TABLE IF NOT EXISTS file_path_cache (
+    id          BIGSERIAL PRIMARY KEY,
+    repo_name   TEXT NOT NULL,
+    file_path   TEXT NOT NULL,
+    file_type   TEXT,
+    updated_at  TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(repo_name, file_path)
+);
+
+CREATE INDEX IF NOT EXISTS idx_fpc_repo ON file_path_cache (repo_name);
+CREATE INDEX IF NOT EXISTS idx_fpc_path_trgm ON file_path_cache
+    USING GIN (file_path gin_trgm_ops);
 
 -- 7. 向量 store 元数据表 (向量库 spma_vector)
 \c spma_vector
