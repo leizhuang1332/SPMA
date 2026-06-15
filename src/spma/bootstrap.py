@@ -129,3 +129,48 @@ async def shutdown_infrastructure(manager: DegradationManager) -> None:
     audit = get_audit_logger()
     await audit.stop()
     logger.info("基础设施层已关闭")
+
+
+async def init_code_agent_deps(db_pool, repo_base: str = "/repos") -> None:
+    """初始化 Code Agent 基础设施依赖并注入到全局单例。
+
+    从 file_path_cache 表推导 repo_paths 映射（约定: {repo_base}/{repo_name}），
+    然后创建 RipgrepExecutor 和 ASTParser，注入到 dependencies.py。
+    """
+    from spma.api.dependencies import (
+        set_db_pool,
+        set_file_path_cache,
+        set_ripgrep_executor,
+        set_ast_parser,
+    )
+    from spma.ingestion.code.file_path_cache import FilePathCache
+    from spma.agents.code.searcher import RipgrepExecutor
+    from spma.ingestion.code.ast_parser import ASTParser
+
+    # 1. DB Pool
+    set_db_pool(db_pool)
+
+    # 2. FilePathCache
+    file_path_cache = FilePathCache(db_pool)
+    set_file_path_cache(file_path_cache)
+
+    # 3. 从 file_path_cache 表获取已注册仓库列表
+    try:
+        repos = await file_path_cache.list_repos()
+    except Exception:
+        logger.warning("file_path_cache.list_repos() 失败，repo_paths 为空")
+        repos = []
+
+    # 4. 推导 repo_paths + 创建 RipgrepExecutor
+    repo_paths = {name: f"{repo_base.rstrip('/')}/{name}" for name in repos}
+    ripgrep_executor = RipgrepExecutor(repo_paths)
+    set_ripgrep_executor(ripgrep_executor)
+
+    # 5. ASTParser（零外部依赖）
+    ast_parser = ASTParser()
+    set_ast_parser(ast_parser)
+
+    logger.info(
+        "Code Agent 依赖初始化完成: db_pool=%s, repos=%d, repo_paths=%s",
+        db_pool is not None, len(repos), repo_paths,
+    )
