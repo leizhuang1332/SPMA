@@ -161,6 +161,61 @@ def create_app() -> FastAPI:
 
         LLMRouter.initialize(os.path.abspath(yaml_path))
 
+    # 启动时初始化 Code Agent 基础设施依赖
+    @app.on_event("startup")
+    async def startup_code_agent_deps():
+        """初始化 db_pool → FilePathCache → RipgrepExecutor → ASTParser 链路。
+
+        复用 spma.yaml 的 connections.postgres.readonly_replica DSN。
+        任一组件初始化失败优雅降级，不阻塞应用启动。
+        """
+        import os
+        import logging
+        import yaml
+
+        _logger = logging.getLogger(__name__)
+
+        # 1. 读取配置（复用与 LLMRouter 相同的路径解析逻辑）
+        yaml_path = os.environ.get("SPMA_CONFIG_PATH", "")
+        if not yaml_path:
+            config_dir = os.path.join(os.path.dirname(__file__), "..", "..", "..", "config")
+            local_config = os.path.join(config_dir, "spma.local.yaml")
+            default_config = os.path.join(config_dir, "spma.yaml")
+            yaml_path = local_config if os.path.exists(local_config) else default_config
+
+        try:
+            with open(yaml_path) as f:
+                raw = yaml.safe_load(f) or {}
+        except Exception as e:
+            _logger.warning("无法读取 YAML 配置，跳过 Code Agent 依赖初始化: %s", e)
+            return
+
+        postgres_cfg = raw.get("spma", {}).get("connections", {}).get("postgres", {})
+        dsn = postgres_cfg.get("readonly_replica", "")
+        if not dsn:
+            _logger.warning("connections.postgres.readonly_replica 未配置，跳过 Code Agent 依赖初始化")
+            return
+
+        repo_base = os.environ.get(
+            "SPMA_REPO_BASE",
+            postgres_cfg.get("repo_base", "/repos"),
+        )
+
+        # 2. 创建 db_pool
+        try:
+            import asyncpg
+            db_pool = await asyncpg.create_pool(dsn, min_size=2, max_size=10)
+        except Exception as e:
+            _logger.warning("db_pool 创建失败，跳过 Code Agent 依赖初始化: %s", e)
+            return
+
+        # 3. 调用 init_code_agent_deps
+        try:
+            from spma.bootstrap import init_code_agent_deps
+            await init_code_agent_deps(db_pool, repo_base=repo_base)
+        except Exception as e:
+            _logger.warning("Code Agent 依赖初始化失败: %s", e)
+
     return app
 
 
