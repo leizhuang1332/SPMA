@@ -159,11 +159,32 @@ async def general_query(req: QueryRequest):
                         "rounds_used": result.get("rounds_used", 1),
                     }
                 elif at == "code":
+                    from spma.api.dependencies import (
+                        get_file_path_cache,
+                        get_ripgrep_executor,
+                        get_ast_parser,
+                    )
                     from spma.agents.code.graph import build_code_agent_graph
+
+                    try:
+                        file_path_cache = get_file_path_cache()
+                        ripgrep_executor = get_ripgrep_executor()
+                        ast_parser = get_ast_parser()
+                    except RuntimeError as e:
+                        logger.warning("Code Agent 依赖未初始化，跳过 code worker: %s", e)
+                        return {
+                            "worker_type": at,
+                            "result_count": 0,
+                            "citations": [],
+                            "confidence": 0,
+                            "has_exact_match": False,
+                            "error": f"worker_not_ready:{str(e)[:100]}",
+                        }
+
                     g = build_code_agent_graph(
-                        file_path_cache=None,
-                        ripgrep_executor=None,
-                        ast_parser=None,
+                        file_path_cache=file_path_cache,
+                        ripgrep_executor=ripgrep_executor,
+                        ast_parser=ast_parser,
                         llm=llm,
                     )
                     result = await g.ainvoke({
