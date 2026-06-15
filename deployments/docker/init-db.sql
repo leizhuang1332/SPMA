@@ -6,7 +6,7 @@ CREATE DATABASE spma_vector;
 GRANT ALL PRIVILEGES ON DATABASE spma_vector TO spma;
 
 -- 2. 在主库启用扩展
-\c spma
+-- \c spma
 
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
@@ -19,7 +19,7 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;
 -- ALTER TEXT SEARCH CONFIGURATION chinese ADD MAPPING FOR n,v,a,i,e,l WITH simple;
 
 -- 4. 在向量库启用扩展
-\c spma_vector
+-- \c spma_vector
 
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
@@ -30,7 +30,7 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 -- ALTER TEXT SEARCH CONFIGURATION chinese ADD MAPPING FOR n,v,a,i,e,l WITH simple;
 
 -- 6. 元数据表 (主库 spma)
-\c spma
+-- \c spma
 
 CREATE TABLE IF NOT EXISTS feature_flags (
     id          SERIAL PRIMARY KEY,
@@ -81,7 +81,7 @@ CREATE INDEX IF NOT EXISTS idx_fpc_path_trgm ON file_path_cache
     USING GIN (file_path gin_trgm_ops);
 
 -- 7. 向量 store 元数据表 (向量库 spma_vector)
-\c spma_vector
+-- \c spma_vector
 
 CREATE TABLE IF NOT EXISTS vector_collections (
     id          SERIAL PRIMARY KEY,
