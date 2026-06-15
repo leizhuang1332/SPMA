@@ -3,10 +3,18 @@ import pytest
 
 
 class TestCodeAgentDependencies:
+    @pytest.fixture(autouse=True)
+    def _reset_globals(self):
+        """Reset all singletons to None before each test to prevent leakage."""
+        import spma.api.dependencies as dep
+        dep._db_pool = None
+        dep._file_path_cache = None
+        dep._ripgrep_executor = None
+        dep._ast_parser = None
+
     def test_get_db_pool_raises_when_not_set(self):
         """get_db_pool should raise RuntimeError when not initialized."""
         from spma.api import dependencies as dep
-        dep.set_db_pool(None)  # ensure uninitialized
         with pytest.raises(RuntimeError, match="db_pool not initialized"):
             dep.get_db_pool()
 
