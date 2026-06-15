@@ -119,6 +119,8 @@ async def general_query(req: QueryRequest):
     worker_tasks = []
 
     for dispatch in dispatches:
+
+        print(f"dispatch: {dispatch}")
         # LangGraph Send 对象: .node = worker 节点名, .arg = WorkerDispatch dict
         dispatch_arg = dispatch.arg if hasattr(dispatch, 'arg') else dispatch
         agent_type = dispatch_arg.get("agent_type", "doc")
@@ -235,6 +237,7 @@ async def general_query(req: QueryRequest):
     if worker_tasks:
         results = await asyncio.gather(*worker_tasks, return_exceptions=True)
         for r in results:
+            print(f"rrrrrr: {r}")
             if isinstance(r, Exception):
                 worker_outputs.append({"error": str(r), "result_count": 0})
             else:
@@ -248,18 +251,20 @@ async def general_query(req: QueryRequest):
         classification.get("query_type", "search"),
         threshold=0.6,
     )
-
+    print(f"quality_result: {quality_result}")
     # ---- 6. 合成 (Synthesis Agent) ----
     try:
         from spma.agents.synthesis.graph import build_synthesis_agent_graph
 
         synthesis_graph = build_synthesis_agent_graph(llm=llm, audit_llm=llm)
+        print(f"synthesis_graph: {synthesis_graph}")
         synthesis_result = await synthesis_graph.ainvoke({
             "original_query": req.query,
             "worker_outputs": worker_outputs,
             "max_rounds": 2,
             "round": 1,
         })
+        print(f"synthesis_result: {synthesis_result}")
     except Exception as e:
         logger.warning(f"Synthesis agent 失败: {e}")
         synthesis_result = {
@@ -268,9 +273,10 @@ async def general_query(req: QueryRequest):
             "annotations": [],
             "convergence_reason": "synthesis_not_implemented",
         }
+        print(f"synthesis_result: {synthesis_result}")
 
     total_latency = int((time.time() - start_time) * 1000)
-
+    print(f"total_latency: {total_latency}")
     # ---- 7. Trace 日志 ----
     try:
         from spma.observability.trace_logger import AgentTraceLogger
