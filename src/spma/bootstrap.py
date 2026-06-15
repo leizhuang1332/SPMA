@@ -158,7 +158,7 @@ async def init_code_agent_deps(db_pool, repo_base: str = "/repos") -> None:
     try:
         repos = await file_path_cache.list_repos()
     except Exception:
-        logger.warning("file_path_cache.list_repos() 失败，repo_paths 为空")
+        logger.warning("file_path_cache.list_repos() 失败，repo_paths 为空", exc_info=True)
         repos = []
 
     # 4. 推导 repo_paths + 创建 RipgrepExecutor

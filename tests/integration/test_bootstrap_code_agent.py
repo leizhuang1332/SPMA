@@ -2,6 +2,17 @@
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _reset_code_agent_globals():
+    """Reset all Code Agent singletons to None after each test."""
+    yield
+    import spma.api.dependencies as dep
+    dep._db_pool = None
+    dep._file_path_cache = None
+    dep._ripgrep_executor = None
+    dep._ast_parser = None
+
+
 class TestInitCodeAgentDeps:
     @pytest.mark.asyncio
     async def test_init_code_agent_deps_populates_singletons(self):
