@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 class GitManager:
     """管理本地 Git 仓库的 clone、pull 和状态。"""
 
-    def __init__(self, base_dir: str = "/data/repos"):
+    def __init__(self, base_dir: str = "./data/repos"):
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self._locks: dict[str, asyncio.Lock] = {}

@@ -60,6 +60,9 @@ coverage.xml
 deployments/helm/spma/charts/
 deployments/helm/spma/Chart.lock
 
+# Runtime data
+data/
+
 # Temporary files
 *.tmp
 *.bak

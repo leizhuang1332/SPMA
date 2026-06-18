@@ -240,7 +240,11 @@ def create_app() -> FastAPI:
         except RuntimeError:
             ast_parser = ASTParser()
 
-        git_manager = GitManager()
+        repo_base = os.environ.get(
+            "SPMA_REPO_BASE",
+            pg_cfg.get("repo_base", "./data/repos"),
+        )
+        git_manager = GitManager(base_dir=repo_base)
         repo_urls = ingestion_cfg.get("code", {}).get("repo_urls", {})
         code_pipeline = CodeIngestionPipeline(git_manager, fpc, ast_parser, repo_urls)
 
@@ -297,7 +301,7 @@ def create_app() -> FastAPI:
 
         repo_base = os.environ.get(
             "SPMA_REPO_BASE",
-            postgres_cfg.get("repo_base", "/repos"),
+            postgres_cfg.get("repo_base", "./data/repos"),
         )
 
         # 2. 创建 db_pool
