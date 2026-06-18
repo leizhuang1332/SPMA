@@ -102,6 +102,8 @@ class PGVectorStore:
             INSERT INTO chunk_embeddings (chunk_id, source_id, source_type, content, embedding, metadata)
             VALUES ($1, $2, $3, $4, $5::vector, $6)
             ON CONFLICT (chunk_id) DO UPDATE SET
+                source_id = EXCLUDED.source_id,
+                source_type = EXCLUDED.source_type,
                 embedding = EXCLUDED.embedding,
                 content = EXCLUDED.content,
                 metadata = EXCLUDED.metadata
@@ -114,6 +116,44 @@ class PGVectorStore:
             json.dumps(metadata or {}),
         )
 
+    async def upsert_batch(
+        self,
+        chunks: list[dict],
+    ) -> None:
+        """批量插入或更新向量记录。
+
+        Args:
+            chunks: 列表，每个元素为 {
+                chunk_id, source_id, source_type, content,
+                embedding (list[float]), metadata (dict | None)
+            }
+        """
+        import json
+
+        pool = await self._ensure_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                for chunk in chunks:
+                    vector_str = f"[{','.join(str(v) for v in chunk['embedding'])}]"
+                    await conn.execute(
+                        """
+                        INSERT INTO chunk_embeddings (chunk_id, source_id, source_type, content, embedding, metadata)
+                        VALUES ($1, $2, $3, $4, $5::vector, $6)
+                        ON CONFLICT (chunk_id) DO UPDATE SET
+                            source_id = EXCLUDED.source_id,
+                            source_type = EXCLUDED.source_type,
+                            embedding = EXCLUDED.embedding,
+                            content = EXCLUDED.content,
+                            metadata = EXCLUDED.metadata
+                        """,
+                        chunk["chunk_id"],
+                        chunk["source_id"],
+                        chunk["source_type"],
+                        chunk["content"],
+                        vector_str,
+                        json.dumps(chunk.get("metadata") or {}),
+                    )
+
     async def delete_by_source(self, source_id: str) -> int:
         """按 source_id 删除所有关联向量记录。
 
@@ -121,13 +161,11 @@ class PGVectorStore:
             删除的记录数
         """
         pool = await self._ensure_pool()
-        result = await pool.execute(
-            "DELETE FROM chunk_embeddings WHERE source_id = $1",
+        rows = await pool.fetch(
+            "DELETE FROM chunk_embeddings WHERE source_id = $1 RETURNING chunk_id",
             source_id,
         )
-        # asyncpg execute 返回 "DELETE N" 格式字符串
-        deleted = int(result.split()[-1]) if result else 0
-        return deleted
+        return len(rows)
 
     async def health_check(self) -> bool:
         """检查 PGVector 连接是否可用。"""

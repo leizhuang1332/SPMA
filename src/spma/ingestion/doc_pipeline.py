@@ -65,14 +65,14 @@ class DocIngestionPipeline:
         pg_count = 0
         try:
             embeddings = await self.embedder.embed([c.content for c in chunks])
-            for chunk, emb in zip(chunks, embeddings):
-                await self.vector_store.upsert(
-                    chunk_id=chunk.chunk_id,
-                    source_id=chunk.source_id,
-                    source_type=chunk.source_type,
-                    content=chunk.content,
-                    embedding=emb,
-                    metadata={
+            batch = [
+                {
+                    "chunk_id": chunk.chunk_id,
+                    "source_id": chunk.source_id,
+                    "source_type": chunk.source_type,
+                    "content": chunk.content,
+                    "embedding": emb,
+                    "metadata": {
                         "req_ids": chunk.req_ids,
                         "doc_type": chunk.doc_type,
                         "version": chunk.version,
@@ -80,8 +80,11 @@ class DocIngestionPipeline:
                         "chunk_index": chunk.chunk_index,
                         "page_title": chunk.page_title,
                     },
-                )
-                pg_count += 1
+                }
+                for chunk, emb in zip(chunks, embeddings)
+            ]
+            await self.vector_store.upsert_batch(batch)
+            pg_count = len(batch)
         except Exception as e:
             logger.error(f"PGVector 写入失败 (source={source_id}): {e}")
 
@@ -127,7 +130,7 @@ class DocIngestionPipeline:
         return {
             "chunk_id": chunk.chunk_id,
             "source_id": chunk.source_id,
-            "source_type": "prd",
+            "source_type": chunk.source_type,
             "req_ids": chunk.req_ids,
             "content": chunk.content,
             "doc_type": chunk.doc_type,
