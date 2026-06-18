@@ -1,10 +1,11 @@
-"""Doc Agent 的 LangGraph StateGraph 定义。
+"""Doc Agent 的 LangGraph StateGraph 定义——方案三改造版。
 
-节点: route(检索模式选择) → search(混合检索) → aggregate(累计去重) → assess(完备度判断)
-条件边: 不够 → expand(线索扩展) → 回到search / 够了 → END
+节点: route → search → aggregate → assess ──→ expand → search
+                                      └──→ END
+
+改动范围：仅 search_node 替换为管道委托，其余节点完全不变。
 """
 
-import asyncio
 from typing import Literal
 
 from langgraph.graph import StateGraph, END
@@ -13,69 +14,87 @@ from spma.agents.doc.state import DocAgentState
 from spma.agents.doc.retriever import route_retrieval_mode
 from spma.agents.doc.completeness import assess_completeness
 from spma.agents.doc.clue_expander import rule_based_expand, llm_based_expand
-from spma.retrieval.rrf_fusion import weighted_fusion
 
 
-def build_doc_agent_graph(es_client, vector_store, embedder, llm, hyde_llm=None, weights_config=None):
-    """构建 Doc Agent 的 LangGraph StateGraph。"""
+def build_doc_agent_graph(
+    es_client, vector_store, embedder, llm,
+    hyde_llm=None, weights_config=None
+):
+    """构建 Doc Agent 的 LangGraph StateGraph——方案三深度集成 LlamaIndex。"""
     wc = weights_config or {}
 
+    # ========== 方案三：初始化 LlamaIndex 管道 ==========
+    from spma.agents.doc.llamaindex_pipeline import (
+        AdvancedLlamaIndexPipeline,
+        PipelineConfig,
+    )
+
+    pipeline_config = PipelineConfig(
+        dsn=(
+            vector_store._dsn
+            if hasattr(vector_store, "_dsn")
+            else "postgresql://spma:spma123@localhost:5433/spma"
+        ),
+        rrf_k=wc.get("rrf", {}).get("k", 60),
+        rrf_bm25_weight=wc.get("weights", {})
+        .get("hybrid", {})
+        .get("bm25", 0.5),
+        rrf_vector_weight=wc.get("weights", {})
+        .get("hybrid", {})
+        .get("vector", 0.5),
+    )
+    llama_pipeline = AdvancedLlamaIndexPipeline(
+        es_client=es_client,
+        config=pipeline_config,
+    )
+    llama_pipeline.initialize(embedder=embedder, hyde_llm=hyde_llm)
+
+    # ========== 路由节点（不变）==========
     async def route_node(state: DocAgentState) -> dict:
         entities = state.get("entities", {})
         mode = route_retrieval_mode(entities)
         state["weight_mode"] = mode
         query = state.get("original_query", "")
-        hyde_enabled = len(query) <= 30 and not entities.get("req_ids") and hyde_llm is not None
+        hyde_enabled = (
+            len(query) <= 30
+            and not entities.get("req_ids")
+            and hyde_llm is not None
+        )
         state["hyde_enabled"] = hyde_enabled
         return state
 
+    # ========== 搜索节点（方案三改造：委托给管道）==========
     async def search_node(state: DocAgentState) -> dict:
         query = state.get("current_query", state.get("original_query", ""))
-        mode = state.get("weight_mode", "semantic")
         entities = state.get("entities", {})
-
-        es_filters = None
-        if mode == "precise" and entities.get("req_ids"):
-            es_filters = {"req_ids": entities["req_ids"]}
-
-        bm25_results: list[dict] = []
-        vector_results: list[dict] = []
+        mode = state.get("weight_mode", "hybrid")
 
         try:
-            es_future = es_client.search(query, top_k=20, filters=es_filters)
-            query_embedding = await embedder.embed([query])
-            vector_future = vector_store.search(embedding=query_embedding[0], top_k=20, table="chunk_embeddings")
-            bm25_results, vector_results = await asyncio.gather(es_future, vector_future)
+            fused = await llama_pipeline.search(
+                query=query,
+                mode=mode,
+                entities=entities,
+                hyde_llm=hyde_llm if state.get("hyde_enabled") else None,
+            )
         except Exception:
-            pass
+            fused = []
 
-        hyde_results = []
-        if state.get("hyde_enabled") and hyde_llm:
-            try:
-                hyde_obj = await hyde_llm.ainvoke(query)
-                hyde_text = hyde_obj.content
-                hyde_emb = await embedder.embed([hyde_text])
-                hyde_results = await vector_store.search(embedding=hyde_emb[0], top_k=10, table="chunk_embeddings")
-            except Exception:
-                pass
+        # 保持与现有状态接口兼容
+        for r in fused:
+            r["source_type"] = r.get("source_type", mode)
 
-        all_vector = list(vector_results) + hyde_results
-
-        # Get mode-specific weights for weighted RRF fusion
-        mode_weights = wc.get("weights", {}).get(mode, {"bm25": 0.5, "vector": 0.5})
-
-        # Tag results with source_type for weighted fusion
-        for r in bm25_results:
-            r["source_type"] = "bm25"
-        for r in all_vector:
-            r["source_type"] = "vector"
-
-        weights = {"bm25": mode_weights.get("bm25", 0.5), "vector": mode_weights.get("vector", 0.5)}
-        fused = weighted_fusion([bm25_results, all_vector], weights=weights, top_k=10, k=wc.get("rrf", {}).get("k", 60))
-        state["bm25_candidates"] = bm25_results[:20]
-        state["vector_candidates"] = all_vector[:20]
+        state["bm25_candidates"] = [
+            r for r in fused
+            if r.get("metadata", {}).get("retrieval_source") == "bm25"
+        ][:20]
+        state["vector_candidates"] = [
+            r for r in fused
+            if r.get("metadata", {}).get("retrieval_source") != "bm25"
+        ][:20]
         state["fused_results"] = fused
         return state
+
+    # ========== 以下节点完全不变 ==========
 
     async def aggregate_node(state: DocAgentState) -> dict:
         prev = state.get("accumulated_results", [])
@@ -93,14 +112,17 @@ def build_doc_agent_graph(es_client, vector_store, embedder, llm, hyde_llm=None,
         entities = state.get("entities", {})
         thresholds = wc.get("thresholds", {})
         outcome = await assess_completeness(
-            results=results, entities=entities, llm=llm,
+            results=results,
+            entities=entities,
+            llm=llm,
             min_results=thresholds.get("min_results_converge", 5),
-            vector_threshold=thresholds.get("vector_similarity_converge", 0.85),
+            vector_threshold=thresholds.get(
+                "vector_similarity_converge", 0.85
+            ),
         )
         state["assessment"] = outcome.verdict
         state["convergence_reason"] = f"{outcome.level}:{outcome.reason}"
 
-        # 收敛或达到最大轮数 → 设置终止状态
         round_num = state.get("round", 1)
         max_rounds = state.get("max_rounds", 3)
         if outcome.verdict == "converge" or round_num >= max_rounds:
@@ -118,20 +140,23 @@ def build_doc_agent_graph(es_client, vector_store, embedder, llm, hyde_llm=None,
             for rid in r.get("req_ids", []):
                 known_req_ids.add(rid)
         if round_num <= 2:
-            new_query = rule_based_expand(original_query, results, known_req_ids)
+            new_query = rule_based_expand(
+                original_query, results, known_req_ids
+            )
         else:
-            new_query = await llm_based_expand(original_query, results, llm)
+            new_query = await llm_based_expand(
+                original_query, results, llm
+            )
         state["current_query"] = new_query
         state["round"] = round_num + 1
         return state
 
     def should_continue(state: DocAgentState) -> Literal["expand", "END"]:
-        # 如果 assess_node 已设置 final_results，说明已终止
         if state.get("final_results") is not None:
             return "END"
-        # 否则继续扩展
         return "expand"
 
+    # Graph 组装（不变）
     graph = StateGraph(DocAgentState)
     graph.add_node("route", route_node)
     graph.add_node("search", search_node)
@@ -142,6 +167,8 @@ def build_doc_agent_graph(es_client, vector_store, embedder, llm, hyde_llm=None,
     graph.add_edge("route", "search")
     graph.add_edge("search", "aggregate")
     graph.add_edge("aggregate", "assess")
-    graph.add_conditional_edges("assess", should_continue, {"expand": "expand", "END": END})
+    graph.add_conditional_edges(
+        "assess", should_continue, {"expand": "expand", "END": END}
+    )
     graph.add_edge("expand", "search")
     return graph.compile()

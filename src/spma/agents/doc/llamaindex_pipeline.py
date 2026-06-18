@@ -110,7 +110,20 @@ class AdvancedLlamaIndexPipeline:
         self._embedder = embedder
         Settings.embed_model = BGEM3EmbeddingAdapter(embedder)
 
-        vector_store = LlamaPGVectorStore.from_uri(self._config.dsn)
+        vector_store = LlamaPGVectorStore(
+            connection_string=self._config.dsn,
+            async_connection_string=self._config.dsn,
+            table_name="chunk_embeddings",
+            schema_name="public",
+            embed_dim=1024,
+            hybrid_search=True,
+            text_search_config="english",
+            cache_ok=False,
+            perform_setup=False,
+            debug=False,
+            use_jsonb=True,
+            hnsw_kwargs=None,
+        )
         self._index = VectorStoreIndex.from_vector_store(vector_store)
         self._hyde_llm = hyde_llm
 
