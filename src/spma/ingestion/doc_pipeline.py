@@ -62,15 +62,28 @@ class DocIngestionPipeline:
         # 并行写入 ES + PGVector
         es_count = await self.es.index_chunks(chunk_dicts)
 
+        pg_count = 0
         try:
             embeddings = await self.embedder.embed([c.content for c in chunks])
-            pg_count = await self.vector_store.upsert(
-                [(c.chunk_id, emb, c.source_id) for c, emb in zip(chunks, embeddings)],
-                table="chunk_embeddings",
-            )
+            for chunk, emb in zip(chunks, embeddings):
+                await self.vector_store.upsert(
+                    chunk_id=chunk.chunk_id,
+                    source_id=chunk.source_id,
+                    source_type=chunk.source_type,
+                    content=chunk.content,
+                    embedding=emb,
+                    metadata={
+                        "req_ids": chunk.req_ids,
+                        "doc_type": chunk.doc_type,
+                        "version": chunk.version,
+                        "updated_at": chunk.updated_at,
+                        "chunk_index": chunk.chunk_index,
+                        "page_title": chunk.page_title,
+                    },
+                )
+                pg_count += 1
         except Exception as e:
             logger.error(f"PGVector 写入失败 (source={source_id}): {e}")
-            pg_count = 0
 
         logger.info(
             f"摄入完成: source={source_id}, chunks={len(chunks)}, "

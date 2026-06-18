@@ -114,6 +114,21 @@ class PGVectorStore:
             json.dumps(metadata or {}),
         )
 
+    async def delete_by_source(self, source_id: str) -> int:
+        """按 source_id 删除所有关联向量记录。
+
+        Returns:
+            删除的记录数
+        """
+        pool = await self._ensure_pool()
+        result = await pool.execute(
+            "DELETE FROM chunk_embeddings WHERE source_id = $1",
+            source_id,
+        )
+        # asyncpg execute 返回 "DELETE N" 格式字符串
+        deleted = int(result.split()[-1]) if result else 0
+        return deleted
+
     async def health_check(self) -> bool:
         """检查 PGVector 连接是否可用。"""
         try:
