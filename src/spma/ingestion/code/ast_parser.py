@@ -5,6 +5,7 @@
 语法树遍历使用递归 walk，避免 query 依赖。
 """
 
+import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
@@ -13,6 +14,12 @@ from pathlib import Path
 import tree_sitter
 
 logger = logging.getLogger(__name__)
+
+
+def _read_file_sync(file_path: str) -> str:
+    """Synchronous file read helper for asyncio.to_thread."""
+    with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+        return f.read()
 
 LANG_MAP = {
     "py": "python",
@@ -141,12 +148,11 @@ class ASTParser:
             return await self._parse_with_regex(file_path, language)
 
         try:
-            with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-                source = f.read()
+            source = await asyncio.to_thread(_read_file_sync, file_path)
         except Exception:
             return CodeFileAST().to_dict()
 
-        tree = parser.parse(source.encode("utf-8"))
+        tree = await asyncio.to_thread(parser.parse, source.encode("utf-8"))
         ast = self._extract_from_tree(tree.root_node, source, language)
         return ast.to_dict()
 
@@ -221,12 +227,20 @@ class ASTParser:
                 name = source[name_node.start_byte:name_node.end_byte] if name_node else "<anonymous>"
                 parent = node.parent
                 class_name = None
-                while parent:
-                    if parent.type in ("class_definition", "class_declaration", "type_declaration"):
-                        cn = parent.child_by_field_name("name")
-                        class_name = source[cn.start_byte:cn.end_byte] if cn else None
-                        break
-                    parent = parent.parent
+
+                # Go method_declaration: receiver is a parameter_list child
+                if language == "go" and node.type == "method_declaration":
+                    class_name = self._extract_go_receiver(node, source)
+
+                # Fallback: walk up the parent tree for class/type declarations
+                if class_name is None:
+                    while parent:
+                        if parent.type in ("class_definition", "class_declaration", "type_declaration"):
+                            cn = parent.child_by_field_name("name")
+                            class_name = source[cn.start_byte:cn.end_byte] if cn else None
+                            break
+                        parent = parent.parent
+
                 ast.functions.append(FunctionInfo(
                     name=name,
                     line_start=node.start_point[0] + 1,
@@ -279,55 +293,102 @@ class ASTParser:
                 current_func = source[name_node.start_byte:name_node.end_byte] if name_node else "<anonymous>"
                 parent = node.parent
                 current_class = None
-                while parent:
-                    if parent.type in ("class_definition", "class_declaration", "type_declaration"):
-                        cn = parent.child_by_field_name("name")
-                        current_class = source[cn.start_byte:cn.end_byte] if cn else None
-                        break
-                    parent = parent.parent
+
+                # Go method_declaration: extract receiver type
+                if language == "go" and node.type == "method_declaration":
+                    current_class = self._extract_go_receiver(node, source)
+
+                # Fallback: walk up the parent tree
+                if current_class is None:
+                    while parent:
+                        if parent.type in ("class_definition", "class_declaration", "type_declaration"):
+                            cn = parent.child_by_field_name("name")
+                            current_class = source[cn.start_byte:cn.end_byte] if cn else None
+                            break
+                        parent = parent.parent
 
             if node.type in targets and current_func:
-                callee = self._extract_callee_name(node, source, language)
+                callee, callee_class = self._extract_callee_name(node, source, language)
                 if callee:
                     ast.calls.append(CallInfo(
-                        caller=current_func, callee=callee, caller_class=current_class,
+                        caller=current_func, callee=callee,
+                        caller_class=current_class, callee_class=callee_class,
                     ))
 
             for child in node.children:
                 walk(child, current_func, current_class)
         walk(root)
 
-    def _extract_callee_name(self, node, source, language) -> str | None:
-        """Extract the callee name from a call node."""
+    def _extract_go_receiver(self, method_node, source: str) -> str | None:
+        """Extract the receiver type name from a Go method_declaration node."""
+        # Go method_declaration structure:
+        #   method_declaration
+        #     "func" keyword
+        #     parameter_list (receiver) — e.g. "(s *MyStruct)"
+        #     field_identifier (method name)
+        #     parameter_list (params)
+        #     ...
+        for child in method_node.children:
+            if child.type == "parameter_list":
+                # The first parameter_list is the receiver
+                # Navigate into it to find the type
+                for inner in child.children:
+                    if inner.type == "parameter_declaration":
+                        type_node = inner.child_by_field_name("type")
+                        if type_node:
+                            type_name = source[type_node.start_byte:type_node.end_byte]
+                            # Strip pointer prefix (*MyStruct -> MyStruct)
+                            return type_name.lstrip("*")
+                        # Could also be just the type directly
+                        break
+                break
+        return None
+
+    def _extract_callee_name(self, node, source, language) -> tuple[str | None, str | None]:
+        """Extract the callee name and optional class hint from a call node.
+
+        Returns (callee_name, callee_class) tuple.
+        """
         if language == "python":
             func_node = node.child_by_field_name("function")
             if func_node:
                 if func_node.type == "identifier":
-                    return source[func_node.start_byte:func_node.end_byte]
+                    return source[func_node.start_byte:func_node.end_byte], None
                 elif func_node.type == "attribute":
+                    # obj.method() — extract both object and method
+                    obj = func_node.child_by_field_name("object")
                     attr = func_node.child_by_field_name("attribute")
-                    return source[attr.start_byte:attr.end_byte] if attr else None
+                    obj_name = source[obj.start_byte:obj.end_byte] if obj else None
+                    attr_name = source[attr.start_byte:attr.end_byte] if attr else None
+                    return attr_name, obj_name
         elif language in ("typescript", "javascript", "tsx"):
             func_node = node.child_by_field_name("function")
             if func_node:
                 if func_node.type == "identifier":
-                    return source[func_node.start_byte:func_node.end_byte]
+                    return source[func_node.start_byte:func_node.end_byte], None
                 elif func_node.type == "member_expression":
+                    # obj.method() — extract both object and property
+                    obj = func_node.child_by_field_name("object")
                     prop = func_node.child_by_field_name("property")
-                    return source[prop.start_byte:prop.end_byte] if prop else None
+                    obj_name = source[obj.start_byte:obj.end_byte] if obj else None
+                    prop_name = source[prop.start_byte:prop.end_byte] if prop else None
+                    return prop_name, obj_name
         elif language == "java":
             name_node = node.child_by_field_name("name")
             if name_node:
-                return source[name_node.start_byte:name_node.end_byte]
+                return source[name_node.start_byte:name_node.end_byte], None
         elif language == "go":
             func_node = node.child_by_field_name("function")
             if func_node:
                 if func_node.type == "identifier":
-                    return source[func_node.start_byte:func_node.end_byte]
+                    return source[func_node.start_byte:func_node.end_byte], None
                 elif func_node.type == "selector_expression":
+                    operand = func_node.child_by_field_name("operand")
                     field = func_node.child_by_field_name("field")
-                    return source[field.start_byte:field.end_byte] if field else None
-        return None
+                    op_name = source[operand.start_byte:operand.end_byte] if operand else None
+                    field_name = source[field.start_byte:field.end_byte] if field else None
+                    return field_name, op_name
+        return None, None
 
     def _walk_for_imports(self, root, source, language, ast):
         import_types = {
@@ -344,7 +405,10 @@ class ASTParser:
             if node.type in targets:
                 text = source[node.start_byte:node.end_byte]
                 if language == "python":
-                    mods = re.findall(r'(?:from|import)\s+(\S+)', text)
+                    if text.strip().startswith("from"):
+                        mods = re.findall(r'from\s+(\S+)', text)  # module only
+                    else:
+                        mods = re.findall(r'import\s+(\S+)', text)
                     for m in mods:
                         ast.imports.append(ImportInfo(module=m.strip(",")))
                 elif language in ("typescript", "javascript", "tsx"):
@@ -366,8 +430,7 @@ class ASTParser:
     async def _parse_with_regex(self, file_path: str, language: str) -> dict:
         """Regex fallback when TreeSitter grammar is not available."""
         try:
-            with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-                source = f.read()
+            source = await asyncio.to_thread(_read_file_sync, file_path)
         except Exception:
             return CodeFileAST().to_dict()
 

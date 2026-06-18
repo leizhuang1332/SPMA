@@ -46,13 +46,36 @@ async def expand_via_ast(
         calls = ast_result.get("calls", []) if isinstance(ast_result, dict) else []
         called_by = ast_result.get("called_by", []) if isinstance(ast_result, dict) else []
         imports = ast_result.get("imports", []) if isinstance(ast_result, dict) else []
+        functions = ast_result.get("functions", []) if isinstance(ast_result, dict) else []
 
+        # Build a lookup from function name to its file path (for cross-file resolution)
+        func_file_map: dict[str, str] = {}
+        for func in functions:
+            fname = func.get("name", "") if isinstance(func, dict) else ""
+            if fname:
+                func_file_map[fname] = file_path
+
+        # Use callee names from calls to find potential related files
         for call in calls[:5]:
-            target_file = call.get("file", "") if isinstance(call, dict) else str(call)
-            if target_file and target_file not in seen_files:
-                seen_files.add(target_file)
-                expanded.append({"repo": repo, "file_path": target_file, "file_content": "",
-                    "calls": [], "called_by": [], "imports": [], "relation_to_seed": file_path, "depth": 1})
+            if not isinstance(call, dict):
+                continue
+            callee_name = call.get("callee", "")
+            # For cross-file expansion, we record the callee name as a hint;
+            # actual file resolution happens when the downstream consumer uses
+            # the function name to search for its definition file.
+            if callee_name and callee_name not in seen_files:
+                entry = {
+                    "repo": repo, "file_path": "",
+                    "function_name": callee_name,
+                    "callee_class": call.get("callee_class"),
+                    "caller": call.get("caller"),
+                    "caller_class": call.get("caller_class"),
+                    "file_content": "",
+                    "calls": [], "called_by": [], "imports": [],
+                    "relation_to_seed": file_path, "depth": 1,
+                }
+                seen_files.add(callee_name)
+                expanded.append(entry)
 
         if file_path not in seen_files:
             seen_files.add(file_path)
