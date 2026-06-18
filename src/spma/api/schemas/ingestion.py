@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Literal, Optional, TypedDict
 
@@ -205,7 +206,17 @@ class IngestionError(BaseModel):
     severity: str
 
 
-class PipelineRunStatus(BaseModel):
+class IngestionResponse(BaseModel):
+    pipeline_run_id: str
+    source: str | None = None
+    mode: str
+    status: str
+    started_at: str | None = None
+    estimated_completion: str | None = None
+    stats: dict = Field(default_factory=dict)
+
+
+class PipelineRunDetail(BaseModel):
     """特定摄入运行状态。"""
     pipeline_run_id: str
     pipeline_type: str
@@ -268,7 +279,7 @@ class IngestionSchedule(BaseModel):
 # 同义词映射表管理 (API-05 §10)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class SynonymMapRefreshRequest(BaseModel):
+class SynonymRefreshRequest(BaseModel):
     """同义词映射表刷新请求。"""
     sources: list[str] = Field(
         default=["information_schema", "prd_titles", "git_dirs"]
@@ -277,7 +288,7 @@ class SynonymMapRefreshRequest(BaseModel):
     confidence_threshold: float = Field(default=0.9, ge=0.0, le=1.0)
 
 
-class SynonymMapEntry(BaseModel):
+class SynonymEntry(BaseModel):
     id: int
     user_term: str
     canonical_term: str
@@ -290,6 +301,18 @@ class SynonymMapEntry(BaseModel):
     created_at: str
 
 
-class SynonymMapResponse(BaseModel):
+class SynonymListResponse(BaseModel):
     total: int
-    entries: list[SynonymMapEntry]
+    entries: list[SynonymEntry]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 摄入结果 dataclass
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@dataclass
+class IngestionResult:
+    stats: dict = field(default_factory=dict)
+    errors: list = field(default_factory=list)
+    status: str = "completed"

@@ -30,14 +30,16 @@ from spma.api.schemas.ingestion import (
     FewShotQuery,
     # ── 状态查询 ──
     PipelineStatus,
-    PipelineRunStatus,
+    PipelineRunDetail,
+    IngestionResponse,
+    IngestionResult,
     FreshnessResponse,
     # ── 调度配置 ──
     IngestionSchedule,
     # ── 同义词映射 ──
-    SynonymMapRefreshRequest,
-    SynonymMapEntry,
-    SynonymMapResponse,
+    SynonymRefreshRequest,
+    SynonymEntry,
+    SynonymListResponse,
 )
 
 
@@ -326,9 +328,9 @@ class TestPipelineStatus:
         assert ps3.tables_indexed == 245
 
 
-class TestPipelineRunStatus:
+class TestPipelineRunDetail:
     def test_completed_run(self):
-        run = PipelineRunStatus(
+        run = PipelineRunDetail(
             pipeline_run_id="ingest-doc-20260607-102345",
             pipeline_type="doc",
             status="completed",
@@ -354,6 +356,61 @@ class TestPipelineRunStatus:
         assert run.status == "completed"
         assert run.duration_seconds == 225
         assert len(run.errors) == 1
+
+
+class TestIngestionResponse:
+    def test_minimal_response(self):
+        resp = IngestionResponse(
+            pipeline_run_id="run-001",
+            mode="incremental",
+            status="started",
+        )
+        assert resp.pipeline_run_id == "run-001"
+        assert resp.source is None
+        assert resp.mode == "incremental"
+        assert resp.status == "started"
+        assert resp.started_at is None
+        assert resp.estimated_completion is None
+        assert resp.stats == {}
+
+    def test_full_response(self):
+        resp = IngestionResponse(
+            pipeline_run_id="ingest-doc-20260618-143000",
+            source="confluence",
+            mode="full",
+            status="completed",
+            started_at="2026-06-18T14:30:00Z",
+            estimated_completion="2026-06-18T14:35:00Z",
+            stats={
+                "pages_processed": 120,
+                "chunks_generated": 480,
+                "errors": 0,
+            },
+        )
+        assert resp.source == "confluence"
+        assert resp.mode == "full"
+        assert resp.status == "completed"
+        assert resp.started_at == "2026-06-18T14:30:00Z"
+        assert resp.estimated_completion == "2026-06-18T14:35:00Z"
+        assert resp.stats["pages_processed"] == 120
+
+
+class TestIngestionResult:
+    def test_defaults(self):
+        result = IngestionResult()
+        assert result.stats == {}
+        assert result.errors == []
+        assert result.status == "completed"
+
+    def test_with_stopping_errors(self):
+        result = IngestionResult(
+            stats={"pages_processed": 42, "chunks": 168},
+            errors=["connection timeout", "rate limit exceeded"],
+            status="completed_with_errors",
+        )
+        assert result.stats["pages_processed"] == 42
+        assert len(result.errors) == 2
+        assert result.status == "completed_with_errors"
 
 
 class TestFreshnessResponse:
@@ -406,15 +463,15 @@ class TestIngestionSchedule:
 # 同义词映射表 (§10)
 # ═══════════════════════════════════════════════════════════════════
 
-class TestSynonymMapRefreshRequest:
+class TestSynonymRefreshRequest:
     def test_defaults(self):
-        req = SynonymMapRefreshRequest()
+        req = SynonymRefreshRequest()
         assert req.sources == ["information_schema", "prd_titles", "git_dirs"]
         assert req.auto_apply_high_confidence is True
         assert req.confidence_threshold == 0.9
 
     def test_custom_sources(self):
-        req = SynonymMapRefreshRequest(
+        req = SynonymRefreshRequest(
             sources=["information_schema"],
             auto_apply_high_confidence=False,
             confidence_threshold=0.8,
@@ -424,17 +481,17 @@ class TestSynonymMapRefreshRequest:
         assert req.confidence_threshold == 0.8
 
     def test_confidence_bounds(self):
-        SynonymMapRefreshRequest(confidence_threshold=0.0)
-        SynonymMapRefreshRequest(confidence_threshold=1.0)
+        SynonymRefreshRequest(confidence_threshold=0.0)
+        SynonymRefreshRequest(confidence_threshold=1.0)
         with pytest.raises(ValidationError):
-            SynonymMapRefreshRequest(confidence_threshold=-0.1)
+            SynonymRefreshRequest(confidence_threshold=-0.1)
         with pytest.raises(ValidationError):
-            SynonymMapRefreshRequest(confidence_threshold=1.1)
+            SynonymRefreshRequest(confidence_threshold=1.1)
 
 
-class TestSynonymMapEntry:
+class TestSynonymEntry:
     def test_valid_entry(self):
-        entry = SynonymMapEntry(
+        entry = SynonymEntry(
             id=42,
             user_term="用户表",
             canonical_term="users",
@@ -450,9 +507,9 @@ class TestSynonymMapEntry:
         assert entry.confidence == 0.95
 
 
-class TestSynonymMapResponse:
+class TestSynonymListResponse:
     def test_with_entries(self):
-        resp = SynonymMapResponse(
+        resp = SynonymListResponse(
             total=1,
             entries=[
                 {
