@@ -47,8 +47,7 @@ class PipelineRunStore:
         errors: list | None = None,
         completed_at: str | None = None,
     ) -> None:
-        """原子更新运行状态、统计和错误。"""
-        completed = completed_at or datetime.now(timezone.utc).isoformat()
+        """原子更新运行状态、统计和错误。completed_at 仅当显式传入时更新。"""
 
         async with self._db_pool.acquire() as conn:
             await conn.execute(
@@ -57,14 +56,14 @@ class PipelineRunStore:
                 SET status = $2,
                     stats = COALESCE($3::jsonb, stats),
                     errors = COALESCE($4::jsonb, errors),
-                    completed_at = $5
+                    completed_at = COALESCE($5::timestamptz, completed_at)
                 WHERE pipeline_run_id = $1
                 """,
                 run_id,
                 status,
                 json.dumps(stats or {}),
                 json.dumps(errors or []),
-                completed,
+                completed_at,
             )
 
     async def get(self, run_id: str) -> dict | None:
