@@ -37,11 +37,11 @@ dependencies = [
     "llama-index-vector-stores-postgres>=0.4.0",
     "llama-index-embeddings-langchain>=0.3.0",
     "llama-index-postprocessor-sbert-rerank>=0.2.0",
+    "elasticsearch[async]>=9.0.0",
 ]
 
 [project.optional-dependencies]
 doc = [
-    "elasticsearch[async]",
     "sentence-transformers",
 ]
 code = [
