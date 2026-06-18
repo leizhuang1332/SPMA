@@ -103,3 +103,20 @@ def get_ast_parser() -> "ASTParser":
 def set_ast_parser(parser: "ASTParser") -> None:
     global _ast_parser
     _ast_parser = parser
+
+
+# ---- IngestionController ----
+
+_ingestion_controller: "IngestionController | None" = None
+
+
+def get_ingestion_controller() -> "IngestionController":
+    global _ingestion_controller
+    if _ingestion_controller is None:
+        raise RuntimeError("IngestionController not initialized")
+    return _ingestion_controller
+
+
+def set_ingestion_controller(controller: "IngestionController") -> None:
+    global _ingestion_controller
+    _ingestion_controller = controller
