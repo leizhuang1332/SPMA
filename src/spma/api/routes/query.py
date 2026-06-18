@@ -237,7 +237,6 @@ async def general_query(req: QueryRequest):
     if worker_tasks:
         results = await asyncio.gather(*worker_tasks, return_exceptions=True)
         for r in results:
-            print(f"rrrrrr: {r}")
             if isinstance(r, Exception):
                 worker_outputs.append({"error": str(r), "result_count": 0})
             else:
@@ -251,7 +250,6 @@ async def general_query(req: QueryRequest):
         classification.get("query_type", "search"),
         threshold=0.6,
     )
-    print(f"quality_result: {quality_result}")
     # ---- 6. 合成 (Synthesis Agent) ----
     try:
         from spma.agents.synthesis.graph import build_synthesis_agent_graph
