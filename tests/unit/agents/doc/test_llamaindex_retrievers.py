@@ -127,3 +127,176 @@ class TestESBM25Retriever:
         mock_es.search.assert_called_once_with(
             query="", top_k=20, filters=None
         )
+
+
+class TestHybridRRFRetriever:
+    """测试 HybridRRFRetriever——并行 BM25+向量 + 加权 RRF 融合。"""
+
+    def _make_node(self, node_id: str, text: str, retrieval_source: str, score: float):
+        """构造 NodeWithScore 辅助方法。"""
+        from llama_index.core.schema import TextNode, NodeWithScore
+        node = TextNode(
+            id_=node_id,
+            text=text,
+            metadata={"retrieval_source": retrieval_source},
+        )
+        return NodeWithScore(node=node, score=float(score))
+
+    @pytest.mark.asyncio
+    async def test_rrf_fusion_combines_both_sources(self):
+        """验证两路结果正确融合，去重并排序。"""
+        from spma.agents.doc.llamaindex_retrievers import (
+            HybridRRFRetriever,
+            RRFConfig,
+        )
+
+        mock_vector = AsyncMock()
+        mock_vector.aretrieve = AsyncMock(return_value=[
+            self._make_node("c1", "内容1", "vector", 0.95),
+            self._make_node("c2", "内容2", "vector", 0.80),
+        ])
+        mock_bm25 = AsyncMock()
+        mock_bm25.aretrieve = AsyncMock(return_value=[
+            self._make_node("c2", "内容2", "bm25", 12.5),
+            self._make_node("c3", "内容3", "bm25", 8.2),
+        ])
+
+        config = RRFConfig(k=60, top_k=10, bm25_weight=0.5, vector_weight=0.5)
+        retriever = HybridRRFRetriever(
+            vector_retriever=mock_vector,
+            bm25_retriever=mock_bm25,
+            config=config,
+        )
+
+        from llama_index.core import QueryBundle
+        query_bundle = QueryBundle(query_str="测试查询")
+        results = await retriever.aretrieve(query_bundle)
+
+        assert len(results) == 3
+        c2_result = next(r for r in results if r.node.node_id == "c2")
+        assert results[0].node.node_id == "c2"
+        assert c2_result.score > 0
+        assert "rrf_score" in c2_result.node.metadata
+
+    @pytest.mark.asyncio
+    async def test_rrf_fusion_with_custom_weights(self):
+        """验证自定义权重的 RRF 融合。"""
+        from spma.agents.doc.llamaindex_retrievers import (
+            HybridRRFRetriever,
+            RRFConfig,
+        )
+
+        mock_vector = AsyncMock()
+        mock_vector.aretrieve = AsyncMock(return_value=[
+            self._make_node("c1", "向量结果", "vector", 0.9),
+        ])
+        mock_bm25 = AsyncMock()
+        mock_bm25.aretrieve = AsyncMock(return_value=[
+            self._make_node("c2", "BM25结果", "bm25", 10.0),
+        ])
+
+        config = RRFConfig(k=60, top_k=10, bm25_weight=0.8, vector_weight=0.2)
+        retriever = HybridRRFRetriever(
+            vector_retriever=mock_vector,
+            bm25_retriever=mock_bm25,
+            config=config,
+        )
+
+        from llama_index.core import QueryBundle
+        query_bundle = QueryBundle(query_str="测试查询")
+        results = await retriever.aretrieve(query_bundle)
+
+        assert len(results) == 2
+        assert results[0].node.node_id == "c2"
+
+    @pytest.mark.asyncio
+    async def test_rrf_truncates_to_top_k(self):
+        """验证 RRF 融合按 top_k 截断。"""
+        from spma.agents.doc.llamaindex_retrievers import (
+            HybridRRFRetriever,
+            RRFConfig,
+        )
+
+        vector_nodes = [
+            self._make_node(f"v{i}", f"向量内容{i}", "vector", 0.9 - i * 0.05)
+            for i in range(10)
+        ]
+        mock_vector = AsyncMock()
+        mock_vector.aretrieve = AsyncMock(return_value=vector_nodes)
+        mock_bm25 = AsyncMock()
+        mock_bm25.aretrieve = AsyncMock(return_value=[])
+
+        config = RRFConfig(k=60, top_k=3, bm25_weight=0.5, vector_weight=0.5)
+        retriever = HybridRRFRetriever(
+            vector_retriever=mock_vector,
+            bm25_retriever=mock_bm25,
+            config=config,
+        )
+
+        from llama_index.core import QueryBundle
+        query_bundle = QueryBundle(query_str="测试查询")
+        results = await retriever.aretrieve(query_bundle)
+
+        assert len(results) == 3
+        assert results[0].node.node_id == "v0"
+        assert results[1].node.node_id == "v1"
+        assert results[2].node.node_id == "v2"
+
+    @pytest.mark.asyncio
+    async def test_both_retrievers_called_concurrently(self):
+        """验证两个子检索器被并行调用。"""
+        import asyncio
+        from spma.agents.doc.llamaindex_retrievers import (
+            HybridRRFRetriever,
+            RRFConfig,
+        )
+
+        order = []
+
+        async def slow_vector(query_bundle):
+            await asyncio.sleep(0.05)
+            order.append("vector")
+            return []
+
+        async def slow_bm25(query_bundle):
+            await asyncio.sleep(0.05)
+            order.append("bm25")
+            return []
+
+        mock_vector = AsyncMock()
+        mock_vector.aretrieve = slow_vector
+        mock_bm25 = AsyncMock()
+        mock_bm25.aretrieve = slow_bm25
+
+        config = RRFConfig()
+        retriever = HybridRRFRetriever(
+            vector_retriever=mock_vector,
+            bm25_retriever=mock_bm25,
+            config=config,
+        )
+
+        from llama_index.core import QueryBundle
+        query_bundle = QueryBundle(query_str="测试查询")
+        await retriever.aretrieve(query_bundle)
+
+        assert "vector" in order
+        assert "bm25" in order
+
+    def test_sync_retrieve_raises_not_implemented(self):
+        """验证同步 _retrieve 抛出 NotImplementedError。"""
+        from unittest.mock import MagicMock
+        from spma.agents.doc.llamaindex_retrievers import (
+            HybridRRFRetriever,
+            RRFConfig,
+        )
+
+        mock_vector = MagicMock()
+        mock_bm25 = MagicMock()
+        retriever = HybridRRFRetriever(
+            vector_retriever=mock_vector,
+            bm25_retriever=mock_bm25,
+            config=RRFConfig(),
+        )
+        from llama_index.core import QueryBundle
+        with pytest.raises(NotImplementedError):
+            retriever._retrieve(QueryBundle(query_str="test"))
