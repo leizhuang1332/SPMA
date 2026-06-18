@@ -23,6 +23,51 @@ def make_vector_result(chunk_id: str, content: str, score: float = 0.85, **extra
             "source_type": "vector", **extra}
 
 
+def make_fused_result(chunk_id: str, content: str, retrieval_source: str = "bm25",
+                      score: float = 0.9, req_ids=None, **extra) -> dict:
+    """构造方案三融合结果（含 metadata.retrieval_source）。"""
+    meta = extra.pop("metadata", {})
+    meta.setdefault("retrieval_source", retrieval_source)
+    meta.setdefault("req_ids", req_ids or [])
+    return {
+        "chunk_id": chunk_id, "content": content, "score": score,
+        "source_type": retrieval_source,
+        "metadata": meta,
+    }
+
+
+def mock_pipeline_search(return_values=None, hyde_llm=None):
+    """创建一个返回合理融合结果的 mock pipeline。
+
+    mock_pipeline.initialize 为 no-op；
+    mock_pipeline.search 为 AsyncMock，若提供 hyde_llm 则在被调用时
+    同步调用 hyde_llm.ainvoke(query) 以支持 HyDE 断言。
+    """
+    if return_values is None:
+        return_values = [
+            make_fused_result("r1", "用户登录需要用户名和密码", "bm25", 0.95, ["REQ-001"]),
+            make_fused_result("r2", "登录模块支持SSO单点登录", "bm25", 0.90),
+            make_fused_result("r3", "用户认证流程详解", "vector", 0.88),
+            make_fused_result("r4", "OAuth2.0登录集成方案", "vector", 0.85),
+            make_fused_result("r5", "密码重置流程说明", "bm25", 0.82),
+        ]
+
+    mock = MagicMock()
+    mock.initialize = MagicMock()  # no-op
+
+    _captured_hyde_llm = hyde_llm
+
+    async def _search(query=None, mode=None, entities=None, hyde_llm=None, **kwargs):
+        # 若调用方显式传了 hyde_llm，优先使用；否则使用闭包捕获的版本
+        _hl = hyde_llm or _captured_hyde_llm
+        if _hl is not None and hasattr(_hl, 'ainvoke'):
+            await _hl.ainvoke(query)
+        return list(return_values)
+
+    mock.search = AsyncMock(side_effect=_search)
+    return mock
+
+
 # ── Fixtures ─────────────────────────────────────────────────────────────────
 
 @pytest.fixture
@@ -84,14 +129,16 @@ def hyde_llm():
 
 @pytest.fixture
 def doc_graph(es_client, vector_store, embedder, llm):
-    """构建 Doc Agent StateGraph（编译后的实例）。"""
-    from spma.agents.doc.graph import build_doc_agent_graph
-    return build_doc_agent_graph(
-        es_client=es_client,
-        vector_store=vector_store,
-        embedder=embedder,
-        llm=llm,
-    )
+    """构建 Doc Agent StateGraph（方案三改造版——mock pipeline 初始化）。"""
+    with patch('spma.agents.doc.llamaindex_pipeline.AdvancedLlamaIndexPipeline') as mock_pipeline_class:
+        mock_pipeline_class.return_value = mock_pipeline_search()
+        from spma.agents.doc.graph import build_doc_agent_graph
+        return build_doc_agent_graph(
+            es_client=es_client,
+            vector_store=vector_store,
+            embedder=embedder,
+            llm=llm,
+        )
 
 
 # ── 基础流程测试 ────────────────────────────────────────────────────────────
@@ -163,51 +210,50 @@ class TestDocAgentCompleteness:
     @pytest.mark.asyncio
     async def test_l1_converge_by_req_ids(self, es_client, vector_store, embedder, llm):
         """结果>=5条 + req_ids → L1 确定性收敛，不调 LLM。"""
-        # 设置足够多的结果
-        es_client.search = AsyncMock(return_value=[
-            make_bm25_result(f"bm25-{i}", f"内容{i}", req_ids=["REQ-001"]) for i in range(5)
-        ])
-        vector_store.search = AsyncMock(return_value=[
-            make_vector_result(f"vec-{i}", f"向量结果{i}", score=0.95) for i in range(5)
-        ])
+        with patch('spma.agents.doc.llamaindex_pipeline.AdvancedLlamaIndexPipeline') as mock_pipeline_class:
+            mock_pipeline_class.return_value = mock_pipeline_search(
+                return_values=[
+                    make_fused_result(f"r{i}", f"内容{i}", "bm25", 0.95, ["REQ-001"])
+                    for i in range(10)
+                ],
+            )
+            from spma.agents.doc.graph import build_doc_agent_graph
+            graph = build_doc_agent_graph(es_client, vector_store, embedder, llm)
 
-        from spma.agents.doc.graph import build_doc_agent_graph
-        graph = build_doc_agent_graph(es_client, vector_store, embedder, llm)
+            result = await graph.ainvoke({
+                "original_query": "REQ-001 相关文档",
+                "entities": {"req_ids": ["REQ-001"]},
+                "max_rounds": 2,
+                "round": 1,
+            })
 
-        result = await graph.ainvoke({
-            "original_query": "REQ-001 相关文档",
-            "entities": {"req_ids": ["REQ-001"]},
-            "max_rounds": 2,
-            "round": 1,
-        })
-
-        assert result["assessment"] == "converge"
-        # L1 收敛时不应调用 LLM
-        llm.ainvoke.assert_not_called()
+            assert result["assessment"] == "converge"
+            # L1 收敛时不应调用 LLM
+            llm.ainvoke.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_l2_converge_by_vector_threshold(self, es_client, vector_store, embedder, llm):
         """结果>=5条 + Top-3相似度>0.85 → L2 向量阈值收敛，不调 LLM。"""
-        es_client.search = AsyncMock(return_value=[
-            make_bm25_result(f"bm25-{i}", f"内容{i}", score=0.9) for i in range(3)
-        ])
-        vector_store.search = AsyncMock(return_value=[
-            make_vector_result(f"vec-{i}", f"向量结果{i}", score=0.92) for i in range(3)
-        ])
+        with patch('spma.agents.doc.llamaindex_pipeline.AdvancedLlamaIndexPipeline') as mock_pipeline_class:
+            mock_pipeline_class.return_value = mock_pipeline_search(
+                return_values=[
+                    make_fused_result(f"r{i}", f"向量结果{i}", "vector", 0.92)
+                    for i in range(6)
+                ],
+            )
+            from spma.agents.doc.graph import build_doc_agent_graph
+            graph = build_doc_agent_graph(es_client, vector_store, embedder, llm)
 
-        from spma.agents.doc.graph import build_doc_agent_graph
-        graph = build_doc_agent_graph(es_client, vector_store, embedder, llm)
+            result = await graph.ainvoke({
+                "original_query": "通用查询",
+                "entities": {},
+                "max_rounds": 2,
+                "round": 1,
+            })
 
-        result = await graph.ainvoke({
-            "original_query": "通用查询",
-            "entities": {},
-            "max_rounds": 2,
-            "round": 1,
-        })
-
-        assert result["assessment"] == "converge"
-        # L2 收敛时也不应调用 LLM
-        llm.ainvoke.assert_not_called()
+            assert result["assessment"] == "converge"
+            # L2 收敛时也不应调用 LLM
+            llm.ainvoke.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_l3_llm_judged_insufficient_triggers_expand(self, es_client, vector_store, embedder, llm):
@@ -243,25 +289,27 @@ class TestDocAgentHyDE:
     @pytest.mark.asyncio
     async def test_hyde_enabled_for_short_query(self, es_client, vector_store, embedder, llm, hyde_llm):
         """短查询（<=30 字符）且无 req_ids 时启用 HyDE。"""
-        from spma.agents.doc.graph import build_doc_agent_graph
+        with patch('spma.agents.doc.llamaindex_pipeline.AdvancedLlamaIndexPipeline') as mock_pipeline_class:
+            mock_pipeline_class.return_value = mock_pipeline_search(hyde_llm=hyde_llm)
+            from spma.agents.doc.graph import build_doc_agent_graph
 
-        graph = build_doc_agent_graph(
-            es_client=es_client,
-            vector_store=vector_store,
-            embedder=embedder,
-            llm=llm,
-            hyde_llm=hyde_llm,
-        )
+            graph = build_doc_agent_graph(
+                es_client=es_client,
+                vector_store=vector_store,
+                embedder=embedder,
+                llm=llm,
+                hyde_llm=hyde_llm,
+            )
 
-        result = await graph.ainvoke({
-            "original_query": "支付流程",
-            "entities": {},
-            "max_rounds": 2,
-            "round": 1,
-        })
+            result = await graph.ainvoke({
+                "original_query": "支付流程",
+                "entities": {},
+                "max_rounds": 2,
+                "round": 1,
+            })
 
-        assert result["hyde_enabled"] is True
-        hyde_llm.ainvoke.assert_called_once_with("支付流程")
+            assert result["hyde_enabled"] is True
+            hyde_llm.ainvoke.assert_called_once_with("支付流程")
 
     @pytest.mark.asyncio
     async def test_hyde_disabled_for_long_query(self, es_client, vector_store, embedder, llm, hyde_llm):
