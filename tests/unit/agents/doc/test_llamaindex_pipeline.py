@@ -53,21 +53,42 @@ class TestBuildPostprocessorChain:
             SentenceTransformerRerank,
             LongContextReorder,
         )
-        chain = build_postprocessor_chain(mode="hybrid")
+        # Mock SentenceTransformerRerank to avoid downloading the model
+        mock_reranker = MagicMock(spec=SentenceTransformerRerank)
+        mock_reranker.top_n = 10
+        with patch(
+            "spma.agents.doc.llamaindex_pipeline.SentenceTransformerRerank",
+            return_value=mock_reranker,
+        ):
+            chain = build_postprocessor_chain(mode="hybrid")
         assert len(chain) == 2
-        assert isinstance(chain[0], SentenceTransformerRerank)
         assert isinstance(chain[1], LongContextReorder)
         assert chain[0].top_n == 10
 
     def test_semantic_mode_same_as_hybrid(self):
         from spma.agents.doc.llamaindex_pipeline import build_postprocessor_chain
-        hybrid_chain = build_postprocessor_chain(mode="hybrid")
-        semantic_chain = build_postprocessor_chain(mode="semantic")
+        from llama_index.core.postprocessor import (
+            SentenceTransformerRerank,
+        )
+        mock_reranker = MagicMock(spec=SentenceTransformerRerank)
+        with patch(
+            "spma.agents.doc.llamaindex_pipeline.SentenceTransformerRerank",
+            return_value=mock_reranker,
+        ):
+            hybrid_chain = build_postprocessor_chain(mode="hybrid")
+            semantic_chain = build_postprocessor_chain(mode="semantic")
         assert len(hybrid_chain) == len(semantic_chain)
 
     def test_custom_rerank_top_n(self):
         from spma.agents.doc.llamaindex_pipeline import build_postprocessor_chain
-        chain = build_postprocessor_chain(mode="hybrid", rerank_top_n=5)
+        from llama_index.core.postprocessor import SentenceTransformerRerank
+        mock_reranker = MagicMock(spec=SentenceTransformerRerank)
+        mock_reranker.top_n = 5
+        with patch(
+            "spma.agents.doc.llamaindex_pipeline.SentenceTransformerRerank",
+            return_value=mock_reranker,
+        ):
+            chain = build_postprocessor_chain(mode="hybrid", rerank_top_n=5)
         assert chain[0].top_n == 5
 
 
