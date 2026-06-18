@@ -69,4 +69,6 @@ class TestBGEM3EmbeddingAdapter:
         with pytest.raises(NotImplementedError):
             adapter._get_query_embedding("test")
         with pytest.raises(NotImplementedError):
+            adapter._get_text_embedding("test")
+        with pytest.raises(NotImplementedError):
             adapter._get_text_embeddings(["test"])
