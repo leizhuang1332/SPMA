@@ -38,12 +38,10 @@ dependencies = [
     "llama-index-embeddings-langchain>=0.3.0",
     "llama-index-postprocessor-sbert-rerank>=0.2.0",
     "elasticsearch[async]>=9.0.0",
+    "sentence-transformers>=5.0.0",
 ]
 
 [project.optional-dependencies]
-doc = [
-    "sentence-transformers",
-]
 code = [
     "tree-sitter",
 ]
@@ -64,7 +62,6 @@ dev = [
     "pre-commit",
 ]
 all = [
-    "spma[doc]",
     "spma[code]",
     "spma[observability]",
 ]

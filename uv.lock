@@ -2710,6 +2710,7 @@ dependencies = [
     { name = "pydantic-settings" },
     { name = "pyyaml" },
     { name = "redis", extra = ["hiredis"] },
+    { name = "sentence-transformers" },
     { name = "sqlglot" },
     { name = "tenacity" },
     { name = "uvicorn", extra = ["standard"] },
@@ -2722,7 +2723,6 @@ all = [
     { name = "opentelemetry-exporter-otlp" },
     { name = "opentelemetry-sdk" },
     { name = "prometheus-client" },
-    { name = "sentence-transformers" },
     { name = "tree-sitter" },
 ]
 code = [
@@ -2736,9 +2736,6 @@ dev = [
     { name = "pytest-cov" },
     { name = "ruff" },
     { name = "testcontainers", extra = ["redis"] },
-]
-doc = [
-    { name = "sentence-transformers" },
 ]
 observability = [
     { name = "langfuse" },
@@ -2785,9 +2782,8 @@ requires-dist = [
     { name = "pyyaml" },
     { name = "redis", extras = ["hiredis"] },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8" },
-    { name = "sentence-transformers", marker = "extra == 'doc'" },
+    { name = "sentence-transformers", specifier = ">=5.0.0" },
     { name = "spma", extras = ["code"], marker = "extra == 'all'" },
-    { name = "spma", extras = ["doc"], marker = "extra == 'all'" },
     { name = "spma", extras = ["observability"], marker = "extra == 'all'" },
     { name = "sqlglot" },
     { name = "tenacity" },
@@ -2795,7 +2791,7 @@ requires-dist = [
     { name = "tree-sitter", marker = "extra == 'code'" },
     { name = "uvicorn", extras = ["standard"] },
 ]
-provides-extras = ["doc", "code", "observability", "dev", "all"]
+provides-extras = ["code", "observability", "dev", "all"]
 
 [package.metadata.requires-dev]
 dev = []
