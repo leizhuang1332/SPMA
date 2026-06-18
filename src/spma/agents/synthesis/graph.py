@@ -51,27 +51,39 @@ def build_synthesis_agent_graph(llm, audit_llm) -> StateGraph:
         state["annotations"] = annotations
         return state
 
-    def should_continue(state: SynthesisAgentState) -> Literal["generate", "END"]:
+    async def finalize_node(state: SynthesisAgentState) -> dict:
+        draft = state.get("draft_answer", "")
+        annotations = state.get("annotations", [])
+        verdict = state.get("audit_result", {}).get("verdict", "pass")
+        annotation_text = ""
+        if annotations:
+            lines = []
+            for a in annotations:
+                icon = a.get("icon", "")
+                msg = a.get("message", "")
+                details = a.get("details", "")
+                lines.append(f"{icon} **{msg}**: {details}")
+            annotation_text = "\n\n---\n" + "\n".join(lines)
+        state["final_answer"] = draft + annotation_text
+        state["convergence_reason"] = verdict
+        return state
+
+    def should_continue(state: SynthesisAgentState) -> Literal["generate", "finalize"]:
         round_num = state.get("round", 0)
         max_rounds = state.get("max_rounds", 2)
         verdict = state.get("audit_result", {}).get("verdict", "pass")
-        # 纯路由——不修改 state（条件边路由函数中的修改不会被 LangGraph 持久化）
         if verdict == "fix" and round_num < max_rounds:
             return "generate"
-        # 终止：拼接 final_answer
-        draft = state.get("draft_answer", "")
-        annotations = state.get("annotations", [])
-        annotation_text = "\n\n---\n" + "\n".join(f"{a['icon']} **{a['message']}**: {a.get('details', '')}" for a in annotations) if annotations else ""
-        state["final_answer"] = draft + annotation_text
-        state["convergence_reason"] = verdict
-        return "END"
+        return "finalize"
 
     graph = StateGraph(SynthesisAgentState)
     graph.add_node("fuse", fuse_node)
     graph.add_node("generate", generate_node)
     graph.add_node("audit", audit_node)
+    graph.add_node("finalize", finalize_node)
     graph.set_entry_point("fuse")
     graph.add_edge("fuse", "generate")
     graph.add_edge("generate", "audit")
-    graph.add_conditional_edges("audit", should_continue, {"generate": "generate", "END": END})
+    graph.add_conditional_edges("audit", should_continue, {"generate": "generate", "finalize": "finalize"})
+    graph.add_edge("finalize", END)
     return graph.compile()
