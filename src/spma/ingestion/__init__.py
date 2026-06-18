@@ -5,3 +5,8 @@
 
 设计依据: SPMA-design-05 数据摄入管道设计
 """
+
+from spma.ingestion.sql_pipeline import SqlIngestionPipeline
+from spma.ingestion.run_store import PipelineRunStore
+
+__all__ = ["SqlIngestionPipeline", "PipelineRunStore"]
