@@ -171,6 +171,106 @@ def create_app() -> FastAPI:
         yaml_path = _resolve_config_path()
         LLMRouter.initialize(os.path.abspath(yaml_path))
 
+    # 注册摄入路由
+    from spma.api.routes.ingestion import router as ingestion_router
+    from spma.api.routes.ingestion_webhooks import router as webhook_router
+
+    app.include_router(ingestion_router, prefix="/api/v1")
+    app.include_router(webhook_router, prefix="/api/v1")
+
+
+    # 新增 startup 事件 — 初始化摄入管道
+    @app.on_event("startup")
+    async def startup_ingestion():
+        """初始化摄入管道——ES/PGVector/Embedder → IngestionController。"""
+        try:
+            yaml_path = _resolve_config_path()
+            with open(yaml_path) as f:
+                raw = yaml.safe_load(f) or {}
+        except Exception as e:
+            logger.warning("无法读取配置，跳过摄入管道初始化: %s", e)
+            return
+
+        ingestion_cfg = raw.get("ingestion", {})
+        pg_cfg = raw.get("spma", {}).get("connections", {}).get("postgres", {})
+
+        from spma.api.dependencies import get_db_pool as _get_db, set_ingestion_controller
+
+        try:
+            db_pool = _get_db()
+        except RuntimeError:
+            dsn = pg_cfg.get("readonly_replica") or pg_cfg.get("vector_db", "")
+            if dsn:
+                import asyncpg
+                db_pool = await asyncpg.create_pool(dsn, min_size=2, max_size=10)
+            else:
+                logger.warning("未配置 PostgreSQL 连接，跳过摄入管道初始化")
+                return
+
+        # 1. ES Client
+        from spma.retrieval.es_client import ESClient
+        es_hosts = raw.get("spma", {}).get("connections", {}).get("elasticsearch", {}).get("hosts")
+        es = ESClient(hosts=es_hosts if es_hosts else None)
+
+        # 2. PGVector
+        from spma.retrieval.vector_store import PGVectorStore
+        vector_store = PGVectorStore(dsn=pg_cfg.get("vector_db", ""))
+
+        # 3. Embedder
+        from spma.retrieval.embedder import BGEM3Embedder
+        embedder = await BGEM3Embedder.create()
+
+        # 4. Doc Pipeline
+        from spma.ingestion.doc_pipeline import DocIngestionPipeline
+        doc_pipeline = DocIngestionPipeline(es, vector_store, embedder)
+
+        # 5. Code Pipeline
+        from spma.ingestion.code.git_manager import GitManager
+        from spma.ingestion.code.file_path_cache import FilePathCache
+        from spma.ingestion.code.ast_parser import ASTParser
+        from spma.ingestion.code_pipeline import CodeIngestionPipeline
+        from spma.api.dependencies import get_file_path_cache as _get_fpc, get_ast_parser as _get_ast
+
+        try:
+            fpc = _get_fpc()
+        except RuntimeError:
+            fpc = FilePathCache(db_pool)
+        try:
+            ast_parser = _get_ast()
+        except RuntimeError:
+            ast_parser = ASTParser()
+
+        git_manager = GitManager()
+        repo_urls = ingestion_cfg.get("code", {}).get("repo_urls", {})
+        code_pipeline = CodeIngestionPipeline(git_manager, fpc, ast_parser, repo_urls)
+
+        # 6. SQL Pipeline
+        sql_dsn = pg_cfg.get("readonly_replica", "")
+        from spma.ingestion.sql_pipeline import SqlIngestionPipeline
+        sql_pipeline = SqlIngestionPipeline(sql_dsn, vector_store, embedder)
+
+        # 7. Run Store
+        from spma.ingestion.run_store import PipelineRunStore
+        run_store = PipelineRunStore(db_pool)
+
+        # 8. Synonym Map
+        from spma.ingestion.synonym_map import SynonymMap
+        synonym_map = SynonymMap(db_pool, ingestion_cfg.get("synonym_map", {}))
+
+        # 9. Freshness Service
+        from spma.ingestion.freshness import FreshnessService
+        freshness_service = FreshnessService(db_pool, slo_config=ingestion_cfg.get("freshness_slo", {}))
+
+        # 10. Controller
+        from spma.ingestion.controller import IngestionController
+        controller = IngestionController(
+            doc_pipeline=doc_pipeline, code_pipeline=code_pipeline, sql_pipeline=sql_pipeline,
+            run_store=run_store, synonym_map=synonym_map, freshness_service=freshness_service,
+            config=ingestion_cfg,
+        )
+        set_ingestion_controller(controller)
+        logger.info("摄入管道初始化完成")
+
     # 启动时初始化 Code Agent 基础设施依赖
     @app.on_event("startup")
     async def startup_code_agent_deps():

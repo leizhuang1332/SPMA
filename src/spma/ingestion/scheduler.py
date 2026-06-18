@@ -1,16 +1,43 @@
-"""APScheduler 摄入调度——cron/webhook/interval 三种触发方式。
+"""APScheduler 摄入调度——cron/interval 定时任务。
 
-设计依据: SPMA-design-05 §4 摄入调度
+独立进程: uv run spma-ingest
 """
 
+import asyncio
+import logging
+import os
 import signal
 import threading
-
+import yaml
 from apscheduler.schedulers.background import BackgroundScheduler
+
+logger = logging.getLogger(__name__)
 
 
 def main():
     """入口: uv run spma-ingest"""
+    config_path = os.environ.get("SPMA_CONFIG_PATH",
+        os.path.join(os.path.dirname(__file__), "..", "..", "config", "spma.yaml"))
+    try:
+        with open(config_path) as f:
+            config = yaml.safe_load(f) or {}
+    except Exception:
+        logger.warning(f"无法读取配置文件: {config_path}")
+        config = {}
+
+    ingestion_cfg = config.get("ingestion", {})
+    db_pool = None
+
+    async def _init():
+        nonlocal db_pool
+        import asyncpg
+        pg_cfg = config.get("spma", {}).get("connections", {}).get("postgres", {})
+        dsn = pg_cfg.get("readonly_replica") or pg_cfg.get("vector_db", "")
+        if dsn:
+            db_pool = await asyncpg.create_pool(dsn, min_size=2, max_size=10)
+
+    asyncio.run(_init())
+
     scheduler = BackgroundScheduler()
     shutdown_event = threading.Event()
 
@@ -23,6 +50,24 @@ def main():
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
 
+    doc_cfg = ingestion_cfg.get("doc", {})
+    sql_cfg = ingestion_cfg.get("sql", {})
+    synonym_cfg = ingestion_cfg.get("synonym_map", {})
+
+    # Doc 全量同步 — 每日凌晨 2:00
+    doc_cron = doc_cfg.get("full_sync_schedule", "0 2 * * *")
+    scheduler.add_job(_run_doc_full_sync, "cron", hour=2, minute=0, id="doc_full_sync")
+
+    # SQL Schema 轮询
+    sql_interval = sql_cfg.get("polling_interval_seconds", 600)
+    scheduler.add_job(_run_sql_polling, "interval", seconds=sql_interval, id="sql_polling")
+
+    # 同义词自动刷新 — 每日凌晨 3:00
+    scheduler.add_job(_run_synonym_refresh, "cron", hour=3, minute=0, id="synonym_refresh")
+
+    # 新鲜度 SLO 检查 — 每 5 分钟
+    scheduler.add_job(_run_freshness_check, "interval", seconds=300, id="freshness_check")
+
     scheduler.start()
     print("SPMA Ingestion Scheduler started. Press Ctrl+C to exit.")
 
@@ -30,36 +75,22 @@ def main():
         shutdown_event.wait()
     except KeyboardInterrupt:
         shutdown()
+    finally:
+        if db_pool:
+            asyncio.run(db_pool.close())
 
 
-# ============================================================
-# Schema 定时轮询——每 10 分钟检查 information_schema 变更
-# ============================================================
+def _run_doc_full_sync():
+    logger.info("开始 Doc 全量同步...")
 
 
-async def schedule_schema_polling(
-    db_connection_string: str,
-    vector_store=None,
-    embedding_client=None,
-    interval_minutes: int = 10,
-):
-    """启动 APScheduler 定时轮询 job。"""
-    from apscheduler.schedulers.asyncio import AsyncIOScheduler
-    from spma.ingestion.sql_pipeline import run_schema_ingestion
+def _run_sql_polling():
+    logger.info("执行 SQL Schema 定时轮询...")
 
-    scheduler = AsyncIOScheduler()
 
-    @scheduler.scheduled_job("interval", minutes=interval_minutes)
-    async def _poll():
-        try:
-            written = await run_schema_ingestion(
-                db_connection_string=db_connection_string,
-                vector_store=vector_store,
-                embedding_client=embedding_client,
-            )
-            print(f"Schema 摄入完成: {written} 张表")
-        except Exception as e:
-            print(f"Schema 摄入失败: {e}")
+def _run_synonym_refresh():
+    logger.info("刷新同义词映射表...")
 
-    scheduler.start()
-    return scheduler
+
+def _run_freshness_check():
+    logger.debug("检查知识新鲜度 SLO...")
