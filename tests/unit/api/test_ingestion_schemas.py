@@ -77,6 +77,31 @@ class TestDocIngestionRequest:
         with pytest.raises(ValidationError):
             DocIngestionRequest(mode="invalid_mode")
 
+    def test_path_default_none(self):
+        """path 字段默认为 None。"""
+        req = DocIngestionRequest()
+        assert req.path is None
+
+    def test_path_with_markdown_dir(self):
+        """markdown_dir 源时可指定 path。"""
+        req = DocIngestionRequest(
+            source="markdown_dir",
+            mode="full",
+            path="/data/docs/**/*.md",
+        )
+        assert req.source == DocIngestionSource.MARKDOWN_DIR
+        assert req.path == "/data/docs/**/*.md"
+
+    def test_path_with_confluence_source_ignored(self):
+        """confluence 源时 path 无意义但仍可设为 None。"""
+        req = DocIngestionRequest(source="confluence")
+        assert req.path is None
+
+    def test_path_empty_string_accepted(self):
+        """空字符串 path 也是合法的 Pydantic 值（fallback 到 config）。"""
+        req = DocIngestionRequest(source="markdown_dir", path="")
+        assert req.path == ""
+
 
 class TestDocIngestionFilters:
     def test_defaults(self):

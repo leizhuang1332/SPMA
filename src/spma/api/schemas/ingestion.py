@@ -42,6 +42,7 @@ class DocIngestionOptions(BaseModel):
 class DocIngestionRequest(BaseModel):
     source: DocIngestionSource = DocIngestionSource.CONFLUENCE
     mode: Literal["incremental", "full"] = "incremental"
+    path: str | None = None  # markdown 文件/目录路径或 glob 模式
     filters: DocIngestionFilters = Field(default_factory=DocIngestionFilters)
     options: DocIngestionOptions = Field(default_factory=DocIngestionOptions)
 
