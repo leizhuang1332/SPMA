@@ -59,6 +59,7 @@ class TestBGERerankerInit:
         """下载失败时，异常向上传播（由调用方 initialize 处理降级）。"""
         with patch("os.path.isdir", return_value=False), \
              patch("os.environ.setdefault"), \
+             patch("spma.retrieval.reranker.CrossEncoder"), \
              patch("spma.retrieval.reranker.snapshot_download", side_effect=RuntimeError("Network error")):
             from spma.retrieval.reranker import BGEReranker
 
