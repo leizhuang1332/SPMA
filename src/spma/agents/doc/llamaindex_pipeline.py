@@ -180,7 +180,6 @@ class AdvancedLlamaIndexPipeline:
             {
                 "chunk_id": n.node.node_id,
                 "source_id": n.node.metadata.get("source_id"),
-                "source_type": n.node.metadata.get("source_type", mode),
                 "content": n.node.get_content(),
                 "score": float(n.score),
                 "metadata": n.node.metadata or {},

@@ -6,7 +6,10 @@ GENERATION_PROMPT = """你是一个企业知识助手。根据以下检索结果
 
 检索结果:
 {doc_results}
+{code_results}
 {sql_results}
+
+{worker_stats}
 
 要求:
 1. 用 Markdown 格式组织回答

@@ -3,6 +3,24 @@
 from langgraph.types import Send
 from spma.models.worker_output import WorkerDispatch
 
+# worker_type → Citation.source_type 合约映射
+# 这是系统中唯一确定 citation source_type 的地方
+WORKER_TYPE_TO_SOURCE_TYPE: dict[str, str] = {"doc": "prd", "code": "code", "sql": "sql"}
+
+
+def normalize_citations(worker_type: str, citations: list[dict]) -> list[dict]:
+    """为所有 citation 统一注入合约层的 source_type。
+
+    设计原则：
+    - source_type 只在一个地方赋值——Worker 输出装配边界
+    - 管道层（检索/LlamaIndex/Doc Agent）不触碰 source_type
+    - 原始 handler 信息保留在 metadata.source_type 中
+    """
+    source_type = WORKER_TYPE_TO_SOURCE_TYPE.get(worker_type, worker_type)
+    for c in citations:
+        c["source_type"] = source_type
+    return citations
+
 
 def build_dispatches(
     classification: dict,

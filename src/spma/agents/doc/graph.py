@@ -89,10 +89,6 @@ def build_doc_agent_graph(
             logger.exception("search_node 检索失败，返回空结果")
             fused = []
 
-        # 保持与现有状态接口兼容
-        for r in fused:
-            r["source_type"] = r.get("source_type", mode)
-
         state["bm25_candidates"] = [
             r for r in fused
             if r.get("metadata", {}).get("retrieval_source") == "bm25"

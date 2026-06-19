@@ -66,10 +66,12 @@ def build_supervisor_graph(
             return {"worker_outputs": [{"worker_type": "doc", "result_count": 0, "confidence": 0, "has_exact_match": False}]}
         try:
             result = await doc_graph.ainvoke(state)
+            from spma.agents.supervisor.dispatcher import normalize_citations
+            citations = result.get("final_results", [])
             output = {
                 "worker_type": "doc",
-                "result_count": len(result.get("final_results", [])),
-                "citations": result.get("final_results", []),
+                "result_count": len(citations),
+                "citations": normalize_citations("doc", citations),
                 "confidence": 0.8,
                 "has_exact_match": result.get("has_exact_match", False),
                 "rounds_used": result.get("rounds_used", 1),
@@ -85,15 +87,17 @@ def build_supervisor_graph(
             return {"worker_outputs": [{"worker_type": "code", "result_count": 0, "confidence": 0, "has_exact_match": False}]}
         try:
             result = await code_graph.ainvoke(state)
+            from spma.agents.supervisor.dispatcher import normalize_citations
+            citations = result.get("ripgrep_results", [])
             output = {
                 "worker_type": "code",
-                "result_count": len(result.get("ripgrep_results", [])),
-                "citations": result.get("ripgrep_results", []),
+                "result_count": len(citations),
+                "citations": normalize_citations("code", citations),
                 "confidence": 0.7,
                 "has_exact_match": result.get("fallback_layer", 99) == 0,
                 "rounds_used": result.get("rounds_used", 1),
                 "convergence_reason": result.get("convergence_reason", ""),
-                "discovered_entities": {"code_refs": [r.get("file_path", "") for r in result.get("ripgrep_results", [])[:5]]},
+                "discovered_entities": {"code_refs": [r.get("file_path", "") for r in citations[:5]]},
             }
             return {"worker_outputs": [output]}
         except Exception:

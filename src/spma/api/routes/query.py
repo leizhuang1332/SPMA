@@ -154,10 +154,12 @@ async def general_query(req: QueryRequest):
                         "query_id": query_id,
                         "entities": entities,
                     })
+                    from spma.agents.supervisor.dispatcher import normalize_citations
+                    citations = result.get("final_results", [])
                     return {
                         "worker_type": at,
-                        "result_count": len(result.get("final_results", [])),
-                        "citations": result.get("final_results", []),
+                        "result_count": len(citations),
+                        "citations": normalize_citations(at, citations),
                         "confidence": result.get("confidence", 0.8),
                         "has_exact_match": result.get("has_exact_match", False),
                         "rounds_used": result.get("rounds_used", 1),
@@ -197,10 +199,12 @@ async def general_query(req: QueryRequest):
                         "rewritten_queries": [rewritten_query],
                         "query_id": query_id,
                     })
+                    from spma.agents.supervisor.dispatcher import normalize_citations
+                    citations = result.get("ripgrep_results", [])
                     return {
                         "worker_type": at,
-                        "result_count": len(result.get("ripgrep_results", [])),
-                        "citations": result.get("ripgrep_results", []),
+                        "result_count": len(citations),
+                        "citations": normalize_citations(at, citations),
                         "confidence": 0.7,
                         "has_exact_match": result.get("fallback_layer", 99) == 0,
                         "rounds_used": result.get("rounds_used", 1),
