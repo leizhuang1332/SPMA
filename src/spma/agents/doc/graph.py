@@ -7,6 +7,9 @@
 """
 
 from typing import Literal
+import logging
+
+logger = logging.getLogger(__name__)
 
 from langgraph.graph import StateGraph, END
 
@@ -84,6 +87,7 @@ def build_doc_agent_graph(
             )
             print(f"search_node: {fused}")
         except Exception:
+            logger.exception("search_node 检索失败，返回空结果")
             fused = []
 
         # 保持与现有状态接口兼容
