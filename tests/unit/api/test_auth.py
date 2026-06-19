@@ -45,6 +45,16 @@ async def test_get_current_admin_auth_enabled_missing_header_raises_401(monkeypa
     assert exc_info.value.status_code == 401
 
 
+@pytest.mark.asyncio
+async def test_get_current_user_auth_enabled_missing_header_raises_401(monkeypatch):
+    """SPMA_AUTH_ENABLED=true 且无 Authorization header → 401。"""
+    monkeypatch.setenv("SPMA_AUTH_ENABLED", "true")
+
+    with pytest.raises(HTTPException) as exc_info:
+        await get_current_user(credentials=None)
+    assert exc_info.value.status_code == 401
+
+
 # ─── 认证开启 —— 正确 key ───
 
 @pytest.mark.asyncio
