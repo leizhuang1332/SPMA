@@ -21,11 +21,13 @@ class DocIngestionPipeline:
         vector_store,  # PGVector client (Phase 1 提供的接口)
         embedder,       # BGE-M3 embedding 客户端
         chunker: SemanticChunker | None = None,
+        source_handlers: dict | None = None,  # {source_type: SourceHandler}
     ):
         self.es = es_client
         self.vector_store = vector_store
         self.embedder = embedder
         self.chunker = chunker or SemanticChunker()
+        self._handlers = source_handlers or {}
 
     async def ingest_document(
         self,
@@ -124,6 +126,64 @@ class DocIngestionPipeline:
         deleted_es = await self.es.delete_by_source(source_id)
         deleted_pg = await self.vector_store.delete_by_source(source_id)
         return deleted_es, deleted_pg
+
+    async def run(self, request) -> "IngestionResult":
+        """Execute document ingestion based on the request source.
+
+        Dispatches to the appropriate SourceHandler, then ingests each
+        yielded SourceDocument via ingest_document() or update_document().
+        """
+        from spma.api.schemas.ingestion import IngestionResult
+
+        handler = self._handlers.get(request.source.value)
+        if not handler:
+            return IngestionResult(
+                status="failed",
+                errors=[{"error": f"Unsupported source: {request.source.value}"}],
+                stats={},
+            )
+
+        stats = {"files_processed": 0, "chunks_generated": 0, "errors": 0}
+        errors: list[dict] = []
+
+        should_full_reindex = (
+            request.mode == "full" or request.options.force_full_reindex
+        )
+
+        async for doc in handler.fetch_documents(request):
+            try:
+                if should_full_reindex:
+                    chunks = await self.update_document(
+                        text=doc.text,
+                        source_id=doc.source_id,
+                        source_type=doc.source_type,
+                        page_title=doc.page_title,
+                        req_ids=doc.req_ids,
+                        doc_type=doc.doc_type,
+                        version=doc.version,
+                    )
+                else:
+                    chunks = await self.ingest_document(
+                        text=doc.text,
+                        source_id=doc.source_id,
+                        source_type=doc.source_type,
+                        page_title=doc.page_title,
+                        req_ids=doc.req_ids,
+                        doc_type=doc.doc_type,
+                        version=doc.version,
+                    )
+                stats["files_processed"] += 1
+                stats["chunks_generated"] += chunks
+            except Exception as e:
+                logger.error("Failed to ingest %s: %s", doc.source_id, e)
+                errors.append({"source_id": doc.source_id, "error": str(e)})
+                stats["errors"] += 1
+
+        return IngestionResult(
+            status="completed" if not errors else "completed_with_errors",
+            stats=stats,
+            errors=errors,
+        )
 
     @staticmethod
     def _chunk_to_dict(chunk: DocChunk) -> dict:
