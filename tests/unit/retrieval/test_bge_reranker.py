@@ -1,7 +1,7 @@
-"""BGEReranker 单元测试。"""
-import asyncio
+"""BGE-Reranker v2 M3 模型加载与异步精排的单元测试。"""
 import os
-from unittest.mock import MagicMock, patch, PropertyMock
+from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import MagicMock, patch
 
 import pytest
 from llama_index.core.schema import NodeWithScore, TextNode, QueryBundle
@@ -80,6 +80,17 @@ class TestBGERerankerInit:
 class TestBGERerankerRerank:
     """测试 BGEReranker.rerank —— 异步精排逻辑。"""
 
+    @staticmethod
+    def _make_reranker_with_model(mock_model):
+        """构造一个已注入 mock CrossEncoder 的 BGEReranker 实例，绕过 __init__。"""
+        from spma.retrieval.reranker import BGEReranker
+
+        with patch.object(BGEReranker, "__init__", lambda self: None):
+            reranker = BGEReranker.__new__(BGEReranker)
+        reranker._model = mock_model
+        reranker._pool = ThreadPoolExecutor(max_workers=1)
+        return reranker
+
     @pytest.mark.asyncio
     async def test_rerank_sorts_by_score_descending(self):
         """验证 rerank 按 CrossEncoder 分数降序排列。"""
@@ -87,15 +98,7 @@ class TestBGERerankerRerank:
         mock_model = MagicMock()
         mock_model.predict.return_value = [0.9, 0.3, 0.7]
 
-        from spma.retrieval.reranker import BGEReranker
-        from concurrent.futures import ThreadPoolExecutor
-
-        # 绕过 __init__ 的 _load_model 调用，直接构造实例
-        with patch.object(BGEReranker, "__init__", lambda self: None):
-            reranker = BGEReranker.__new__(BGEReranker)
-
-        reranker._model = mock_model
-        reranker._pool = ThreadPoolExecutor(max_workers=1)
+        reranker = self._make_reranker_with_model(mock_model)
 
         query = QueryBundle(query_str="什么是 Python？")
         nodes = [
@@ -118,14 +121,7 @@ class TestBGERerankerRerank:
         mock_model = MagicMock()
         mock_model.predict.return_value = [0.5, 0.4, 0.3, 0.2, 0.1]
 
-        from spma.retrieval.reranker import BGEReranker
-        from concurrent.futures import ThreadPoolExecutor
-
-        with patch.object(BGEReranker, "__init__", lambda self: None):
-            reranker = BGEReranker.__new__(BGEReranker)
-
-        reranker._model = mock_model
-        reranker._pool = ThreadPoolExecutor(max_workers=1)
+        reranker = self._make_reranker_with_model(mock_model)
 
         query = QueryBundle(query_str="test")
         nodes = [make_node(f"c{i}", f"text{i}") for i in range(5)]
@@ -139,14 +135,7 @@ class TestBGERerankerRerank:
         mock_model = MagicMock()
         mock_model.predict.return_value = [1.0, 0.5]
 
-        from spma.retrieval.reranker import BGEReranker
-        from concurrent.futures import ThreadPoolExecutor
-
-        with patch.object(BGEReranker, "__init__", lambda self: None):
-            reranker = BGEReranker.__new__(BGEReranker)
-
-        reranker._model = mock_model
-        reranker._pool = ThreadPoolExecutor(max_workers=1)
+        reranker = self._make_reranker_with_model(mock_model)
 
         query = QueryBundle(query_str="搜索关键词")
         nodes = [
