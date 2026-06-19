@@ -10,6 +10,7 @@ ingestion:
     overlap_tokens: 50
     embedding_model: "BAAI/bge-m3"
     embedding_batch_size: 32
+    markdown_dir: "/data/markdown"
 
   code:
     webhook_enabled: true
