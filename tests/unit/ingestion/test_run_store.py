@@ -133,3 +133,22 @@ class TestGetLatestSuccessful:
         result = await store.get_latest_successful("doc", source_type="markdown_dir")
 
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_without_source_type_filter(self, store, mock_pool):
+        """不传 source_type 时只按 pipeline_type 过滤，不按 source 过滤。"""
+        mock_row = {
+            "pipeline_run_id": "ingest-code-20260619-150000",
+            "pipeline_type": "code",
+            "source": "github",
+            "status": "completed",
+        }
+        mock_pool._conn.fetchrow.return_value = mock_row
+
+        result = await store.get_latest_successful("code")
+
+        assert result is not None
+        assert result["pipeline_type"] == "code"
+        # 验证 SQL 中没有 source = $2 条件
+        sql = mock_pool._conn.fetchrow.call_args[0][0]
+        assert "source = $2" not in sql
