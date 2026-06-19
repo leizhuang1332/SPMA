@@ -38,7 +38,7 @@ except ImportError:
 class PipelineConfig:
     """管道配置——集中管理所有可调参数。"""
 
-    dsn: str = "postgresql://spma:spma123@localhost:5433/spma"
+    dsn: str = "postgresql+asyncpg://spma:spma123@localhost:5433/spma"
 
     vector_top_k: int = 20
     bm25_top_k: int = 20
@@ -110,9 +110,15 @@ class AdvancedLlamaIndexPipeline:
         self._embedder = embedder
         Settings.embed_model = BGEM3EmbeddingAdapter(embedder)
 
+        # 确保 DSN 使用 asyncpg 驱动（SQLAlchemy async engine 需要）
+        dsn = self._config.dsn
+        if "+asyncpg" not in dsn:
+            dsn = dsn.replace("postgresql://", "postgresql+asyncpg://")
+            dsn = dsn.replace("postgres://", "postgresql+asyncpg://")
+
         vector_store = LlamaPGVectorStore(
-            connection_string=self._config.dsn,
-            async_connection_string=self._config.dsn,
+            connection_string=dsn,
+            async_connection_string=dsn,
             table_name="chunk_embeddings",
             schema_name="public",
             embed_dim=1024,
