@@ -182,7 +182,7 @@ class AdvancedLlamaIndexPipeline:
                 "source_id": n.node.metadata.get("source_id"),
                 "source_type": n.node.metadata.get("source_type", mode),
                 "content": n.node.get_content(),
-                "score": n.score,
+                "score": float(n.score),
                 "metadata": n.node.metadata or {},
             }
             for n in all_results[:20]

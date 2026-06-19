@@ -82,7 +82,7 @@ class ESBM25Retriever(BaseRetriever):
                     **(r.get("metadata") or {}),
                 },
             )
-            nodes.append(NodeWithScore(node=node, score=r.get("score", 0.0)))
+            nodes.append(NodeWithScore(node=node, score=float(r.get("score", 0.0))))
 
         return nodes
 

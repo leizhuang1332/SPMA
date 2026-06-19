@@ -68,7 +68,7 @@ class ESClient:
         results = []
         for hit in resp["hits"]["hits"]:
             source = hit["_source"]
-            source["score"] = hit["_score"]
+            source["score"] = float(hit["_score"])
             source["chunk_id"] = source.get("chunk_id", hit["_id"])
             results.append(source)
 
