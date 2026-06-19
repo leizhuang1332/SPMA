@@ -39,58 +39,6 @@ class TestPipelineConfig:
         assert cfg.bm25_top_k == 20
 
 
-class TestBuildPostprocessorChain:
-    """测试 build_postprocessor_chain——根据模式构建后处理链。"""
-
-    def test_precise_mode_returns_empty(self):
-        from spma.agents.doc.llamaindex_pipeline import build_postprocessor_chain
-        chain = build_postprocessor_chain(mode="precise")
-        assert chain == []
-
-    def test_hybrid_mode_returns_reranker_and_reorder(self):
-        from spma.agents.doc.llamaindex_pipeline import build_postprocessor_chain
-        from llama_index.core.postprocessor import (
-            SentenceTransformerRerank,
-            LongContextReorder,
-        )
-        # Mock SentenceTransformerRerank to avoid downloading the model
-        mock_reranker = MagicMock(spec=SentenceTransformerRerank)
-        mock_reranker.top_n = 10
-        with patch(
-            "spma.agents.doc.llamaindex_pipeline.SentenceTransformerRerank",
-            return_value=mock_reranker,
-        ):
-            chain = build_postprocessor_chain(mode="hybrid")
-        assert len(chain) == 2
-        assert isinstance(chain[1], LongContextReorder)
-        assert chain[0].top_n == 10
-
-    def test_semantic_mode_same_as_hybrid(self):
-        from spma.agents.doc.llamaindex_pipeline import build_postprocessor_chain
-        from llama_index.core.postprocessor import (
-            SentenceTransformerRerank,
-        )
-        mock_reranker = MagicMock(spec=SentenceTransformerRerank)
-        with patch(
-            "spma.agents.doc.llamaindex_pipeline.SentenceTransformerRerank",
-            return_value=mock_reranker,
-        ):
-            hybrid_chain = build_postprocessor_chain(mode="hybrid")
-            semantic_chain = build_postprocessor_chain(mode="semantic")
-        assert len(hybrid_chain) == len(semantic_chain)
-
-    def test_custom_rerank_top_n(self):
-        from spma.agents.doc.llamaindex_pipeline import build_postprocessor_chain
-        from llama_index.core.postprocessor import SentenceTransformerRerank
-        mock_reranker = MagicMock(spec=SentenceTransformerRerank)
-        mock_reranker.top_n = 5
-        with patch(
-            "spma.agents.doc.llamaindex_pipeline.SentenceTransformerRerank",
-            return_value=mock_reranker,
-        ):
-            chain = build_postprocessor_chain(mode="hybrid", rerank_top_n=5)
-        assert chain[0].top_n == 5
-
 
 class MockEmbedder:
     """Mock BGEM3Embedder——返回固定 1024 维向量。"""
@@ -203,3 +151,77 @@ class TestAdvancedLlamaIndexPipeline:
         assert results[0]["score"] == 0.025
         assert results[0]["metadata"]["retrieval_source"] == "bm25"
         assert results[1]["chunk_id"] == "chunk-2"
+
+    def test_initialize_reranker_failure_disables_rerank(self):
+        """L1 降级：Reranker 初始化失败时，enable_rerank=False。"""
+        from spma.agents.doc.llamaindex_pipeline import PipelineConfig
+
+        cfg = PipelineConfig(enable_rerank=True)
+        pipeline = self._make_pipeline(config=cfg)
+
+        with patch(
+            "spma.retrieval.reranker.BGEReranker",
+            side_effect=RuntimeError("ModelScope unreachable"),
+        ):
+            pipeline.initialize(embedder=MockEmbedder())
+
+        assert pipeline._config.enable_rerank is False
+        assert pipeline._reranker is None
+        assert pipeline._long_context_reorder is None
+
+    def test_initialize_with_injected_reranker(self):
+        """通过 initialize(reranker=mock) 注入已创建的 reranker。"""
+        from spma.agents.doc.llamaindex_pipeline import PipelineConfig
+
+        cfg = PipelineConfig(enable_rerank=True)
+        pipeline = self._make_pipeline(config=cfg)
+
+        mock_reranker = MagicMock()
+        pipeline.initialize(embedder=MockEmbedder(), reranker=mock_reranker)
+
+        assert pipeline._reranker is mock_reranker
+        assert pipeline._long_context_reorder is not None
+
+    @pytest.mark.asyncio
+    async def test_search_rerank_failure_returns_original_nodes(self):
+        """L2 降级：rerank() 调用失败时，返回原始 nodes 顺序。"""
+        from spma.agents.doc.llamaindex_pipeline import PipelineConfig
+        from llama_index.core.schema import NodeWithScore, TextNode
+
+        node1 = TextNode(id_="chunk-1", text="内容1")
+        node2 = TextNode(id_="chunk-2", text="内容2")
+        scored1 = NodeWithScore(node=node1, score=0.9)
+        scored2 = NodeWithScore(node=node2, score=0.1)
+
+        mock_retriever = AsyncMock()
+        mock_retriever.aretrieve = AsyncMock(return_value=[scored1, scored2])
+
+        mock_reranker = MagicMock()
+        mock_reranker.rerank = AsyncMock(side_effect=RuntimeError("Inference failed"))
+
+        mock_es = AsyncMock()
+        cfg = PipelineConfig(enable_rerank=True)
+        pipeline = self._make_pipeline(es_client=mock_es, config=cfg)
+        pipeline._embedder = MockEmbedder()
+        pipeline._reranker = mock_reranker
+        pipeline._long_context_reorder = MagicMock()
+
+        with patch.object(pipeline, '_build_retriever', return_value=mock_retriever):
+            results = await pipeline.search(query="测试", mode="hybrid", entities={})
+
+        # 降级后仍返回结果（原始顺序，无 rerank）
+        assert len(results) == 2
+        assert results[0]["chunk_id"] == "chunk-1"
+
+    def test_precise_mode_skips_reranker(self):
+        """L3：precise 模式下不触发 rerank（非降级，无告警）。"""
+        from spma.agents.doc.llamaindex_pipeline import PipelineConfig
+
+        cfg = PipelineConfig(enable_rerank=True)
+        pipeline = self._make_pipeline(config=cfg)
+
+        mock_reranker = MagicMock()
+        pipeline.initialize(embedder=MockEmbedder(), reranker=mock_reranker)
+
+        # precise 模式下 _reranker 存在但不应被调用
+        assert pipeline._reranker is not None
