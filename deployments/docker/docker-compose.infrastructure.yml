@@ -99,7 +99,7 @@ services:
       - "5433:5432"
     volumes:
       - pgvector_data:/var/lib/postgresql/data
-      - ./init-infra.sql:/docker-entrypoint-initdb.d/01-init.sql
+      - ./init-db.sql:/docker-entrypoint-initdb.d/01-init.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U spma -d spma"]
       interval: 5s
