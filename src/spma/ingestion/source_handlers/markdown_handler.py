@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import AsyncIterator
 
 from spma.api.schemas.ingestion import DocIngestionRequest
-from spma.ingestion.source_handlers.base import SourceDocument
+from spma.ingestion.source_handlers.base import SourceDocument, SourceHandler
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024
 
 
-class MarkdownDirSourceHandler:
+class MarkdownDirSourceHandler(SourceHandler):
     """Scans local directories for Markdown files and yields SourceDocuments.
 
     Supports:
@@ -69,23 +69,11 @@ class MarkdownDirSourceHandler:
     def _resolve_path(self, request_path: str | None) -> str:
         """Resolve path: request param > config markdown_dir > error."""
         if request_path:
-            return request_path
+            return str(Path(request_path).resolve())
         doc_config = self._config.get("doc", {})
         fallback = doc_config.get("markdown_dir", "")
         if fallback:
-            return fallback
-        raise ValueError("path is required for markdown_dir source")
-
-    # Static method for external use
-    @staticmethod
-    def resolve_path(request_path: str | None, config: dict | None = None) -> str:
-        """Static version for external use."""
-        if request_path:
-            return request_path
-        if config:
-            fallback = config.get("markdown_dir", "")
-            if fallback:
-                return fallback
+            return str(Path(fallback).resolve())
         raise ValueError("path is required for markdown_dir source")
 
     # ── validation ───────────────────────────────────────────────────
@@ -174,7 +162,8 @@ class MarkdownDirSourceHandler:
     @staticmethod
     def make_source_id(filepath: Path) -> str:
         """Generate a deterministic source_id from the absolute file path."""
-        return hashlib.sha256(str(filepath).encode()).hexdigest()
+        resolved = filepath.resolve()
+        return hashlib.sha256(str(resolved).encode()).hexdigest()
 
 
 # ── helpers ──────────────────────────────────────────────────────────

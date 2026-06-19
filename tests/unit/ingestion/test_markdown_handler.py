@@ -1,8 +1,9 @@
 """Tests for MarkdownDirSourceHandler."""
 
-import os
 import hashlib
+import os
 import tempfile
+import time
 from pathlib import Path
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -134,7 +135,6 @@ class TestFilterByMtime:
             old.write_text("# Old")
             old_mtime = os.path.getmtime(old)
 
-            import time
             time.sleep(0.01)  # ensure different mtime
             new = base / "new.md"
             new.write_text("# New")
@@ -142,6 +142,31 @@ class TestFilterByMtime:
             result = handler.filter_by_mtime([old, new], old_mtime)
             assert len(result) == 1
             assert result[0] == new
+
+
+class TestValidatePath:
+    """Path validation logic."""
+
+    def test_existing_path_passes(self):
+        handler = MarkdownDirSourceHandler(run_store=MagicMock(), config={})
+        with tempfile.TemporaryDirectory() as tmpdir:
+            handler.validate_path(tmpdir)  # should not raise
+
+    def test_nonexistent_path_raises(self):
+        handler = MarkdownDirSourceHandler(run_store=MagicMock(), config={})
+        with pytest.raises(ValueError, match="Path not found"):
+            handler.validate_path("/nonexistent/path/xyz")
+
+    def test_glob_with_existing_parent_passes(self):
+        handler = MarkdownDirSourceHandler(run_store=MagicMock(), config={})
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            handler.validate_path(str(base / "*.md"))  # should not raise
+
+    def test_glob_with_nonexistent_parent_raises(self):
+        handler = MarkdownDirSourceHandler(run_store=MagicMock(), config={})
+        with pytest.raises(ValueError, match="Path not found"):
+            handler.validate_path("/nonexistent/**/*.md")
 
 
 class TestReadFileContent:
