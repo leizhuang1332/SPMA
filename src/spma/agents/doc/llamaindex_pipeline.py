@@ -110,15 +110,18 @@ class AdvancedLlamaIndexPipeline:
         self._embedder = embedder
         Settings.embed_model = BGEM3EmbeddingAdapter(embedder)
 
-        # 确保 DSN 使用 asyncpg 驱动（SQLAlchemy async engine 需要）
+        # 确保 async DSN 使用 asyncpg 驱动（SQLAlchemy async engine 需要）
+        # connection_string 保持同步驱动格式（psycopg2），async_connection_string 使用 asyncpg
         dsn = self._config.dsn
         if "+asyncpg" not in dsn:
-            dsn = dsn.replace("postgresql://", "postgresql+asyncpg://")
-            dsn = dsn.replace("postgres://", "postgresql+asyncpg://")
+            async_dsn = dsn.replace("postgresql://", "postgresql+asyncpg://")
+            async_dsn = async_dsn.replace("postgres://", "postgresql+asyncpg://")
+        else:
+            async_dsn = dsn
 
         vector_store = LlamaPGVectorStore(
             connection_string=dsn,
-            async_connection_string=dsn,
+            async_connection_string=async_dsn,
             table_name="chunk_embeddings",
             schema_name="public",
             embed_dim=1024,
