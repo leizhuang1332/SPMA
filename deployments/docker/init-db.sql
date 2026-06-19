@@ -80,6 +80,26 @@ CREATE INDEX IF NOT EXISTS idx_fpc_repo ON file_path_cache (repo_name);
 CREATE INDEX IF NOT EXISTS idx_fpc_path_trgm ON file_path_cache
     USING GIN (file_path gin_trgm_ops);
 
+CREATE TABLE IF NOT EXISTS ingestion_runs (
+    id                   SERIAL PRIMARY KEY,
+    pipeline_run_id      TEXT NOT NULL UNIQUE,
+    pipeline_type        TEXT NOT NULL,
+    source               TEXT,
+    mode                 TEXT NOT NULL,
+    status               TEXT NOT NULL DEFAULT 'running',
+    started_at           TIMESTAMPTZ NOT NULL,
+    completed_at         TIMESTAMPTZ,
+    estimated_completion TIMESTAMPTZ,
+    stats                JSONB DEFAULT '{}',
+    errors               JSONB DEFAULT '[]',
+    created_by           TEXT NOT NULL,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ingestion_runs_type   ON ingestion_runs(pipeline_type);
+CREATE INDEX IF NOT EXISTS idx_ingestion_runs_status ON ingestion_runs(status);
+CREATE INDEX IF NOT EXISTS idx_ingestion_runs_created ON ingestion_runs(created_at);    
+
 -- 7. 向量 store 元数据表 (向量库 spma_vector)
 -- \c spma_vector
 

@@ -89,7 +89,10 @@ class ESClient:
             operations.append(chunk)
 
         resp = await self._client.bulk(operations=operations, refresh=True)
-        return len(chunks) - len(resp.get("errors", []))
+        if not resp.get("errors"):
+            return len(chunks)
+        error_count = sum(1 for item in resp.get("items", []) if "error" in item.get("index", {}))
+        return len(chunks) - error_count
 
     async def delete_by_source(self, source_id: str) -> int:
         """按 source_id 删除所有关联 chunk。

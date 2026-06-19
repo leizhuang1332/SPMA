@@ -139,6 +139,7 @@ async def general_query(req: QueryRequest):
             rewritten_query = d.get("rewritten_query", d.get("original_query", req.query))
             try:
                 if at == "doc":
+                    print(f"dispatch_arg: {dispatch_arg}")
                     from spma.agents.doc.graph import build_doc_agent_graph
                     g = build_doc_agent_graph(
                         es_client=es_client,
@@ -146,12 +147,14 @@ async def general_query(req: QueryRequest):
                         embedder=embedder,
                         llm=llm,
                     )
+                    print(f"execute build_doc_agent_graph: {g}")
                     result = await g.ainvoke({
                         "original_query": req.query,
                         "rewritten_queries": [rewritten_query],
                         "retriever": None,
                         "query_id": query_id,
                     })
+                    print(f"search_node result: {result}")
                     return {
                         "worker_type": at,
                         "result_count": len(result.get("final_results", [])),

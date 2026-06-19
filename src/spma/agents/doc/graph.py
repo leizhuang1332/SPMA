@@ -76,6 +76,7 @@ def build_doc_agent_graph(
                 entities=entities,
                 hyde_llm=hyde_llm if state.get("hyde_enabled") else None,
             )
+            print(f"search_node: {fused}")
         except Exception:
             fused = []
 

@@ -33,7 +33,7 @@ class PipelineRunStore:
                     (pipeline_run_id, pipeline_type, source, mode, status, started_at, created_by)
                 VALUES ($1, $2, $3, $4, 'running', $5, $6)
                 """,
-                run_id, pipeline_type, source, mode, now.isoformat(), created_by,
+                run_id, pipeline_type, source, mode, now, created_by,
             )
 
         logger.info(f"创建 pipeline run: {run_id} (type={pipeline_type}, mode={mode})")
