@@ -98,6 +98,50 @@ class PipelineRunStore:
             )
             return dict(row) if row else None
 
+    async def get_latest_successful(
+        self, pipeline_type: str, source_type: str | None = None
+    ) -> dict | None:
+        """获取最近一次成功完成的运行记录。
+
+        Args:
+            pipeline_type: "doc" | "code" | "sql"
+            source_type: 可选，进一步过滤 source（如 "markdown_dir"）。为 None 时不按 source 过滤。
+
+        Returns:
+            最近一次 status='completed' 的运行记录，无匹配时返回 None。
+        """
+        async with self._db_pool.acquire() as conn:
+            if source_type:
+                row = await conn.fetchrow(
+                    """
+                    SELECT pipeline_run_id, pipeline_type, source, mode, status,
+                           started_at, completed_at, estimated_completion,
+                           stats, errors, created_by, created_at
+                    FROM ingestion_runs
+                    WHERE pipeline_type = $1
+                      AND source = $2
+                      AND status = 'completed'
+                    ORDER BY started_at DESC
+                    LIMIT 1
+                    """,
+                    pipeline_type, source_type,
+                )
+            else:
+                row = await conn.fetchrow(
+                    """
+                    SELECT pipeline_run_id, pipeline_type, source, mode, status,
+                           started_at, completed_at, estimated_completion,
+                           stats, errors, created_by, created_at
+                    FROM ingestion_runs
+                    WHERE pipeline_type = $1
+                      AND status = 'completed'
+                    ORDER BY started_at DESC
+                    LIMIT 1
+                    """,
+                    pipeline_type,
+                )
+            return dict(row) if row else None
+
     async def list_recent(self, limit: int = 20) -> list[dict]:
         """获取最近的运行记录。"""
         async with self._db_pool.acquire() as conn:

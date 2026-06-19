@@ -15,26 +15,29 @@ class _MockConnectionContext:
         pass
 
 
+@pytest.fixture
+def mock_pool():
+    pool = AsyncMock()
+    conn = AsyncMock()
+    conn.execute = AsyncMock()
+    conn.fetchrow = AsyncMock()
+    conn.fetch = AsyncMock()
+
+    def mock_acquire():
+        return _MockConnectionContext(conn)
+
+    pool.acquire = mock_acquire
+    pool._conn = conn
+    return pool
+
+
+@pytest.fixture
+def store(mock_pool):
+    from spma.ingestion.run_store import PipelineRunStore
+    return PipelineRunStore(mock_pool)
+
+
 class TestPipelineRunStore:
-    @pytest.fixture
-    def mock_pool(self):
-        pool = AsyncMock()
-        conn = AsyncMock()
-        conn.execute = AsyncMock()
-        conn.fetchrow = AsyncMock()
-        conn.fetch = AsyncMock()
-
-        def mock_acquire():
-            return _MockConnectionContext(conn)
-
-        pool.acquire = mock_acquire
-        pool._conn = conn
-        return pool
-
-    @pytest.fixture
-    def store(self, mock_pool):
-        from spma.ingestion.run_store import PipelineRunStore
-        return PipelineRunStore(mock_pool)
 
     @pytest.mark.asyncio
     async def test_create_returns_run_id(self, store, mock_pool):
@@ -85,3 +88,48 @@ class TestPipelineRunStore:
 
         results = await store.list_recent(limit=5)
         assert len(results) == 5
+
+
+class TestGetLatestSuccessful:
+    """Tests for get_latest_successful()."""
+
+    @pytest.mark.asyncio
+    async def test_returns_latest_successful_run(self, store, mock_pool):
+        """返回最近一次成功的运行记录。"""
+        mock_row = {
+            "pipeline_run_id": "ingest-doc-20260619-143000",
+            "pipeline_type": "doc",
+            "source": "markdown_dir",
+            "mode": "incremental",
+            "status": "completed",
+            "started_at": "2026-06-19T14:30:00+00:00",
+            "completed_at": "2026-06-19T14:30:45+00:00",
+            "stats": '{"files_processed": 10}',
+            "errors": "[]",
+        }
+        mock_pool._conn.fetchrow.return_value = mock_row
+
+        result = await store.get_latest_successful("doc", source_type="markdown_dir")
+
+        assert result is not None
+        assert result["pipeline_run_id"] == "ingest-doc-20260619-143000"
+        assert result["status"] == "completed"
+        assert result["source"] == "markdown_dir"
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_no_run(self, store, mock_pool):
+        """没有匹配记录时返回 None。"""
+        mock_pool._conn.fetchrow.return_value = None
+
+        result = await store.get_latest_successful("doc", source_type="markdown_dir")
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_only_returns_completed_runs(self, store, mock_pool):
+        """只返回 status='completed' 的记录——running/failed 不算。"""
+        mock_pool._conn.fetchrow.return_value = None  # 没有 completed 的
+
+        result = await store.get_latest_successful("doc", source_type="markdown_dir")
+
+        assert result is None
