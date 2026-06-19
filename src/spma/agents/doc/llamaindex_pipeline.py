@@ -134,7 +134,7 @@ class AdvancedLlamaIndexPipeline:
             hybrid_search=True,
             text_search_config="english",
             cache_ok=False,
-            perform_setup=False,
+            perform_setup=True,
             debug=False,
             use_jsonb=True,
             hnsw_kwargs=None,

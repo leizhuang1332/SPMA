@@ -123,19 +123,25 @@ CREATE TABLE IF NOT EXISTS search_log (
 
 CREATE INDEX IF NOT EXISTS idx_search_log_created_at ON search_log(created_at);
 
--- 8. chunk embeddings 表 (匹配 config/spma.yaml pgvector 参数)
-CREATE TABLE IF NOT EXISTS chunk_embeddings (
-    id          SERIAL PRIMARY KEY,
-    chunk_id    TEXT NOT NULL UNIQUE,
-    source_id   TEXT,
-    source_type TEXT,
-    content     TEXT,
-    embedding   vector(1024),
-    metadata    JSONB DEFAULT '{}',
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+-- 8. data_chunk_embeddings 表 (LlamaIndex PGVectorStore 标准 schema)
+-- embedding_model: BAAI/bge-m3, dimension: 1024
+-- distance: cosine, index: HNSW (m=16, ef_construction=200)
+CREATE TABLE IF NOT EXISTS data_chunk_embeddings (
+    id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    text            VARCHAR NOT NULL,
+    metadata_       JSONB,
+    node_id         VARCHAR,
+    embedding       vector(1024),
+    text_search_tsv TSVECTOR GENERATED ALWAYS AS (to_tsvector('english', "text")) STORED
 );
 
-CREATE INDEX IF NOT EXISTS chunk_embedding_hnsw_idx
-    ON chunk_embeddings
+-- HNSW 向量索引
+CREATE INDEX IF NOT EXISTS data_chunk_embeddings_embedding_idx
+    ON data_chunk_embeddings
     USING hnsw (embedding vector_cosine_ops)
     WITH (m = 16, ef_construction = 200);
+
+-- GIN 全文检索索引（hybrid search 需要）
+CREATE INDEX IF NOT EXISTS data_chunk_embeddings_text_search_idx
+    ON data_chunk_embeddings
+    USING gin (text_search_tsv);

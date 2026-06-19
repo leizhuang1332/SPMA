@@ -69,12 +69,12 @@ class DocIngestionPipeline:
             embeddings = await self.embedder.embed([c.content for c in chunks])
             batch = [
                 {
-                    "chunk_id": chunk.chunk_id,
-                    "source_id": chunk.source_id,
-                    "source_type": chunk.source_type,
-                    "content": chunk.content,
+                    "node_id": chunk.chunk_id,
+                    "text": chunk.content,
                     "embedding": emb,
                     "metadata": {
+                        "source_id": chunk.source_id,
+                        "source_type": chunk.source_type,
                         "req_ids": chunk.req_ids,
                         "doc_type": chunk.doc_type,
                         "version": chunk.version,

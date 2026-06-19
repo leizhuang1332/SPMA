@@ -1,6 +1,6 @@
 """知识新鲜度监控——检查三种数据源是否在 SLO 内。
 
-数据来源: ingestion_runs 表 (最近成功时间) + chunk_embeddings/file_path_cache (最旧记录)
+数据来源: ingestion_runs 表 (最近成功时间) + data_chunk_embeddings/file_path_cache (最旧记录)
 SLO 阈值: config/ingestion.yaml → freshness_slo
 
 设计依据: SPMA-design-05 数据摄入管道设计 §6 新鲜度监控 + API-05 §7 新鲜度端点

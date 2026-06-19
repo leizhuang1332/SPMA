@@ -1,4 +1,4 @@
-"""BGE-M3 批量 embedding + PGVector 写入。"""
+"""BGE-M3 批量 embedding + PGVector 写入（LlamaIndex data_chunk_embeddings 标准 schema）。"""
 
 
 async def embed_and_upsert(
@@ -29,13 +29,16 @@ async def embed_and_upsert(
 
         for chunk, vector in zip(batch, vectors):
             await vector_store.upsert(
-                table_name=chunk["table_name"],
-                business_description=chunk["business_description"],
-                ddl=chunk["ddl"],
-                columns_meta=chunk["columns"],
-                foreign_keys=chunk["foreign_keys"],
-                few_shot_queries=chunk.get("few_shot_queries", []),
+                node_id=f"schema:{chunk['table_name']}",
+                text=chunk["business_description"],
                 embedding=vector,
+                metadata={
+                    "table_name": chunk["table_name"],
+                    "ddl": chunk["ddl"],
+                    "columns": chunk["columns"],
+                    "foreign_keys": chunk["foreign_keys"],
+                    "few_shot_queries": chunk.get("few_shot_queries", []),
+                },
             )
             written += 1
 
