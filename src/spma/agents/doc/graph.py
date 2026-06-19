@@ -85,7 +85,6 @@ def build_doc_agent_graph(
                 entities=entities,
                 hyde_llm=hyde_llm if state.get("hyde_enabled") else None,
             )
-            print(f"search_node: {fused}")
         except Exception:
             logger.exception("search_node 检索失败，返回空结果")
             fused = []

@@ -119,8 +119,9 @@ async def general_query(req: QueryRequest):
     worker_tasks = []
 
     for dispatch in dispatches:
-
+        print("="*50)
         print(f"dispatch: {dispatch}")
+        print("="*50)
         # LangGraph Send 对象: .node = worker 节点名, .arg = WorkerDispatch dict
         dispatch_arg = dispatch.arg if hasattr(dispatch, 'arg') else dispatch
         agent_type = dispatch_arg.get("agent_type", "doc")
@@ -139,7 +140,6 @@ async def general_query(req: QueryRequest):
             rewritten_query = d.get("rewritten_query", d.get("original_query", req.query))
             try:
                 if at == "doc":
-                    print(f"dispatch_arg: {dispatch_arg}")
                     from spma.agents.doc.graph import build_doc_agent_graph
                     g = build_doc_agent_graph(
                         es_client=es_client,
@@ -147,7 +147,6 @@ async def general_query(req: QueryRequest):
                         embedder=embedder,
                         llm=llm,
                     )
-                    print(f"execute build_doc_agent_graph: {g}")
                     result = await g.ainvoke({
                         "original_query": req.query,
                         "rewritten_queries": [rewritten_query],
@@ -155,7 +154,6 @@ async def general_query(req: QueryRequest):
                         "query_id": query_id,
                         "entities": entities,
                     })
-                    print(f"search_node result: {result}")
                     return {
                         "worker_type": at,
                         "result_count": len(result.get("final_results", [])),
@@ -241,6 +239,9 @@ async def general_query(req: QueryRequest):
     if worker_tasks:
         results = await asyncio.gather(*worker_tasks, return_exceptions=True)
         for r in results:
+            print("="*50)
+            print(f"worker_output: {r}")
+            print("="*50)
             if isinstance(r, Exception):
                 worker_outputs.append({"error": str(r), "result_count": 0})
             else:
@@ -259,14 +260,15 @@ async def general_query(req: QueryRequest):
         from spma.agents.synthesis.graph import build_synthesis_agent_graph
 
         synthesis_graph = build_synthesis_agent_graph(llm=llm, audit_llm=llm)
-        print(f"synthesis_graph: {synthesis_graph}")
         synthesis_result = await synthesis_graph.ainvoke({
             "original_query": req.query,
             "worker_outputs": worker_outputs,
             "max_rounds": 2,
             "round": 0,
         })
+        print("="*50)
         print(f"synthesis_result: {synthesis_result}")
+        print("="*50)
     except Exception as e:
         logger.warning(f"Synthesis agent 失败: {e}")
         synthesis_result = {
@@ -275,7 +277,6 @@ async def general_query(req: QueryRequest):
             "annotations": [],
             "convergence_reason": "synthesis_not_implemented",
         }
-        print(f"synthesis_result: {synthesis_result}")
 
     total_latency = int((time.time() - start_time) * 1000)
     print(f"total_latency: {total_latency}")
