@@ -153,6 +153,7 @@ async def general_query(req: QueryRequest):
                         "rewritten_queries": [rewritten_query],
                         "retriever": None,
                         "query_id": query_id,
+                        "entities": entities,
                     })
                     print(f"search_node result: {result}")
                     return {
