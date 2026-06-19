@@ -173,3 +173,67 @@ class TestIngestionEndpoints:
         data = resp.json()
         assert data["status"] == "ok"
         assert "version" in data
+
+
+class TestIngestDocumentsMarkdownDir:
+    """E2E tests for POST /api/v1/ingest/documents with markdown_dir source."""
+
+    @pytest.fixture
+    def client(self, mock_controller):
+        from spma.api.app import create_app
+        app = create_app()
+        return TestClient(app)
+
+    def test_markdown_dir_valid_request(self, client, admin_headers, mock_controller):
+        """Valid markdown_dir request returns 200 with pipeline_run_id."""
+        from spma.api.schemas.ingestion import IngestionResponse
+
+        mock_controller.ingest_documents.return_value = IngestionResponse(
+            pipeline_run_id="ingest-doc-test-markdown-001",
+            source="markdown_dir",
+            mode="full",
+            status="running",
+        )
+
+        payload = {
+            "source": "markdown_dir",
+            "mode": "full",
+            "path": "/data/docs/**/*.md",
+        }
+
+        response = client.post(
+            "/api/v1/ingest/documents",
+            json=payload,
+            headers=admin_headers,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["source"] == "markdown_dir"
+        assert data["mode"] == "full"
+
+    def test_markdown_dir_without_path_uses_config_fallback(self, client, admin_headers, mock_controller):
+        """Request without path should still be accepted (falls back to config)."""
+        from spma.api.schemas.ingestion import IngestionResponse
+
+        mock_controller.ingest_documents.return_value = IngestionResponse(
+            pipeline_run_id="ingest-doc-test-fallback-001",
+            source="markdown_dir",
+            mode="incremental",
+            status="running",
+        )
+
+        payload = {
+            "source": "markdown_dir",
+            "mode": "incremental",
+        }
+
+        response = client.post(
+            "/api/v1/ingest/documents",
+            json=payload,
+            headers=admin_headers,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["source"] == "markdown_dir"
