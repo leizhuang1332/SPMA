@@ -26,15 +26,6 @@ from spma.agents.doc.llamaindex_retrievers import (
     RRFConfig,
 )
 
-# Postprocessors (may fail if sentence-transformers is not installed)
-try:
-    from llama_index.core.postprocessor import (
-        SentenceTransformerRerank,
-        LongContextReorder,
-    )
-except ImportError:
-    SentenceTransformerRerank = None  # type: ignore
-    LongContextReorder = None  # type: ignore
 
 
 @dataclass
@@ -65,25 +56,6 @@ class PipelineConfig:
     hyde_top_k: int = 10
 
 
-def build_postprocessor_chain(
-    mode: str = "hybrid",
-    rerank_model: str = "BAAI/bge-reranker-v2-m3",
-    rerank_top_n: int = 10,
-) -> list:
-    """根据检索模式构建后处理链。
-
-    precise 模式跳过所有语义重排（保持精确匹配排序），
-    hybrid/semantic 模式执行 Cross-Encoder 精排 + 长上下文重排。
-    """
-    if mode == "precise":
-        return []
-
-    chain = [
-        SentenceTransformerRerank(model=rerank_model, top_n=rerank_top_n),
-        LongContextReorder(),
-    ]
-    return chain
-
 
 class AdvancedLlamaIndexPipeline:
     """方案三核心管道——完整封装 LlamaIndex 检索能力。
@@ -105,7 +77,7 @@ class AdvancedLlamaIndexPipeline:
         self._embedder = None
         self._hyde_llm = None
 
-    def initialize(self, embedder, hyde_llm=None) -> None:
+    def initialize(self, embedder, hyde_llm=None, reranker=None) -> None:
         """延迟初始化——在 graph.py 中调用。"""
         from llama_index.vector_stores.postgres import PGVectorStore as LlamaPGVectorStore
         from spma.agents.doc.llamaindex_embedding import BGEM3EmbeddingAdapter
@@ -142,6 +114,27 @@ class AdvancedLlamaIndexPipeline:
         self._index = VectorStoreIndex.from_vector_store(vector_store)
         self._hyde_llm = hyde_llm
 
+        # Reranker 初始化（降级安全）
+        self._reranker = None
+        self._long_context_reorder = None
+        if self._config.enable_rerank:
+            try:
+                if reranker is not None:
+                    self._reranker = reranker
+                else:
+                    from spma.retrieval.reranker import BGEReranker
+                    self._reranker = BGEReranker()
+                from llama_index.core.postprocessor import LongContextReorder
+                self._long_context_reorder = LongContextReorder()
+            except Exception:
+                logger.exception("Reranker 模型加载失败")
+                logger.warning(
+                    "Reranker 初始化失败，降级为无精排模式，检索结果将不做 Cross-Encoder 重排序"
+                )
+                self._config.enable_rerank = False
+                self._reranker = None
+                self._long_context_reorder = None
+
     async def search(
         self,
         query: str,
@@ -159,11 +152,19 @@ class AdvancedLlamaIndexPipeline:
         retriever = self._build_retriever(mode, entities)
         nodes = await retriever.aretrieve(query_bundle)
 
-        postprocessors = build_postprocessor_chain(
-            mode=mode, rerank_model=cfg.rerank_model, rerank_top_n=cfg.rerank_top_n,
-        ) if cfg.enable_rerank else []
-        for pp in postprocessors:
-            nodes = pp.postprocess_nodes(nodes, query_bundle)
+        # 后处理：复用已初始化的 postprocessor 实例
+        if self._config.enable_rerank and mode != "precise" and self._reranker is not None:
+            try:
+                nodes = await self._reranker.rerank(
+                    nodes=nodes,
+                    query_bundle=query_bundle,
+                    top_n=self._config.rerank_top_n,
+                )
+                if self._long_context_reorder is not None:
+                    nodes = self._long_context_reorder.postprocess_nodes(nodes, query_bundle)
+            except Exception:
+                logger.exception("Reranker 调用失败")
+                logger.warning("Reranker 调用失败，本次检索跳过精排，返回原始排序结果")
 
         hyde_nodes = []
         if self._should_use_hyde(query, entities) and (hyde_llm or self._hyde_llm):
