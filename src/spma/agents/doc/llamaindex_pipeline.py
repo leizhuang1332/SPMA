@@ -48,7 +48,6 @@ class PipelineConfig:
         "semantic": {"bm25": 0.3, "vector": 0.7},
     })
 
-    rerank_model: str = "BAAI/bge-reranker-v2-m3"
     rerank_top_n: int = 10
     enable_rerank: bool = True
 

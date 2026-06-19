@@ -17,7 +17,6 @@ class TestPipelineConfig:
         assert cfg.rrf_k == 60
         assert cfg.rrf_bm25_weight == 0.5
         assert cfg.rrf_vector_weight == 0.5
-        assert cfg.rerank_model == "BAAI/bge-reranker-v2-m3"
         assert cfg.rerank_top_n == 10
         assert cfg.enable_rerank is True
         assert cfg.hyde_max_query_len == 30
