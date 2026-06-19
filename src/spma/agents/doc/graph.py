@@ -55,6 +55,12 @@ def build_doc_agent_graph(
         mode = route_retrieval_mode(entities)
         state["weight_mode"] = mode
         query = state.get("original_query", "")
+
+        # 优先使用改写查询
+        rewritten = state.get("rewritten_queries", [])
+        if rewritten:
+            state["current_query"] = rewritten[0]
+
         hyde_enabled = (
             len(query) <= 30
             and not entities.get("req_ids")
