@@ -7,8 +7,11 @@
 4. 保持与现有 graph.py 的接口兼容（输入 query + entities，输出 list[dict]）
 """
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 from llama_index.core import (
     VectorStoreIndex,
@@ -234,4 +237,5 @@ class AdvancedLlamaIndexPipeline:
             )
             return await vector_retriever.aretrieve(query_bundle)
         except Exception:
+            logger.exception("HyDE 检索失败，返回空结果")
             return []
