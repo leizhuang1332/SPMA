@@ -220,11 +220,22 @@ def create_app() -> FastAPI:
         from spma.retrieval.embedder import BGEM3Embedder
         embedder = await BGEM3Embedder.create()
 
-        # 4. Doc Pipeline
-        from spma.ingestion.doc_pipeline import DocIngestionPipeline
-        doc_pipeline = DocIngestionPipeline(es, vector_store, embedder)
+        # 4. Run Store (moved up — needed by source handlers)
+        from spma.ingestion.run_store import PipelineRunStore
+        run_store = PipelineRunStore(db_pool)
 
-        # 5. Code Pipeline
+        # 5. Doc Pipeline (with source handlers)
+        from spma.ingestion.doc_pipeline import DocIngestionPipeline
+        from spma.ingestion.source_handlers import MarkdownDirSourceHandler
+
+        source_handlers = {
+            "markdown_dir": MarkdownDirSourceHandler(run_store, ingestion_cfg),
+        }
+        doc_pipeline = DocIngestionPipeline(
+            es, vector_store, embedder, source_handlers=source_handlers,
+        )
+
+        # 6. Code Pipeline
         from spma.ingestion.code.git_manager import GitManager
         from spma.ingestion.code.file_path_cache import FilePathCache
         from spma.ingestion.code.ast_parser import ASTParser
@@ -248,14 +259,10 @@ def create_app() -> FastAPI:
         repo_urls = ingestion_cfg.get("code", {}).get("repo_urls", {})
         code_pipeline = CodeIngestionPipeline(git_manager, fpc, ast_parser, repo_urls)
 
-        # 6. SQL Pipeline
+        # 7. SQL Pipeline
         sql_dsn = pg_cfg.get("readonly_replica", "")
         from spma.ingestion.sql_pipeline import SqlIngestionPipeline
         sql_pipeline = SqlIngestionPipeline(sql_dsn, vector_store, embedder)
-
-        # 7. Run Store
-        from spma.ingestion.run_store import PipelineRunStore
-        run_store = PipelineRunStore(db_pool)
 
         # 8. Synonym Map
         from spma.ingestion.synonym_map import SynonymMap
