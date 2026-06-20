@@ -13,9 +13,9 @@ class MockLLM:
         if "分解" in prompt:
             return '[{"query":"token refresh代码","target":"code"},{"query":"认证需求","target":"doc"}]'
         return '{"assessment": "sufficient", "reason": "ok"}'
-    def with_structured_output(self, schema):
+    def with_structured_output(self, schema, **kwargs):
         class StructuredMock:
-            async def invoke(self, prompt):
+            async def ainvoke(self, prompt):
                 return {
                     "sources": ["code", "doc"],
                     "is_cross_source": True,
