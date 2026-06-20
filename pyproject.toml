@@ -39,6 +39,7 @@ dependencies = [
     "llama-index-postprocessor-sbert-rerank>=0.2.0",
     "elasticsearch[async]>=9.0.0",
     "sentence-transformers>=5.0.0",
+    "markdownify",
 ]
 
 [project.optional-dependencies]
