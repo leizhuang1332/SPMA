@@ -138,7 +138,9 @@ function appReducer(state: AppState, action: Action): AppState {
     case 'ADD_SESSION':
       return {
         ...state,
-        sessions: [action.session, ...state.sessions],
+        sessions: state.sessions.some(s => s.session_id === action.session.session_id)
+          ? state.sessions.map(s => s.session_id === action.session.session_id ? action.session : s)
+          : [action.session, ...state.sessions],
       };
 
     case 'QUERY_START':
