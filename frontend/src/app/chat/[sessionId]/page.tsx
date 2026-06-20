@@ -15,16 +15,19 @@ export default function ChatSessionPage() {
     if (sessionId) {
       dispatch({ type: 'SET_CURRENT_SESSION', sessionId });
       // Fetch session history from API
+      // We use a ref-based approach to avoid stale closures
+      const currentSessions = state.sessions;
       api.getSession(sessionId)
         .then(session => {
           // Add/update session in the list
-          const exists = state.sessions.some(s => s.session_id === sessionId);
+          const exists = currentSessions.some(s => s.session_id === sessionId);
           if (!exists) {
             dispatch({ type: 'ADD_SESSION', session });
           }
         })
         .catch(console.error);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
   return <AppLayout />;

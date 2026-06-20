@@ -1,7 +1,6 @@
 'use client';
 
 import { useAppContext } from '@/context/app-context';
-import type { Source } from '@/types/api';
 
 export default function SourceDetail() {
   const { state, dispatch } = useAppContext();

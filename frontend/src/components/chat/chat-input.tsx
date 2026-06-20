@@ -1,9 +1,8 @@
 'use client';
 
 import { useState, useRef, useCallback } from 'react';
-import { useAppContext } from '@/context/app-context';
-import { useKeyboard, getModifierKey } from '@/hooks/useKeyboard';
-import { SOURCE_OPTIONS, CHAT_INPUT_MAX_ROWS } from '@/lib/constants';
+import { getModifierKey } from '@/hooks/useKeyboard';
+import { SOURCE_OPTIONS } from '@/lib/constants';
 import { cn } from '@/lib/utils';
 import type { SourceType } from '@/types/api';
 
@@ -13,7 +12,6 @@ interface ChatInputProps {
 }
 
 export default function ChatInput({ onSubmit, disabled }: ChatInputProps) {
-  const { state } = useAppContext();
   const [value, setValue] = useState('');
   const [selectedSource, setSelectedSource] = useState<string>('all');
   const textareaRef = useRef<HTMLTextAreaElement>(null);

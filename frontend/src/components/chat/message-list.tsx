@@ -11,7 +11,7 @@ import EmptyState from './empty-state';
 import * as api from '@/lib/api';
 
 export default function MessageList() {
-  const { state, dispatch } = useAppContext();
+  const { state } = useAppContext();
   const containerRef = useRef<HTMLDivElement>(null);
   const session = state.sessions.find(s => s.session_id === state.currentSessionId);
   const turns = session?.turns ?? [];
@@ -67,7 +67,6 @@ export default function MessageList() {
 
         // AI turn: rendered if answer exists
         const hasAnswer = (turn.answer?.length ?? 0) > 0;
-        const sources = turn.sources ?? [];
         const isLastTurn = i === turns.length - 1;
 
         if (!hasAnswer) {

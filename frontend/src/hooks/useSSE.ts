@@ -4,7 +4,6 @@ import { useCallback, useRef } from 'react';
 import { useAppContext } from '@/context/app-context';
 import { API_BASE_URL, SSE_RECONNECT_BACKOFF_MS } from '@/lib/constants';
 import type {
-  SSEEventMap,
   SSEClassificationEvent,
   SSEWorkerStartEvent,
   SSEWorkerProgressEvent,
