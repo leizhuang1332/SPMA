@@ -21,6 +21,9 @@ class SourceDocument:
     source_type: str
     """"confluence" | "markdown_dir" | "wiki_api"."""
 
+    source_path: str = ""
+    """Human-readable source path — absolute file path for markdown, page URL for Confluence/Wiki."""
+
     page_title: str = ""
     """Document title — filename stem for markdown, page title for Confluence."""
 

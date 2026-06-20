@@ -23,6 +23,7 @@ class DocChunk:
     content: str
     source_id: str = ""
     source_type: str = ""
+    source_path: str = ""
     req_ids: list[str] = field(default_factory=list)
     doc_type: str = ""
     version: str = ""
