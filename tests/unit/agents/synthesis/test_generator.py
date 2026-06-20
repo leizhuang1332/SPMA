@@ -38,12 +38,28 @@ class TestFormatResults:
         assert "短摘要" in result
         assert "长内容" not in result  # snippet 优先
 
-    def test_uses_chunk_id_as_fallback_source_id(self):
+    def test_uses_question_mark_when_no_source_path_or_source_id(self):
+        """当既无 source_path 也无 source_id 时，降级显示 ?。"""
         citations = [
             {"chunk_id": "fallback-id", "content": "内容"},
         ]
         result = _format_results(citations, "文档")
-        assert "fallback-id" in result
+        assert "?" in result
+        assert "fallback-id" not in result  # chunk_id 不再作为 fallback
+
+    def test_prefers_source_path_over_source_id(self):
+        """当 source_path 存在时，优先使用它而非 source_id。"""
+        citations = [
+            {
+                "chunk_id": "d1",
+                "source_id": "doc-123:0",
+                "source_path": "/home/project/docs/prd.md",
+                "content": "内容",
+            },
+        ]
+        result = _format_results(citations, "文档")
+        assert "/home/project/docs/prd.md" in result
+        assert "doc-123:0" not in result  # source_id 不应出现
 
 
 class TestFormatWorkerStats:
