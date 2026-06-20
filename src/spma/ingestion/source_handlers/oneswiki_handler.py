@@ -145,16 +145,56 @@ class OneswikiSourceHandler:
             "Cookie": cfg["cookie"],
         }
 
+    # ── subtree construction ─────────────────────────────────────────
+
     @staticmethod
     def _build_subtree(pages: list[dict], root_uuid: str) -> list[str]:
-        raise NotImplementedError
+        """Build the subtree of page UUIDs rooted at root_uuid.
+
+        Traverses the flat page list and collects all descendants of
+        root_uuid using a BFS/queue approach.
+        """
+        # Build parent → children index
+        children_map: dict[str, list[str]] = {}
+        for page in pages:
+            parent = page.get("parent_uuid", "")
+            uuid = page.get("uuid", "")
+            if uuid:
+                children_map.setdefault(parent, []).append(uuid)
+
+        # BFS from root
+        result: list[str] = []
+        queue: list[str] = children_map.get(root_uuid, [])[:]
+        while queue:
+            current = queue.pop(0)
+            result.append(current)
+            queue.extend(children_map.get(current, []))
+        return result
+
+    # ── incremental filtering ────────────────────────────────────────
 
     @staticmethod
     def _should_skip(page: dict, last_time: float | None) -> bool:
-        raise NotImplementedError
+        """Return True if the page hasn't been updated since last_time."""
+        if last_time is None:
+            return False
+        updated = page.get("updated_time", 0)
+        return updated <= last_time
 
     async def _get_last_ingestion_time(self) -> float | None:
-        raise NotImplementedError
+        """Query the last successful ones_wiki ingestion timestamp."""
+        try:
+            latest = await self._run_store.get_latest_successful(
+                "doc", source_type=DocIngestionSource.ONES_WIKI
+            )
+            if latest and latest.get("started_at"):
+                dt = datetime.fromisoformat(
+                    str(latest["started_at"]).replace("Z", "+00:00")
+                )
+                return dt.timestamp()
+        except Exception as e:
+            logger.warning("Failed to get last ingestion time: %s", e)
+        return None
 
     def _page_to_document(self, page: dict, cfg: dict) -> SourceDocument | None:
         raise NotImplementedError
