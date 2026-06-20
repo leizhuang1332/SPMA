@@ -128,7 +128,7 @@ class MarkdownDirSourceHandler(SourceHandler):
         """Query the last successful markdown_dir ingestion timestamp."""
         try:
             latest = await self._run_store.get_latest_successful(
-                "doc", source_type="markdown_dir"
+                "doc", source_type=DocIngestionSource.MARKDOWN_DIR
             )
             if latest and latest.get("started_at"):
                 dt = datetime.fromisoformat(
