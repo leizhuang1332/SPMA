@@ -67,3 +67,4 @@ data/
 *.tmp
 *.bak
 tmp/
+.superpowers/
