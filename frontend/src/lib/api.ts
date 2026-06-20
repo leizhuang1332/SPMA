@@ -2,7 +2,7 @@ import { API_BASE_URL, DEFAULT_TIMEOUT_MS } from './constants';
 import type {
   QueryRequest, QueryResponse, QueryRecord, SessionRecord,
   FeedbackRequest, SQLConfirmationRequest,
-  PaginatedResponse, SourceType,
+  PaginatedResponse,
 } from '@/types/api';
 
 async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
