@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import AsyncIterator, Protocol
 
-from spma.api.schemas.ingestion import DocIngestionRequest
+from spma.api.schemas.ingestion import DocIngestionRequest, DocIngestionSource
 
 
 @dataclass
@@ -18,7 +18,7 @@ class SourceDocument:
     source_id: str
     """Unique identifier — SHA256 of absolute file path for markdown, page_id for Confluence."""
 
-    source_type: str
+    source_type: DocIngestionSource
     """"confluence" | "markdown_dir" | "wiki_api"."""
 
     source_path: str = ""

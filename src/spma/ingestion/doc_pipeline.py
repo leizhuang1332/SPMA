@@ -7,6 +7,7 @@ import logging
 from datetime import datetime, timezone
 
 from spma.ingestion.chunkers.semantic_chunker import SemanticChunker, DocChunk
+from spma.api.schemas.ingestion import DocIngestionSource
 from spma.retrieval.es_client import ESClient
 
 logger = logging.getLogger(__name__)
@@ -33,7 +34,7 @@ class DocIngestionPipeline:
         self,
         text: str,
         source_id: str,
-        source_type: str = "confluence",
+        source_type: DocIngestionSource = DocIngestionSource.CONFLUENCE,
         req_ids: list[str] | None = None,
         doc_type: str = "prd",
         version: str = "",
@@ -100,7 +101,7 @@ class DocIngestionPipeline:
         self,
         text: str,
         source_id: str,
-        source_type: str = "confluence",
+        source_type: DocIngestionSource = DocIngestionSource.CONFLUENCE,
         req_ids: list[str] | None = None,
         doc_type: str = "prd",
         version: str = "",

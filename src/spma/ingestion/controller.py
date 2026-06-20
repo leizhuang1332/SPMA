@@ -14,6 +14,7 @@ from spma.api.schemas.ingestion import (
     IngestionResponse,
     PipelineRunDetail,
     IngestionResult,
+    DocIngestionSource,
 )
 
 logger = logging.getLogger(__name__)
@@ -206,7 +207,7 @@ class IngestionController:
             return None
         run_id = await self._run_store.create(
             pipeline_type="doc",
-            source="confluence",
+            source=DocIngestionSource.CONFLUENCE,
             mode="incremental",
             created_by="webhook",
         )
@@ -224,7 +225,7 @@ class IngestionController:
         asyncio.create_task(_run())
         return IngestionResponse(
             pipeline_run_id=run_id,
-            source="confluence",
+            source=DocIngestionSource.CONFLUENCE,
             mode="incremental",
             status="running",
         )
