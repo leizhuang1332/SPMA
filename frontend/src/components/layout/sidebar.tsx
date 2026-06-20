@@ -3,14 +3,24 @@
 import { useAppContext } from '@/context/app-context';
 import SessionList from '@/components/session/session-list';
 import SystemStatusBar from '@/components/session/system-status-bar';
+import * as api from '@/lib/api';
 
 export default function Sidebar() {
   const { dispatch } = useAppContext();
 
-  const handleNewSession = () => {
+  const handleNewSession = async () => {
     dispatch({ type: 'RESET_QUERY' });
-    dispatch({ type: 'SET_CURRENT_SESSION', sessionId: null });
-    window.history.pushState(null, '', '/');
+    try {
+      const { session_id } = await api.createSession();
+      // 立即获取完整 SessionRecord 并加入列表，确保侧边栏实时显示
+      const session = await api.getSession(session_id);
+      dispatch({ type: 'ADD_SESSION', session });
+      dispatch({ type: 'SET_CURRENT_SESSION', sessionId: session_id });
+      window.history.pushState(null, '', `/chat/${session_id}`);
+    } catch {
+      dispatch({ type: 'SET_CURRENT_SESSION', sessionId: null });
+      window.history.pushState(null, '', '/');
+    }
   };
 
   return (

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useTheme } from 'next-themes';
 import { useAppContext } from '@/context/app-context';
 import { useSSE } from '@/hooks/useSSE';
@@ -13,6 +13,8 @@ export default function ChatPanel() {
   const { state, dispatch } = useAppContext();
   const { startQuery, cancelQuery } = useSSE();
   const { setTheme, resolvedTheme } = useTheme();
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
 
   // Handle fill-input custom events from EmptyState and FollowupPills
   useEffect(() => {
@@ -77,9 +79,10 @@ export default function ChatPanel() {
         <button
           onClick={() => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark')}
           className="w-[30px] h-[30px] rounded-[7px] grid place-items-center text-[15px] hover:bg-[var(--bg-tertiary)] transition-all active:scale-[0.92]"
-          aria-label={resolvedTheme === 'dark' ? '切换浅色主题' : '切换深色主题'}
+          aria-label={mounted ? (resolvedTheme === 'dark' ? '切换浅色主题' : '切换深色主题') : '切换主题'}
+          suppressHydrationWarning
         >
-          {resolvedTheme === 'dark' ? '☀️' : '🌙'}
+          {mounted ? (resolvedTheme === 'dark' ? '☀️' : '🌙') : null}
         </button>
       </div>
 

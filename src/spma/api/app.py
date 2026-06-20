@@ -10,6 +10,7 @@ import os
 
 import yaml
 from fastapi import FastAPI, HTTPException, Depends, Query
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from spma.infrastructure.degradation import DegradationManager
@@ -122,6 +123,18 @@ def create_app() -> FastAPI:
         description="企业级多源RAG智能问答系统",
     )
 
+    # 配置 CORS — 开发环境允许 localhost，生产环境由 K8s ingress 处理
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+        ],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
     # 注册查询路由
     from spma.api.routes.query import router as query_router
     app.include_router(query_router)
@@ -177,6 +190,10 @@ def create_app() -> FastAPI:
 
     app.include_router(ingestion_router, prefix="/api/v1")
     app.include_router(webhook_router, prefix="/api/v1")
+
+    # 注册会话路由
+    from spma.api.routes.session import router as session_router
+    app.include_router(session_router, prefix="/api/v1")
 
 
     # 新增 startup 事件 — 初始化摄入管道

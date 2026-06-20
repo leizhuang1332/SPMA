@@ -6,6 +6,7 @@
 import logging
 import time
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter
 from pydantic import BaseModel
@@ -48,6 +49,20 @@ async def general_query(req: QueryRequest):
     query_id = str(uuid.uuid4())
     start_time = time.time()
     session_id = req.session_id or f"session_{query_id[:8]}"
+
+    # ---- 0. 会话自动管理 ----
+    if req.session_id:
+        try:
+            from spma.api.dependencies import get_session_store
+            store = get_session_store()
+            if not await store.session_exists(req.session_id):
+                await store.create_session()
+            # 首轮查询自动设置标题（取前 50 字符）
+            session = await store.get_session(req.session_id)
+            if session and not session.get("title") and req.query:
+                await store.update_session_title(req.session_id, req.query[:50])
+        except RuntimeError:
+            pass  # db_pool 未初始化时静默降级
 
     # ---- 1. 分类 + 实体抽取 ----
     from spma.agents.supervisor.classifier_fallback import classify_with_fallback
@@ -288,7 +303,12 @@ async def general_query(req: QueryRequest):
     try:
         from spma.observability.trace_logger import AgentTraceLogger
 
-        trace_logger = AgentTraceLogger()
+        try:
+            from spma.api.dependencies import get_db_pool
+            db_pool = get_db_pool()
+            trace_logger = AgentTraceLogger(db_pool=db_pool)
+        except RuntimeError:
+            trace_logger = AgentTraceLogger()
         combined_state = {
             "session_id": session_id,
             "original_query": req.query,
@@ -300,6 +320,8 @@ async def general_query(req: QueryRequest):
             "total_llm_calls": sum(w.get("rounds_used", 0) for w in worker_outputs),
             "total_tokens": 0,
             "convergence_reason": synthesis_result.get("convergence_reason", ""),
+            "answer": synthesis_result.get("final_answer", ""),
+            "latency_ms": total_latency,
         }
         await trace_logger.log_query(query_id, combined_state)
         await trace_logger.log_round(query_id, "supervisor", 1, {
@@ -312,6 +334,32 @@ async def general_query(req: QueryRequest):
         })
     except Exception as e:
         logger.warning(f"Trace 日志记录失败: {e}")
+
+    # ---- 7b. 内存模式：追加 turn 到 session store ----
+    try:
+        from spma.api.dependencies import get_session_store
+        store = get_session_store()
+        if not store._use_db:
+            turn = {
+                "query_id": query_id,
+                "session_id": session_id,
+                "query_text": req.query,
+                "answer": synthesis_result.get("final_answer", ""),
+                "sources": [
+                    c for w in worker_outputs
+                    for c in (w.get("citations", []) if isinstance(w, dict) else [])
+                    if isinstance(c, dict)
+                ],
+                "classification": classification,
+                "degradation": None,
+                "sql_executed": None,
+                "latency_ms": total_latency,
+                "user_feedback": "none",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            store.add_turn_memory(session_id, turn)
+    except Exception as e:
+        logger.warning(f"内存 SessionStore 写入失败: {e}")
 
     return QueryResponse(
         query_id=query_id,

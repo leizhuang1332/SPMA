@@ -32,6 +32,7 @@ class AgentTraceLogger:
             "query_id": query_id,
             "session_id": state.get("session_id", ""),
             "original_query": state.get("original_query", ""),
+            "answer": state.get("answer", ""),
             "classification": state.get("classification", {}),
             "entities": state.get("entities", {}),
             "worker_outputs": state.get("worker_outputs", []),
@@ -40,6 +41,7 @@ class AgentTraceLogger:
             "total_llm_calls": state.get("total_llm_calls", 0),
             "total_tokens": state.get("total_tokens", 0),
             "convergence_reason": state.get("convergence_reason", ""),
+            "latency_ms": state.get("latency_ms", 0),
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         try:
@@ -87,17 +89,21 @@ class AgentTraceLogger:
                 table = entry.pop("table")
                 if table == "agent_traces":
                     await conn.execute(
-                        """INSERT INTO agent_traces (query_id, session_id, original_query, classification,
-                           entities, worker_outputs, quality_scores, reschedule_count,
-                           total_llm_calls, total_tokens, convergence_reason)
-                           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+                        """INSERT INTO agent_traces (query_id, session_id, original_query, answer,
+                           classification, entities, worker_outputs, quality_scores,
+                           reschedule_count, total_llm_calls, total_tokens,
+                           convergence_reason, latency_ms)
+                           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
                            ON CONFLICT (query_id) DO UPDATE SET
-                           worker_outputs=$6, quality_scores=$7, reschedule_count=$8""",
+                           answer=$4, worker_outputs=$7, quality_scores=$8,
+                           reschedule_count=$9, latency_ms=$13""",
                         entry["query_id"], entry["session_id"], entry["original_query"],
+                        entry["answer"],
                         json.dumps(entry["classification"]), json.dumps(entry["entities"]),
                         json.dumps(entry["worker_outputs"]), json.dumps(entry["quality_scores"]),
                         entry["reschedule_count"], entry["total_llm_calls"],
                         entry["total_tokens"], entry["convergence_reason"],
+                        entry["latency_ms"],
                     )
                 elif table == "agent_rounds":
                     await conn.execute(

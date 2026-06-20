@@ -120,3 +120,27 @@ def get_ingestion_controller() -> "IngestionController":
 def set_ingestion_controller(controller: "IngestionController") -> None:
     global _ingestion_controller
     _ingestion_controller = controller
+
+
+# ---- SessionStore ----
+
+_session_store: "SessionStore | None" = None
+
+
+def get_session_store() -> "SessionStore":
+    """获取 SessionStore 全局单例（懒初始化，无 db_pool 时内存降级）。"""
+    global _session_store
+    if _session_store is None:
+        global _db_pool
+        from spma.api.session_store import SessionStore
+        if _db_pool is not None:
+            _session_store = SessionStore(_db_pool)
+        else:
+            _session_store = SessionStore()  # 内存降级，重启后数据丢失
+    return _session_store
+
+
+def set_session_store(store: "SessionStore") -> None:
+    """显式设置 SessionStore 单例（用于测试或自定义实现）。"""
+    global _session_store
+    _session_store = store

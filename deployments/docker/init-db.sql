@@ -59,12 +59,53 @@ CREATE TABLE IF NOT EXISTS rate_limits (
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
-    id          TEXT PRIMARY KEY,
+    id          SERIAL PRIMARY KEY,
+    session_id  TEXT NOT NULL UNIQUE,
     user_id     TEXT,
+    title       TEXT,
     metadata    JSONB,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- agent_traces: 每次查询的完整记录 (trace_logger 写入)
+CREATE TABLE IF NOT EXISTS agent_traces (
+    query_id            TEXT PRIMARY KEY,
+    session_id          TEXT NOT NULL,
+    original_query      TEXT NOT NULL,
+    answer              TEXT DEFAULT '',
+    classification      JSONB DEFAULT '{}',
+    entities            JSONB DEFAULT '{}',
+    worker_outputs      JSONB DEFAULT '[]',
+    quality_scores      JSONB DEFAULT '{}',
+    reschedule_count    INTEGER DEFAULT 0,
+    total_llm_calls     INTEGER DEFAULT 0,
+    total_tokens        INTEGER DEFAULT 0,
+    convergence_reason  TEXT DEFAULT '',
+    latency_ms          INTEGER DEFAULT 0,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_traces_session ON agent_traces(session_id);
+CREATE INDEX IF NOT EXISTS idx_agent_traces_created ON agent_traces(created_at);
+
+-- agent_rounds: Agent 内部轮次记录 (trace_logger 写入)
+CREATE TABLE IF NOT EXISTS agent_rounds (
+    id              BIGSERIAL PRIMARY KEY,
+    query_id        TEXT NOT NULL,
+    agent_type      TEXT NOT NULL,
+    round_num       INTEGER NOT NULL,
+    action          TEXT DEFAULT '',
+    results_summary TEXT DEFAULT '',
+    assessment      TEXT DEFAULT '',
+    confidence      REAL DEFAULT 0,
+    latency_ms      INTEGER DEFAULT 0,
+    llm_calls       INTEGER DEFAULT 0,
+    tokens_used     INTEGER DEFAULT 0,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_rounds_query ON agent_rounds(query_id);
 
 -- file_path_cache: Code Agent 文件路径路由缓存
 CREATE TABLE IF NOT EXISTS file_path_cache (
