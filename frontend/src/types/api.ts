@@ -230,6 +230,8 @@ export interface SSEDoneEvent {
   latency_ms: number;
   degradation: DegradationInfo;
   suggested_followups?: string[];
+  sources?: Source[];
+  data_freshness?: DataFreshness;
 }
 
 export interface SSEErrorEvent {
