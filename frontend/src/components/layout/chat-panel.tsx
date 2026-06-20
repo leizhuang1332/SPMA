@@ -76,10 +76,10 @@ export default function ChatPanel() {
         </div>
         <button
           onClick={() => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark')}
-          className="px-1.5 py-0.5 rounded text-sm hover:bg-[var(--muted)] transition-colors"
-          aria-label="切换主题"
+          className="w-[30px] h-[30px] rounded-[7px] grid place-items-center text-[15px] hover:bg-[var(--bg-tertiary)] transition-all active:scale-[0.92]"
+          aria-label={resolvedTheme === 'dark' ? '切换浅色主题' : '切换深色主题'}
         >
-          🌙
+          {resolvedTheme === 'dark' ? '☀️' : '🌙'}
         </button>
       </div>
 
