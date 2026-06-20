@@ -20,6 +20,7 @@ class DocIngestionSource(StrEnum):
     CONFLUENCE = "confluence"
     MARKDOWN_DIR = "markdown_dir"
     WIKI_API = "wiki_api"
+    ONES_WIKI = "ones_wiki"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -45,6 +46,7 @@ class DocIngestionRequest(BaseModel):
     path: str | None = None  # markdown 文件/目录路径或 glob 模式
     filters: DocIngestionFilters = Field(default_factory=DocIngestionFilters)
     options: DocIngestionOptions = Field(default_factory=DocIngestionOptions)
+    config: dict | None = None
 
 
 class DocChunkSpec(BaseModel):
