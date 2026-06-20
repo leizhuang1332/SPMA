@@ -1,20 +1,27 @@
-import type { Metadata } from "next";
-import "./globals.css";
+import type { Metadata } from 'next';
+import { ThemeProvider } from 'next-themes';
+import { AppProvider } from '@/context/app-context';
+import './globals.css';
 
 export const metadata: Metadata = {
-  title: "SPMA — 智能问答",
-  description: "企业级多源 RAG 智能问答系统",
+  title: 'SPMA — 智能问答',
+  description: '企业级多源 RAG 智能问答系统',
 };
 
-export default function RootLayout({
-  children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="zh-CN" suppressHydrationWarning>
-      <body className="antialiased">
-        {children}
+      <body>
+        <ThemeProvider
+          attribute="class"
+          defaultTheme="system"
+          enableSystem
+          disableTransitionOnChange
+        >
+          <AppProvider>
+            {children}
+          </AppProvider>
+        </ThemeProvider>
       </body>
     </html>
   );
