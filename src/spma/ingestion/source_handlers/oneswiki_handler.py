@@ -141,7 +141,7 @@ class OneswikiSourceHandler:
     def _build_headers(self, cfg: dict) -> dict:
         """Build HTTP headers with auth from config."""
         return {
-            "Authorization": f"Bearer {cfg['auth_token']}",
+            "Authorization": cfg['auth_token'],
             "Cookie": cfg["cookie"],
         }
 
