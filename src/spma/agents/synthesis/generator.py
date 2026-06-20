@@ -28,8 +28,8 @@ def _format_results(citations: list[dict], label: str) -> str:
     lines = [f"[来自{label}]"]
     for i, c in enumerate(citations):
         snippet = c.get("snippet", c.get("content", ""))[:300]
-        source_id = c.get("source_id", c.get("chunk_id", "?"))
-        lines.append(f"{i + 1}. [{source_id}] {snippet}")
+        source_ref = c.get("source_path") or c.get("source_id", "?")
+        lines.append(f"{i + 1}. {source_ref}\n> {snippet}")
     return "\n".join(lines)
 
 

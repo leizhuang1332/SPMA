@@ -226,10 +226,11 @@ def create_app() -> FastAPI:
 
         # 5. Doc Pipeline (with source handlers)
         from spma.ingestion.doc_pipeline import DocIngestionPipeline
-        from spma.ingestion.source_handlers import MarkdownDirSourceHandler
+        from spma.ingestion.source_handlers import MarkdownDirSourceHandler, OneswikiSourceHandler
 
         source_handlers = {
             "markdown_dir": MarkdownDirSourceHandler(run_store, ingestion_cfg),
+            "ones_wiki": OneswikiSourceHandler(run_store, ingestion_cfg),
         }
         doc_pipeline = DocIngestionPipeline(
             es, vector_store, embedder, source_handlers=source_handlers,

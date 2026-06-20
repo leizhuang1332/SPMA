@@ -86,6 +86,7 @@ def es_client():
 def vector_store():
     """Mock Vector Store——向量检索返回 3 条结果。"""
     vs = AsyncMock()
+    vs._dsn = "postgresql://spma:spma123@localhost:5433/spma"
     vs.search = AsyncMock(return_value=[
         make_vector_result("vec-1", "用户认证流程详解"),
         make_vector_result("vec-2", "OAuth2.0登录集成方案"),

@@ -70,7 +70,8 @@ class OneswikiSourceHandler:
                         logger.warning("Failed to fetch page %s: %s", uuid, e)
                         return None
 
-            # Preserve order: launch all tasks, gather results
+            # Launch all tasks and gather results; successful pages maintain
+            # subtree_uuids order. Failed pages return None and are filtered.
             tasks = [asyncio.create_task(fetch_one(uuid)) for uuid in subtree_uuids]
             page_results = await asyncio.gather(*tasks)
 
@@ -112,26 +113,140 @@ class OneswikiSourceHandler:
             "concurrency": max(1, int(cfg.get("concurrency", DEFAULT_CONCURRENCY))),
         }
 
-    # ── stubs ───────────────────────────────────────────────────────
-    # These methods will be implemented in later tasks.
-    # For now, raise NotImplementedError so the file is importable.
+    # ── API calls ────────────────────────────────────────────────────
 
-    async def _fetch_page_list(self, client, cfg) -> list[dict]:
-        raise NotImplementedError
+    async def _fetch_page_list(
+        self, client: httpx.AsyncClient, cfg: dict
+    ) -> list[dict]:
+        """Fetch all pages in a space. Returns raw page list from API."""
+        url = f"/wiki/api/wiki/team/{cfg['team_uuid']}/space/{cfg['space_uuid']}/pages"
+        headers = self._build_headers(cfg)
+        response = await client.get(url, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+        pages = data.get("pages", [])
+        logger.info("Fetched %d pages from space %s", len(pages), cfg["space_uuid"])
+        return pages
 
-    async def _fetch_page_content(self, client, cfg, page_uuid: str) -> dict | None:
-        raise NotImplementedError
+    async def _fetch_page_content(
+        self, client: httpx.AsyncClient, cfg: dict, page_uuid: str
+    ) -> dict | None:
+        """Fetch a single page's full content. Returns parsed JSON dict."""
+        url = f"/wiki/api/wiki/team/{cfg['team_uuid']}/page/{page_uuid}?action=view"
+        headers = self._build_headers(cfg)
+        response = await client.get(url, headers=headers)
+        response.raise_for_status()
+        return response.json()
+
+    def _build_headers(self, cfg: dict) -> dict:
+        """Build HTTP headers with auth from config."""
+        return {
+            "Authorization": f"Bearer {cfg['auth_token']}",
+            "Cookie": cfg["cookie"],
+        }
+
+    # ── subtree construction ─────────────────────────────────────────
 
     @staticmethod
     def _build_subtree(pages: list[dict], root_uuid: str) -> list[str]:
-        raise NotImplementedError
+        """Build the subtree of page UUIDs rooted at root_uuid.
+
+        Traverses the flat page list and collects all descendants of
+        root_uuid using a BFS/queue approach.
+        """
+        # Build parent → children index
+        children_map: dict[str, list[str]] = {}
+        for page in pages:
+            parent = page.get("parent_uuid", "")
+            uuid = page.get("uuid", "")
+            if uuid:
+                children_map.setdefault(parent, []).append(uuid)
+
+        # BFS from root
+        result: list[str] = []
+        queue: list[str] = children_map.get(root_uuid, [])[:]
+        while queue:
+            current = queue.pop(0)
+            result.append(current)
+            queue.extend(children_map.get(current, []))
+        return result
+
+    # ── incremental filtering ────────────────────────────────────────
 
     @staticmethod
-    def _should_skip(page: dict, last_time: float) -> bool:
-        raise NotImplementedError
+    def _should_skip(page: dict, last_time: float | None) -> bool:
+        """Return True if the page hasn't been updated since last_time."""
+        if last_time is None:
+            return False
+        updated = page.get("updated_time", 0)
+        return updated <= last_time
 
     async def _get_last_ingestion_time(self) -> float | None:
-        raise NotImplementedError
+        """Query the last successful ones_wiki ingestion timestamp."""
+        try:
+            latest = await self._run_store.get_latest_successful(
+                "doc", source_type=DocIngestionSource.ONES_WIKI
+            )
+            if latest and latest.get("started_at"):
+                dt = datetime.fromisoformat(
+                    str(latest["started_at"]).replace("Z", "+00:00")
+                )
+                return dt.timestamp()
+        except Exception as e:
+            logger.warning("Failed to get last ingestion time: %s", e)
+        return None
 
-    def _page_to_document(self, page: dict, cfg: dict):
-        raise NotImplementedError
+    # ── page → SourceDocument ────────────────────────────────────────
+
+    def _page_to_document(self, page: dict, cfg: dict) -> SourceDocument | None:
+        """Convert a raw page dict to a SourceDocument."""
+        uuid = page.get("uuid", "")
+        title = page.get("title", "")
+        content_html = page.get("content", "")
+        version = page.get("version", 0)
+        updated_time = page.get("updated_time", 0)
+
+        if not uuid:
+            logger.warning("Page has no uuid, skipping")
+            return None
+
+        text = self._html_to_markdown(content_html)
+
+        if updated_time:
+            updated_at = datetime.fromtimestamp(updated_time, tz=timezone.utc).isoformat()
+        else:
+            updated_at = None
+
+        source_path = (
+            f"{cfg['base_url']}/wiki/team/{cfg['team_uuid']}"
+            f"/space/{cfg['space_uuid']}/page/{uuid}"
+        )
+
+        return SourceDocument(
+            text=text,
+            source_id=uuid,
+            source_type=DocIngestionSource.ONES_WIKI,
+            source_path=source_path,
+            page_title=title,
+            doc_type="prd",
+            version=str(version),
+            updated_at=updated_at,
+        )
+
+    @staticmethod
+    def _html_to_markdown(html_content: str) -> str:
+        """Convert HTML content to Markdown. Falls back to raw HTML on error."""
+        if not html_content or not html_content.strip():
+            return ""
+        try:
+            from markdownify import markdownify as md
+
+            return md(
+                html_content,
+                heading_style="ATX",
+                bullets="-",
+                strip=["script", "style"],
+            )
+        except Exception as e:
+            logger.warning("HTML to Markdown conversion failed: %s, using raw HTML", e)
+            return html_content

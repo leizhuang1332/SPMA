@@ -77,6 +77,7 @@ class ESBM25Retriever(BaseRetriever):
                 metadata={
                     "source_id": r.get("source_id"),
                     "source_type": r.get("source_type", "bm25"),
+                    "source_path": r.get("source_path", ""),
                     "req_ids": r.get("req_ids", []),
                     "retrieval_source": "bm25",
                     **(r.get("metadata") or {}),

@@ -7,6 +7,7 @@ import logging
 from datetime import datetime, timezone
 
 from spma.ingestion.chunkers.semantic_chunker import SemanticChunker, DocChunk
+from spma.api.schemas.ingestion import DocIngestionSource
 from spma.retrieval.es_client import ESClient
 
 logger = logging.getLogger(__name__)
@@ -33,7 +34,8 @@ class DocIngestionPipeline:
         self,
         text: str,
         source_id: str,
-        source_type: str = "confluence",
+        source_type: DocIngestionSource = DocIngestionSource.CONFLUENCE,
+        source_path: str = "",
         req_ids: list[str] | None = None,
         doc_type: str = "prd",
         version: str = "",
@@ -48,6 +50,7 @@ class DocIngestionPipeline:
             text=text,
             source_id=source_id,
             source_type=source_type,
+            source_path=source_path,
             req_ids=req_ids,
             doc_type=doc_type,
             version=version,
@@ -75,6 +78,7 @@ class DocIngestionPipeline:
                     "metadata": {
                         "source_id": chunk.source_id,
                         "source_type": chunk.source_type,
+                        "source_path": chunk.source_path,
                         "req_ids": chunk.req_ids,
                         "doc_type": chunk.doc_type,
                         "version": chunk.version,
@@ -100,7 +104,8 @@ class DocIngestionPipeline:
         self,
         text: str,
         source_id: str,
-        source_type: str = "confluence",
+        source_type: DocIngestionSource = DocIngestionSource.CONFLUENCE,
+        source_path: str = "",
         req_ids: list[str] | None = None,
         doc_type: str = "prd",
         version: str = "",
@@ -115,6 +120,7 @@ class DocIngestionPipeline:
             text=text,
             source_id=source_id,
             source_type=source_type,
+            source_path=source_path,
             req_ids=req_ids,
             doc_type=doc_type,
             version=version,
@@ -157,6 +163,7 @@ class DocIngestionPipeline:
                         text=doc.text,
                         source_id=doc.source_id,
                         source_type=doc.source_type,
+                        source_path=doc.source_path,
                         page_title=doc.page_title,
                         req_ids=doc.req_ids,
                         doc_type=doc.doc_type,
@@ -167,6 +174,7 @@ class DocIngestionPipeline:
                         text=doc.text,
                         source_id=doc.source_id,
                         source_type=doc.source_type,
+                        source_path=doc.source_path,
                         page_title=doc.page_title,
                         req_ids=doc.req_ids,
                         doc_type=doc.doc_type,
@@ -191,6 +199,7 @@ class DocIngestionPipeline:
             "chunk_id": chunk.chunk_id,
             "source_id": chunk.source_id,
             "source_type": chunk.source_type,
+            "source_path": chunk.source_path,
             "req_ids": chunk.req_ids,
             "content": chunk.content,
             "doc_type": chunk.doc_type,

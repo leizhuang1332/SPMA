@@ -2,5 +2,6 @@
 
 from spma.ingestion.source_handlers.base import SourceDocument, SourceHandler
 from spma.ingestion.source_handlers.markdown_handler import MarkdownDirSourceHandler
+from spma.ingestion.source_handlers.oneswiki_handler import OneswikiSourceHandler
 
-__all__ = ["SourceDocument", "SourceHandler", "MarkdownDirSourceHandler"]
+__all__ = ["SourceDocument", "SourceHandler", "MarkdownDirSourceHandler", "OneswikiSourceHandler"]

@@ -104,18 +104,21 @@ class TestIngestionEndpoints:
 
     # ── 认证要求 (§6-7, §10) ──
 
-    def test_get_ingest_status_requires_auth(self, client):
+    def test_get_ingest_status_requires_auth(self, client, monkeypatch):
         """GET /api/v1/ingest/status 无认证返回 401（HTTPBearer 缺 header）。"""
+        monkeypatch.setenv("SPMA_AUTH_ENABLED", "true")
         resp = client.get("/api/v1/ingest/status")
         assert resp.status_code == 401
 
-    def test_get_freshness_requires_auth(self, client):
+    def test_get_freshness_requires_auth(self, client, monkeypatch):
         """GET /api/v1/ingest/freshness 无认证返回 401。"""
+        monkeypatch.setenv("SPMA_AUTH_ENABLED", "true")
         resp = client.get("/api/v1/ingest/freshness")
         assert resp.status_code == 401
 
-    def test_synonym_map_endpoints_require_auth(self, client):
+    def test_synonym_map_endpoints_require_auth(self, client, monkeypatch):
         """/ingest/synonym-map GET 和 refresh POST 无认证返回 401。"""
+        monkeypatch.setenv("SPMA_AUTH_ENABLED", "true")
         resp_get = client.get("/api/v1/ingest/synonym-map")
         resp_post = client.post("/api/v1/ingest/synonym-map/refresh", json={})
         assert resp_get.status_code == 401

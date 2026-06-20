@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncIterator
 
-from spma.api.schemas.ingestion import DocIngestionRequest
+from spma.api.schemas.ingestion import DocIngestionRequest, DocIngestionSource
 from spma.ingestion.source_handlers.base import SourceDocument, SourceHandler
 
 logger = logging.getLogger(__name__)
@@ -57,7 +57,8 @@ class MarkdownDirSourceHandler(SourceHandler):
             yield SourceDocument(
                 text=content,
                 source_id=self.make_source_id(filepath),
-                source_type="markdown_dir",
+                source_type=DocIngestionSource.MARKDOWN_DIR,
+                source_path=str(filepath.resolve()),
                 page_title=filepath.stem,
                 updated_at=datetime.fromtimestamp(
                     os.path.getmtime(filepath), tz=timezone.utc
@@ -128,7 +129,7 @@ class MarkdownDirSourceHandler(SourceHandler):
         """Query the last successful markdown_dir ingestion timestamp."""
         try:
             latest = await self._run_store.get_latest_successful(
-                "doc", source_type="markdown_dir"
+                "doc", source_type=DocIngestionSource.MARKDOWN_DIR
             )
             if latest and latest.get("started_at"):
                 dt = datetime.fromisoformat(

@@ -17,6 +17,8 @@ mappings:
       type: keyword
     source_type:
       type: keyword
+    source_path:
+      type: keyword
     req_ids:
       type: keyword
     content:
