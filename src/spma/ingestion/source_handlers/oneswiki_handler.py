@@ -113,15 +113,37 @@ class OneswikiSourceHandler:
             "concurrency": max(1, int(cfg.get("concurrency", DEFAULT_CONCURRENCY))),
         }
 
-    # ── stubs ───────────────────────────────────────────────────────
-    # These methods will be implemented in later tasks.
-    # For now, raise NotImplementedError so the file is importable.
+    # ── API calls ────────────────────────────────────────────────────
 
-    async def _fetch_page_list(self, client: httpx.AsyncClient, cfg: dict) -> list[dict]:
-        raise NotImplementedError
+    async def _fetch_page_list(
+        self, client: httpx.AsyncClient, cfg: dict
+    ) -> list[dict]:
+        """Fetch all pages in a space. Returns raw page list from API."""
+        url = f"/wiki/api/wiki/team/{cfg['team_uuid']}/space/{cfg['space_uuid']}/pages"
+        headers = self._build_headers(cfg)
+        response = await client.get(url, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+        pages = data.get("pages", [])
+        logger.info("Fetched %d pages from space %s", len(pages), cfg["space_uuid"])
+        return pages
 
-    async def _fetch_page_content(self, client: httpx.AsyncClient, cfg: dict, page_uuid: str) -> dict | None:
-        raise NotImplementedError
+    async def _fetch_page_content(
+        self, client: httpx.AsyncClient, cfg: dict, page_uuid: str
+    ) -> dict | None:
+        """Fetch a single page's full content. Returns parsed JSON dict."""
+        url = f"/wiki/api/wiki/team/{cfg['team_uuid']}/page/{page_uuid}?action=view"
+        headers = self._build_headers(cfg)
+        response = await client.get(url, headers=headers)
+        response.raise_for_status()
+        return response.json()
+
+    def _build_headers(self, cfg: dict) -> dict:
+        """Build HTTP headers with auth from config."""
+        return {
+            "Authorization": f"Bearer {cfg['auth_token']}",
+            "Cookie": cfg["cookie"],
+        }
 
     @staticmethod
     def _build_subtree(pages: list[dict], root_uuid: str) -> list[str]:
