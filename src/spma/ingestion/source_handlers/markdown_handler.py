@@ -58,6 +58,7 @@ class MarkdownDirSourceHandler(SourceHandler):
                 text=content,
                 source_id=self.make_source_id(filepath),
                 source_type=DocIngestionSource.MARKDOWN_DIR,
+                source_path=str(filepath.resolve()),
                 page_title=filepath.stem,
                 updated_at=datetime.fromtimestamp(
                     os.path.getmtime(filepath), tz=timezone.utc

@@ -55,6 +55,7 @@ class SemanticChunker:
         text: str,
         source_id: str = "",
         source_type: str = "",
+        source_path: str = "",
         req_ids: list[str] | None = None,
         doc_type: str = "",
         version: str = "",
@@ -69,7 +70,7 @@ class SemanticChunker:
 
         if estimate_tokens(text) <= self.chunk_size_tokens and not has_headings:
             return [self._make_chunk(
-                text, 0, source_id, source_type, req_ids,
+                text, 0, source_id, source_type, source_path, req_ids,
                 doc_type, version, updated_at, page_title,
             )]
 
@@ -79,7 +80,7 @@ class SemanticChunker:
             if estimate_tokens(content) < self.min_chunk_size_tokens and len(sections) > 1:
                 continue
             chunks.append(self._make_chunk(
-                content, i, source_id, source_type, req_ids,
+                content, i, source_id, source_type, source_path, req_ids,
                 doc_type, version, updated_at, page_title,
             ))
 
@@ -87,7 +88,7 @@ class SemanticChunker:
         if not chunks and sections:
             for i, content in enumerate(sections):
                 chunks.append(self._make_chunk(
-                    content, i, source_id, source_type, req_ids,
+                    content, i, source_id, source_type, source_path, req_ids,
                     doc_type, version, updated_at, page_title,
                 ))
 
@@ -122,13 +123,14 @@ class SemanticChunker:
 
         return result
 
-    def _make_chunk(self, content, index, source_id, source_type, req_ids,
+    def _make_chunk(self, content, index, source_id, source_type, source_path, req_ids,
                     doc_type, version, updated_at, page_title) -> DocChunk:
         return DocChunk(
             chunk_id=str(uuid.uuid4()),
             content=content,
             source_id=source_id,
             source_type=source_type,
+            source_path=source_path,
             req_ids=list(req_ids),
             doc_type=doc_type,
             version=version,
