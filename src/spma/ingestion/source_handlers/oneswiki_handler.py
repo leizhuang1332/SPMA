@@ -196,5 +196,57 @@ class OneswikiSourceHandler:
             logger.warning("Failed to get last ingestion time: %s", e)
         return None
 
+    # ── page → SourceDocument ────────────────────────────────────────
+
     def _page_to_document(self, page: dict, cfg: dict) -> SourceDocument | None:
-        raise NotImplementedError
+        """Convert a raw page dict to a SourceDocument."""
+        uuid = page.get("uuid", "")
+        title = page.get("title", "")
+        content_html = page.get("content", "")
+        version = page.get("version", 0)
+        updated_time = page.get("updated_time", 0)
+
+        if not uuid:
+            logger.warning("Page has no uuid, skipping")
+            return None
+
+        text = self._html_to_markdown(content_html)
+
+        if updated_time:
+            updated_at = datetime.fromtimestamp(updated_time, tz=timezone.utc).isoformat()
+        else:
+            updated_at = None
+
+        source_path = (
+            f"{cfg['base_url']}/wiki/team/{cfg['team_uuid']}"
+            f"/space/{cfg['space_uuid']}/page/{uuid}"
+        )
+
+        return SourceDocument(
+            text=text,
+            source_id=uuid,
+            source_type=DocIngestionSource.ONES_WIKI,
+            source_path=source_path,
+            page_title=title,
+            doc_type="prd",
+            version=str(version),
+            updated_at=updated_at,
+        )
+
+    @staticmethod
+    def _html_to_markdown(html_content: str) -> str:
+        """Convert HTML content to Markdown. Falls back to raw HTML on error."""
+        if not html_content or not html_content.strip():
+            return ""
+        try:
+            from markdownify import markdownify as md
+
+            return md(
+                html_content,
+                heading_style="ATX",
+                bullets="-",
+                strip=["script", "style"],
+            )
+        except Exception as e:
+            logger.warning("HTML to Markdown conversion failed: %s, using raw HTML", e)
+            return html_content
