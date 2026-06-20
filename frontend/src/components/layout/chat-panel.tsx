@@ -63,14 +63,14 @@ export default function ChatPanel() {
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-2.5 text-[12px]" style={{ borderBottom: '0.5px solid var(--border)' }}>
-        <div className="flex items-center gap-2">
-          <span className="font-semibold text-[var(--foreground)]">
-            {sessionTitle ?? '新会话'}
-          </span>
+      <div className="flex items-center gap-3 px-4 py-3" style={{ borderBottom: '0.5px solid var(--border)', minHeight: '48px' }}>
+        <div className="flex items-center gap-3 flex-1 min-w-0">
+          <h1 className="font-semibold text-[14px] text-[var(--foreground)] truncate">
+            {sessionTitle ?? 'SPMA 智能问答'}
+          </h1>
           {state.currentSessionId && (
-            <span className="text-[10px] text-[var(--muted-foreground)]">
-              {state.sessions.find(s => s.session_id === state.currentSessionId)?.turns?.length ?? 0} 轮对话
+            <span className="text-[11px] text-[var(--muted-foreground)]">
+              {state.sessions.find(s => s.session_id === state.currentSessionId)?.turns?.length ?? 0} 轮
             </span>
           )}
         </div>
@@ -79,7 +79,7 @@ export default function ChatPanel() {
           className="px-1.5 py-0.5 rounded text-sm hover:bg-[var(--muted)] transition-colors"
           aria-label="切换主题"
         >
-          🌓
+          🌙
         </button>
       </div>
 

@@ -16,16 +16,14 @@ export default function Sidebar() {
   return (
     <>
       {/* Header */}
-      <div className="flex items-center justify-between px-3.5 py-3" style={{ borderBottom: '0.5px solid var(--border)' }}>
-        <div className="flex items-center gap-2">
-          <div className="w-[22px] h-[22px] bg-[var(--primary)] rounded-md flex items-center justify-center text-white font-bold text-[11px]">
-            S
-          </div>
-          <span className="font-semibold text-[13px] text-[var(--foreground)] tracking-tight">SPMA</span>
+      <div className="flex items-center gap-2 px-3 py-4" style={{ borderBottom: '0.5px solid var(--border)', minHeight: '48px' }}>
+        <div className="w-7 h-7 bg-[var(--primary)] text-white rounded-[7px] grid place-items-center font-bold text-[15px] flex-shrink-0">
+          S
         </div>
+        <span className="font-semibold text-[13px] text-[var(--foreground)] flex-1">SPMA</span>
         <button
           onClick={handleNewSession}
-          className="w-[22px] h-[22px] rounded-md bg-[var(--muted)] flex items-center justify-center text-[var(--primary)] text-sm hover:bg-[var(--primary-bg)] transition-colors"
+          className="w-7 h-7 rounded-[7px] grid place-items-center text-base text-[var(--muted-foreground)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--primary)] transition-colors active:scale-[0.94]"
           aria-label="新建会话"
         >
           +

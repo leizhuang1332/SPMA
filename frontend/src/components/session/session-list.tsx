@@ -33,7 +33,7 @@ export default function SessionList() {
         value={search}
         onChange={e => setSearch(e.target.value)}
         placeholder="搜索会话…"
-        className="mx-2 mb-2 px-2.5 py-1.5 text-[10px] rounded-md border bg-[var(--muted)] text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] outline-none focus:ring-1 focus:ring-[var(--primary)]"
+        className="mx-2 mb-2 px-2.5 py-1.5 text-[10px] rounded-[7px] bg-[var(--bg-tertiary)] text-[var(--foreground)] placeholder:text-[var(--text-tertiary)] outline-none focus:ring-1 focus:ring-[var(--primary)]"
         style={{ borderColor: 'var(--border)' }}
       />
       <div className="flex-1 overflow-y-auto space-y-0.5 px-1">

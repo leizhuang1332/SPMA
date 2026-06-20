@@ -46,7 +46,7 @@ export default function ChatInput({ onSubmit, disabled }: ChatInputProps) {
   return (
     <div className="px-4 py-3" style={{ borderTop: '0.5px solid var(--border)' }}>
       {/* Source Selector */}
-      <div className="inline-flex bg-[var(--muted)] rounded-md p-0.5 mb-2 gap-px">
+      <div className="inline-flex bg-[var(--bg-tertiary)] rounded-[7px] p-0.5 mb-2 gap-px">
         {SOURCE_OPTIONS.map(opt => (
           <button
             key={opt.key}
@@ -85,7 +85,7 @@ export default function ChatInput({ onSubmit, disabled }: ChatInputProps) {
             'w-[38px] h-[38px] rounded-full flex items-center justify-center text-base flex-shrink-0 transition-all duration-200',
             hasContent
               ? 'bg-[var(--primary)] text-white shadow-[0_2px_12px_rgba(0,122,255,0.35)] hover:opacity-90'
-              : 'bg-[var(--muted)] text-[var(--muted-foreground)]',
+              : 'bg-[var(--bg-tertiary)] text-[var(--text-tertiary)]',
           )}
           aria-label="发送消息"
         >
@@ -94,20 +94,20 @@ export default function ChatInput({ onSubmit, disabled }: ChatInputProps) {
       </div>
 
       {/* Shortcut Hint */}
-      <div className="text-[10px] text-[var(--muted-foreground)] text-right mt-1">
-        <kbd className="inline-block bg-[var(--muted)] px-1 py-px rounded border text-[10px] font-sans" style={{ borderColor: 'var(--border)' }}>
+      <div className="text-[10px] text-[var(--text-tertiary)] text-right mt-1">
+        <kbd className="inline-block bg-[var(--bg-tertiary)] px-1 py-0.5 rounded-[3px] border-[0.5px] text-[10px] font-sans" style={{ borderColor: 'var(--border)', fontFamily: 'var(--font-sans)' }}>
           {mod}K
         </kbd>
         {' '}新建 ·{' '}
-        <kbd className="inline-block bg-[var(--muted)] px-1 py-px rounded border text-[10px] font-sans" style={{ borderColor: 'var(--border)' }}>
+        <kbd className="inline-block bg-[var(--bg-tertiary)] px-1 py-0.5 rounded-[3px] border-[0.5px] text-[10px] font-sans" style={{ borderColor: 'var(--border)', fontFamily: 'var(--font-sans)' }}>
           {mod}Enter
         </kbd>
         {' '}发送 ·{' '}
-        <kbd className="inline-block bg-[var(--muted)] px-1 py-px rounded border text-[10px] font-sans" style={{ borderColor: 'var(--border)' }}>
+        <kbd className="inline-block bg-[var(--bg-tertiary)] px-1 py-0.5 rounded-[3px] border-[0.5px] text-[10px] font-sans" style={{ borderColor: 'var(--border)', fontFamily: 'var(--font-sans)' }}>
           {mod}/
         </kbd>
         {' '}切换源 ·{' '}
-        <kbd className="inline-block bg-[var(--muted)] px-1 py-px rounded border text-[10px] font-sans" style={{ borderColor: 'var(--border)' }}>
+        <kbd className="inline-block bg-[var(--bg-tertiary)] px-1 py-0.5 rounded-[3px] border-[0.5px] text-[10px] font-sans" style={{ borderColor: 'var(--border)', fontFamily: 'var(--font-sans)' }}>
           Esc
         </kbd>
         {' '}取消
