@@ -545,11 +545,13 @@ class QueryStreamRequest(BaseModel):
 
 @router.post("/api/v1/query/stream")
 async def query_stream(req: QueryStreamRequest, request: Request):
-    """SSE 流式查询端点——graph.astream() → SSE events 实时推送到前端。
+    """SSE 流式查询端点——StreamMerger 双通道（graph + progress）→ 统一 SSE 输出。
 
     conversation_history 由后端从 checkpoint 的 messages 中自动获取。
     """
     from spma.api.dependencies import get_session_store, get_query_graph
+    from spma.api.stream_merger import StreamMerger
+    from spma.api.progress import ProgressPublisher
 
     # Route-level validation: fail fast before generator
     store = get_session_store()
@@ -557,7 +559,6 @@ async def query_stream(req: QueryStreamRequest, request: Request):
         raise HTTPException(status_code=404, detail=f"Session {req.session_id} not found")
 
     query_id = str(uuid.uuid4())
-    start_time = time_module.time()
 
     # Auto-set session title on first query
     try:
@@ -570,68 +571,36 @@ async def query_stream(req: QueryStreamRequest, request: Request):
     graph = get_query_graph()
     config = {"configurable": {"thread_id": req.session_id}}
 
+    # Get Redis client if available
+    redis_client = None
+    try:
+        from spma.api.dependencies import get_redis_client
+        redis_client = get_redis_client()
+    except RuntimeError:
+        pass
+
+    progress = ProgressPublisher(redis_client, query_id)
+
+    input_state = {
+        "messages": [HumanMessage(content=req.query)],
+        "original_query": req.query,
+        "session_id": req.session_id,
+        "sources_hint": req.sources_hint,
+        "_progress": progress,
+    }
+
+    merger = StreamMerger(
+        graph=graph,
+        input_state=input_state,
+        config=config,
+        redis_client=redis_client,
+        query_id=query_id,
+    )
+
     async def event_gen() -> AsyncGenerator[dict, None]:
-        # 累积所有 worker 输出，用于 done event 中提取 sources
-        all_worker_outputs: list[dict] = []
-
         try:
-            async for mode, data in graph.astream(
-                {
-                    "messages": [HumanMessage(content=req.query)],
-                    "original_query": req.query,
-                    "session_id": req.session_id,
-                    "sources_hint": req.sources_hint,
-                },
-                config,
-                stream_mode=["messages", "updates"],
-            ):
-                if mode == "updates":
-                    for node_name, payload in data.items():
-                        # 从 worker 节点累积输出（用于 done event 提取 sources）
-                        if node_name in ("doc_worker", "code_worker", "sql_worker"):
-                            wos = payload.get("worker_outputs", [])
-                            if isinstance(wos, list):
-                                all_worker_outputs.extend(wos)
-
-                        event = _map_node_to_event(node_name, payload, query_id)
-                        if event:
-                            yield event
-                elif mode == "messages":
-                    msg, metadata = data
-                    # 只转发 synthesis 节点（或 synthesis 子图）产生的消息，
-                    # 避免将 classify/rewrite/worker 等节点的 LLM 输出误标为 synthesis。
-                    node_name = metadata.get("langgraph_node", "")
-                    is_synthesis = (
-                        node_name == "synthesis"
-                        or node_name.startswith("synthesis:")
-                        or node_name == "generate"  # synthesis 子图的 generate 节点
-                    )
-                    # AIMessageChunk 是 AIMessage 的子类；合成节点返回完整 AIMessage，
-                    # 流式 LLM 调用产生 AIMessageChunk，两者都需要接受。
-                    if is_synthesis and isinstance(msg, AIMessage) and msg.content:
-                        content = msg.content
-                        if isinstance(content, str) and content:
-                            yield {
-                                "event": "synthesis",
-                                "data": json.dumps({"chunk": content}, ensure_ascii=False),
-                            }
-
-            total_latency = int((time_module.time() - start_time) * 1000)
-
-            # 从累积的 worker outputs 中提取 sources
-            sources = _extract_sources_from_worker_outputs(all_worker_outputs)
-
-            yield {
-                "event": "done",
-                "data": json.dumps({
-                    "query_id": query_id,
-                    "latency_ms": total_latency,
-                    "degradation": None,
-                    "suggested_followups": [],
-                    "sources": sources,
-                }, ensure_ascii=False, default=str),
-            }
-
+            async for sse_event in merger.run():
+                yield sse_event
         except asyncio.CancelledError:
             yield {
                 "event": "error",

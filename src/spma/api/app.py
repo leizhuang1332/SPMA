@@ -392,6 +392,23 @@ def create_app() -> FastAPI:
         except Exception as e:
             logger.warning("Checkpointer/Graph 初始化失败: %s", e)
 
+    # 启动时初始化 Redis 客户端（用于进度流推送）
+    @app.on_event("startup")
+    async def startup_redis():
+        """初始化 Redis 客户端用于进度事件推送。"""
+        from spma.api.dependencies import set_redis_client
+
+        redis_url = os.environ.get("SPMA_REDIS_URL", "redis://localhost:6379")
+        try:
+            import redis.asyncio as aioredis
+            redis_client = aioredis.from_url(redis_url, decode_responses=False)
+            await redis_client.ping()
+            set_redis_client(redis_client)
+            logger.info("Redis client initialized for progress streaming")
+        except Exception:
+            logger.warning("Redis not available — progress streaming disabled")
+            set_redis_client(None)
+
     @app.on_event("shutdown")
     async def shutdown_checkpointer():
         """关闭 AsyncPostgresSaver 连接池。"""

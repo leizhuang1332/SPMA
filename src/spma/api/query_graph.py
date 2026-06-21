@@ -144,6 +144,11 @@ async def _run_worker(
     query_id = dispatch_arg.get("query_id", "")
     entities = dispatch_arg.get("entities") or state.get("entities", {})
 
+    # ---- Progress 发布 ----
+    progress = state.get("_progress")
+    if progress:
+        await progress.publish_start(f"{agent_type}_worker")
+
     try:
         if agent_type == "doc":
             from spma.agents.doc.graph import build_doc_agent_graph
@@ -171,6 +176,7 @@ async def _run_worker(
                 vector_store=vector_store,
                 embedder=embedder,
                 llm=llm,
+                progress=progress,
             )
             result = await g.ainvoke({
                 "original_query": original_query,
@@ -220,6 +226,7 @@ async def _run_worker(
                 ripgrep_executor=ripgrep_executor,
                 ast_parser=ast_parser,
                 llm=llm,
+                progress=progress,
             )
             result = await g.ainvoke({
                 "original_query": original_query,
@@ -305,9 +312,11 @@ async def synthesis_node(state: QueryOrchestratorState) -> dict:
 
     llm = get_langchain_client(role="generation")
 
+    progress = state.get("_progress")
+
     original_query = state.get("original_query", "")
     try:
-        synthesis_graph = build_synthesis_agent_graph(llm=llm, audit_llm=llm)
+        synthesis_graph = build_synthesis_agent_graph(llm=llm, audit_llm=llm, progress=progress)
         synthesis_result = await synthesis_graph.ainvoke({
             "original_query": original_query,
             "worker_outputs": state.get("worker_outputs", []),
