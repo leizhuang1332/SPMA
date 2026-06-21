@@ -624,6 +624,9 @@ async def query_stream(req: QueryStreamRequest, request: Request):
 
 
 def _map_node_to_event(node_name: str, payload: dict, query_id: str) -> dict | None:
+    print("=" * 50)
+    print(f"_map_node_to_event: node_name: {node_name}, payload: {payload}")
+    print("=" * 50)
     """将 graph node 完成事件映射为 SSE event dict。"""
     mapping = {
         "classify": "classification",

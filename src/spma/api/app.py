@@ -213,7 +213,13 @@ def create_app() -> FastAPI:
         ingestion_cfg = raw.get("ingestion", {})
         pg_cfg = raw.get("spma", {}).get("connections", {}).get("postgres", {})
 
-        from spma.api.dependencies import get_db_pool as _get_db, set_ingestion_controller
+        from spma.api.dependencies import (
+            get_db_pool as _get_db,
+            set_ingestion_controller,
+            set_es_client,
+            set_vector_store,
+            set_embedder,
+        )
 
         try:
             db_pool = _get_db()
@@ -230,14 +236,17 @@ def create_app() -> FastAPI:
         from spma.retrieval.es_client import ESClient
         es_hosts = raw.get("spma", {}).get("connections", {}).get("elasticsearch", {}).get("hosts")
         es = ESClient(hosts=es_hosts if es_hosts else None)
+        set_es_client(es)
 
         # 2. PGVector
         from spma.retrieval.vector_store import PGVectorStore
         vector_store = PGVectorStore(dsn=pg_cfg.get("vector_db", ""))
+        set_vector_store(vector_store)
 
         # 3. Embedder
         from spma.retrieval.embedder import BGEM3Embedder
         embedder = await BGEM3Embedder.create()
+        set_embedder(embedder)
 
         # 4. Run Store (moved up — needed by source handlers)
         from spma.ingestion.run_store import PipelineRunStore
