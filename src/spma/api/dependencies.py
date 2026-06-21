@@ -144,3 +144,87 @@ def set_session_store(store: "SessionStore") -> None:
     """显式设置 SessionStore 单例（用于测试或自定义实现）。"""
     global _session_store
     _session_store = store
+
+
+# ---- Checkpointer ----
+
+_checkpointer: "AsyncPostgresSaver | None" = None
+
+
+def get_checkpointer() -> "AsyncPostgresSaver":
+    """获取 AsyncPostgresSaver 全局单例。"""
+    global _checkpointer
+    if _checkpointer is None:
+        raise RuntimeError("AsyncPostgresSaver not initialized")
+    return _checkpointer
+
+
+def set_checkpointer(checkpointer: "AsyncPostgresSaver") -> None:
+    """显式设置 AsyncPostgresSaver 单例。"""
+    global _checkpointer
+    _checkpointer = checkpointer
+
+
+# ---- Query Graph ----
+
+_query_graph = None
+
+
+def get_query_graph():
+    """获取编译后的 QueryOrchestrator StateGraph 单例。"""
+    global _query_graph
+    if _query_graph is None:
+        raise RuntimeError("QueryOrchestrator graph not compiled")
+    return _query_graph
+
+
+def set_query_graph(graph) -> None:
+    """显式设置 QueryOrchestrator graph 单例。"""
+    global _query_graph
+    _query_graph = graph
+
+
+# ---- Retrieval Infrastructure (for query_graph worker nodes) ----
+
+_es_client = None
+_vector_store = None
+_embedder = None
+
+
+def get_es_client():
+    """获取 ESClient 全局单例。"""
+    global _es_client
+    if _es_client is None:
+        raise RuntimeError("ESClient not initialized")
+    return _es_client
+
+
+def set_es_client(client) -> None:
+    global _es_client
+    _es_client = client
+
+
+def get_vector_store():
+    """获取 PGVectorStore 全局单例。"""
+    global _vector_store
+    if _vector_store is None:
+        raise RuntimeError("PGVectorStore not initialized")
+    return _vector_store
+
+
+def set_vector_store(store) -> None:
+    global _vector_store
+    _vector_store = store
+
+
+def get_embedder():
+    """获取 BGEM3Embedder 全局单例。"""
+    global _embedder
+    if _embedder is None:
+        raise RuntimeError("BGEM3Embedder not initialized")
+    return _embedder
+
+
+def set_embedder(embedder) -> None:
+    global _embedder
+    _embedder = embedder
