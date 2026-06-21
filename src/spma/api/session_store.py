@@ -36,7 +36,7 @@ class SessionStore:
     def _use_db(self) -> bool:
         return self._db_pool is not None
 
-    async def create_session(self, title: str | None = None) -> str:
+    async def create_session(self, title: str | None = None, user_id: str = "") -> str:
         """创建新会话，返回 session_id (UUID)。"""
         session_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc)
@@ -45,14 +45,15 @@ class SessionStore:
             async with self._db_pool.acquire() as conn:
                 await conn.execute(
                     """INSERT INTO sessions (session_id, title, user_id, metadata, created_at, updated_at)
-                       VALUES ($1, $2, '', '{}', $3, $3)""",
-                    session_id, title, now,
+                       VALUES ($1, $2, $3, '{}', $4, $4)""",
+                    session_id, title, user_id, now,
                 )
         else:
             now_iso = now.isoformat()
             self._memory_sessions[session_id] = {
                 "session_id": session_id,
                 "title": title,
+                "user_id": user_id,
                 "created_at": now_iso,
                 "updated_at": now_iso,
             }

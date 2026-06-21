@@ -35,7 +35,8 @@ async def create_session(
     前端用于导航到 /chat/{session_id}。
     """
     title = body.title if body else None
-    session_id = await store.create_session(title=title)
+    user_id = _user.get("sub", "") if _user else ""
+    session_id = await store.create_session(title=title, user_id=user_id)
     session = await store.get_session(session_id)
     if session is None:
         raise HTTPException(status_code=500, detail="Failed to create session")
