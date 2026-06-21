@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect } from 'react';
 import { useAppContext } from '@/context/app-context';
 import SessionList from '@/components/session/session-list';
 import SystemStatusBar from '@/components/session/system-status-bar';
@@ -7,6 +8,13 @@ import * as api from '@/lib/api';
 
 export default function Sidebar() {
   const { dispatch } = useAppContext();
+
+  // 页面加载时获取会话列表
+  useEffect(() => {
+    api.listSessions({ limit: 50 })
+      .then(sessions => dispatch({ type: 'SET_SESSIONS', sessions }))
+      .catch(console.error);
+  }, [dispatch]);
 
   const handleNewSession = async () => {
     dispatch({ type: 'RESET_QUERY' });

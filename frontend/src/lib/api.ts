@@ -58,6 +58,14 @@ export function getSession(sessionId: string): Promise<SessionRecord> {
   return fetchJSON<SessionRecord>(`/sessions/${sessionId}`);
 }
 
+export function listSessions(params?: { limit?: number; offset?: number }): Promise<SessionRecord[]> {
+  const sp = new URLSearchParams();
+  if (params?.limit) sp.set('limit', String(params.limit));
+  if (params?.offset) sp.set('offset', String(params.offset));
+  const qs = sp.toString();
+  return fetchJSON<SessionRecord[]>(`/sessions${qs ? `?${qs}` : ''}`);
+}
+
 export function getSessionHistory(
   sessionId: string,
   params?: { limit?: number; offset?: number },

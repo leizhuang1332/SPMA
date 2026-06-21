@@ -79,6 +79,19 @@ async def delete_session(
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
 
 
+@router.get("/sessions")
+async def list_sessions(
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    store: SessionStore = Depends(get_session_store),
+    _user: dict = Depends(get_current_user),
+):
+    """GET /api/v1/sessions — 列出当前用户的会话列表（按 updated_at 降序）。"""
+    user_id = _user.get("sub", "") if _user else ""
+    sessions = await store.list_sessions(user_id=user_id, limit=limit, offset=offset)
+    return sessions
+
+
 from spma.api.extract_turns import extract_turns
 
 

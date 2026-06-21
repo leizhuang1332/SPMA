@@ -156,6 +156,36 @@ class SessionStore:
                 return row is not None
         return session_id in self._memory_sessions
 
+    async def list_sessions(self, user_id: str = "", limit: int = 50, offset: int = 0) -> list[dict]:
+        """列出会话列表（按 updated_at 降序）。"""
+        if self._use_db:
+            async with self._db_pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """SELECT session_id, title, user_id, created_at, updated_at
+                       FROM sessions
+                       WHERE ($1 = '' OR user_id = $1)
+                       ORDER BY updated_at DESC
+                       LIMIT $2 OFFSET $3""",
+                    user_id, limit, offset,
+                )
+            return [
+                {
+                    "session_id": row["session_id"],
+                    "title": row["title"],
+                    "user_id": row["user_id"],
+                    "created_at": row["created_at"].isoformat() if hasattr(row["created_at"], "isoformat") else str(row["created_at"]),
+                    "updated_at": row["updated_at"].isoformat() if hasattr(row["updated_at"], "isoformat") else str(row["updated_at"]),
+                }
+                for row in rows
+            ]
+        # 内存模式
+        sessions = sorted(
+            self._memory_sessions.values(),
+            key=lambda s: s.get("updated_at", ""),
+            reverse=True,
+        )
+        return sessions[offset:offset + limit]
+
     async def update_session_title(self, session_id: str, title: str) -> None:
         """更新会话标题。"""
         now = datetime.now(timezone.utc)
