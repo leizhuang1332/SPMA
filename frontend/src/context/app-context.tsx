@@ -301,7 +301,7 @@ function appReducer(state: AppState, action: Action): AppState {
               status: 'running' as const,
               current_step: action.step,
               sub_steps: updateSubStep(
-                state.currentQuery.workers[action.worker].sub_steps,
+                state.currentQuery.workers[action.worker]?.sub_steps ?? [],
                 action.step,
                 action.message,
                 action.stats,
