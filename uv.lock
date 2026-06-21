@@ -2748,6 +2748,7 @@ dependencies = [
     { name = "redis", extra = ["hiredis"] },
     { name = "sentence-transformers" },
     { name = "sqlglot" },
+    { name = "sse-starlette" },
     { name = "tenacity" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -2831,6 +2832,7 @@ requires-dist = [
     { name = "spma", extras = ["code"], marker = "extra == 'all'" },
     { name = "spma", extras = ["observability"], marker = "extra == 'all'" },
     { name = "sqlglot" },
+    { name = "sse-starlette", specifier = ">=2.0.0" },
     { name = "tenacity" },
     { name = "testcontainers", extras = ["postgres", "redis"], marker = "extra == 'dev'" },
     { name = "tree-sitter", marker = "extra == 'code'" },
@@ -2896,6 +2898,19 @@ wheels = [
     { url = "https://pypi.tuna.tsinghua.edu.cn/packages/08/f3/34354f183d8faafc631585571224b54d1b4b67e796972c36519c074ca355/srsly-2.5.3-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:5fb59c42922e095d1ea36085c55bc16e2adb06a7bfe57b24d381e0194ae699f2", size = 1128409, upload-time = "2026-03-23T11:56:18.761Z" },
     { url = "https://pypi.tuna.tsinghua.edu.cn/packages/a4/d9/5531f8a19492060b4e76e4ab06aca6f096fb5128fe18cc813d1772daf653/srsly-2.5.3-cp313-cp313-win_amd64.whl", hash = "sha256:111805927f05f5db440aeeacb85ce43da0b19ce7b2a09567a9ef8d30f3cc4d83", size = 650820, upload-time = "2026-03-23T11:56:20.096Z" },
     { url = "https://pypi.tuna.tsinghua.edu.cn/packages/8e/8a/62fb7a971eca29e12f03fb9ddacb058548c14d33e5b5675ff0f85839cc7b/srsly-2.5.3-cp313-cp313-win_arm64.whl", hash = "sha256:0f106b0a700ab56e4a7c431b0f1444009ab6cb332edc7bbf6811c2a43f4722cb", size = 637278, upload-time = "2026-03-23T11:56:21.439Z" },
+]
+
+[[package]]
+name = "sse-starlette"
+version = "3.4.5"
+source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }
+dependencies = [
+    { name = "anyio" },
+    { name = "starlette" },
+]
+sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/d2/1b/bc9e3e7a72dcdad7dc7888758f5d00f56f8909ed5cfdff822bd72bb4c520/sse_starlette-3.4.5.tar.gz", hash = "sha256:83072538bc211a2f68b7b0422226c4af3e9b62e106e07034664b832ca019842a", size = 35249, upload-time = "2026-06-20T17:36:58.322Z" }
+wheels = [
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/78/75/c88d3f5dafd59c791da1ce27650d30bf5b70cbf1cbf01cd00e5f9e360915/sse_starlette-3.4.5-py3-none-any.whl", hash = "sha256:e71bad53323f65573c3864a6c3bd0c1eb6e5f092b2e48082b0c35927d19ca296", size = 16518, upload-time = "2026-06-20T17:36:56.729Z" },
 ]
 
 [[package]]
