@@ -5,11 +5,12 @@
 """
 
 import logging
+from collections.abc import AsyncGenerator
 
 from anthropic import AsyncAnthropic
 from langchain_anthropic import ChatAnthropic
 
-from spma.llm.providers.base import LLMProvider, ProviderConfig
+from spma.llm.providers.base import LLMProvider, ProviderConfig, StreamChunk
 
 logger = logging.getLogger(__name__)
 
@@ -75,3 +76,48 @@ class AnthropicProvider(LLMProvider):
             temperature=0.3,
             max_tokens=4096,
         )
+
+    async def astream(self, messages: list[dict], model: str, **kwargs) -> AsyncGenerator[StreamChunk, None]:
+        """流式对话——使用 Anthropic Streaming API 逐个产出 StreamChunk。"""
+        system_prompt = ""
+        user_messages = []
+        for m in messages:
+            if m["role"] == "system":
+                system_prompt += m["content"] + "\n"
+            else:
+                user_messages.append(m)
+
+        api_kwargs: dict = {
+            "model": model,
+            "max_tokens": kwargs.get("max_tokens", 4096),
+            "system": system_prompt.strip() or None,
+            "messages": user_messages,
+        }
+
+        if "thinking" in kwargs:
+            api_kwargs["thinking"] = kwargs["thinking"]
+
+        async with self._client.messages.stream(**api_kwargs) as stream:
+            async for event in stream:
+                if event.type == "content_block_delta":
+                    if event.delta.type == "thinking_delta":
+                        yield StreamChunk(
+                            type="thinking",
+                            content=event.delta.thinking,
+                            model=model,
+                        )
+                    elif event.delta.type == "text_delta":
+                        yield StreamChunk(
+                            type="output",
+                            content=event.delta.text,
+                            model=model,
+                        )
+                elif event.type == "message_delta":
+                    finish_reason = getattr(event.delta, "stop_reason", None)
+                    if finish_reason:
+                        yield StreamChunk(
+                            type="output",
+                            content="",
+                            model=model,
+                            finish_reason=finish_reason,
+                        )
