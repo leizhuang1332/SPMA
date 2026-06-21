@@ -571,6 +571,9 @@ async def query_stream(req: QueryStreamRequest, request: Request):
     config = {"configurable": {"thread_id": req.session_id}}
 
     async def event_gen() -> AsyncGenerator[dict, None]:
+        # 累积所有 worker 输出，用于 done event 中提取 sources
+        all_worker_outputs: list[dict] = []
+
         try:
             async for mode, data in graph.astream(
                 {
@@ -584,6 +587,12 @@ async def query_stream(req: QueryStreamRequest, request: Request):
             ):
                 if mode == "updates":
                     for node_name, payload in data.items():
+                        # 从 worker 节点累积输出（用于 done event 提取 sources）
+                        if node_name in ("doc_worker", "code_worker", "sql_worker"):
+                            wos = payload.get("worker_outputs", [])
+                            if isinstance(wos, list):
+                                all_worker_outputs.extend(wos)
+
                         event = _map_node_to_event(node_name, payload, query_id)
                         if event:
                             yield event
@@ -608,6 +617,10 @@ async def query_stream(req: QueryStreamRequest, request: Request):
                             }
 
             total_latency = int((time_module.time() - start_time) * 1000)
+
+            # 从累积的 worker outputs 中提取 sources
+            sources = _extract_sources_from_worker_outputs(all_worker_outputs)
+
             yield {
                 "event": "done",
                 "data": json.dumps({
@@ -615,7 +628,8 @@ async def query_stream(req: QueryStreamRequest, request: Request):
                     "latency_ms": total_latency,
                     "degradation": None,
                     "suggested_followups": [],
-                }, ensure_ascii=False),
+                    "sources": sources,
+                }, ensure_ascii=False, default=str),
             }
 
         except asyncio.CancelledError:
@@ -631,6 +645,109 @@ async def query_stream(req: QueryStreamRequest, request: Request):
             }
 
     return EventSourceResponse(event_gen())
+
+
+# ---- citation → Source 转换 ----
+# 后端 worker_type 与前端 source_type 的映射
+_WORKER_TYPE_TO_FRONTEND_SOURCE: dict[str, str] = {"doc": "doc", "code": "code", "sql": "sql"}
+# Citation.source_type 是合约层标记（"prd" → 前端 "doc"）
+_CITATION_SOURCE_TYPE_MAP: dict[str, str] = {"prd": "doc", "code": "code", "sql": "sql"}
+
+
+def _citation_to_source(citation: dict, worker_type: str) -> dict:
+    """将后端 Citation 转换为前端 Source 格式。
+
+    Citation 字段 (来自 normalize_citations):
+      - source_type: "prd" | "code" | "sql"
+      - source_id: str
+      - snippet: str
+      - relevance_score: float (可选)
+      - metadata: dict (可选)
+      - worker_rank: int (由 fusion 层注入)
+      - rrf_score: float (由 fusion 层注入)
+
+    Source 字段 (前端期望):
+      - source_type: "doc" | "code" | "sql"
+      - content: str
+      - metadata: {title, file_path, table_name, ...}
+      - relevance_score: float
+      - retrieval_method: "exact" | "grep" | "semantic" | "hybrid" | "cache"
+    """
+    raw_source_type = citation.get("source_type", worker_type)
+    frontend_source_type = _CITATION_SOURCE_TYPE_MAP.get(raw_source_type, "doc")
+
+    # 构建前端 metadata
+    cite_meta = citation.get("metadata", {}) or {}
+    source_metadata: dict = {}
+
+    if frontend_source_type == "doc":
+        source_metadata["title"] = cite_meta.get("title") or citation.get("source_id", "")
+        source_metadata["source_url"] = cite_meta.get("source_url", "")
+        source_metadata["doc_type"] = cite_meta.get("doc_type", "")
+        source_metadata["version"] = cite_meta.get("version", "")
+        source_metadata["updated_at"] = cite_meta.get("updated_at", "")
+        retrieval_method = citation.get("retrieval_method", "hybrid")
+    elif frontend_source_type == "code":
+        source_metadata["file_path"] = cite_meta.get("file_path") or citation.get("source_id", "")
+        source_metadata["line_start"] = cite_meta.get("line_start")
+        source_metadata["line_end"] = cite_meta.get("line_end")
+        source_metadata["function_name"] = cite_meta.get("function_name", "")
+        source_metadata["class_name"] = cite_meta.get("class_name", "")
+        source_metadata["language"] = cite_meta.get("language", "")
+        source_metadata["repo"] = cite_meta.get("repo", "")
+        source_metadata["commit_hash"] = cite_meta.get("commit_hash", "")
+        source_metadata["author"] = cite_meta.get("author", "")
+        retrieval_method = citation.get("retrieval_method", "grep")
+    elif frontend_source_type == "sql":
+        source_metadata["table_name"] = cite_meta.get("table_name") or citation.get("source_id", "")
+        source_metadata["column_name"] = cite_meta.get("column_name", "")
+        source_metadata["data_type"] = cite_meta.get("data_type", "")
+        retrieval_method = citation.get("retrieval_method", "cache")
+    else:
+        retrieval_method = "hybrid"
+
+    # 合并 cite_meta 中未被显式处理的字段（仅排除已在 source_metadata 中设置过的 key）
+    for k, v in cite_meta.items():
+        if k not in source_metadata:
+            source_metadata[k] = v
+
+    # 计算 relevance_score：优先使用 rrf_score（融合后），其次 relevance_score
+    relevance = citation.get("rrf_score") or citation.get("relevance_score", 0.5)
+    if isinstance(relevance, (int, float)):
+        relevance = min(max(float(relevance), 0.0), 1.0)
+
+    return {
+        "source_type": frontend_source_type,
+        "content": citation.get("snippet", ""),
+        "metadata": source_metadata,
+        "relevance_score": relevance,
+        "retrieval_method": retrieval_method,
+    }
+
+
+def _extract_sources_from_worker_outputs(worker_outputs: list[dict]) -> list[dict]:
+    """从 worker outputs 中提取所有 citations 并转换为前端 Source 格式。"""
+    sources: list[dict] = []
+    seen_ids: set[str] = set()
+
+    for wo in worker_outputs:
+        worker_type = wo.get("worker_type", "doc")
+        citations = wo.get("citations", [])
+        if not isinstance(citations, list):
+            continue
+        for c in citations:
+            if not isinstance(c, dict):
+                continue
+            source = _citation_to_source(c, worker_type)
+            source_id = source.get("metadata", {}).get("title") or source.get("metadata", {}).get("file_path") or source.get("content", "")[:80]
+            dedup_key = f"{source['source_type']}:{source_id}"
+            if dedup_key not in seen_ids:
+                seen_ids.add(dedup_key)
+                sources.append(source)
+
+    # 按 relevance_score 降序排列
+    sources.sort(key=lambda s: s.get("relevance_score", 0), reverse=True)
+    return sources
 
 
 def _map_node_to_event(node_name: str, payload: dict, query_id: str) -> dict | None:
@@ -662,11 +779,19 @@ def _map_node_to_event(node_name: str, payload: dict, query_id: str) -> dict | N
         worker_outputs = payload.get("worker_outputs", [])
         if worker_outputs:
             wo = worker_outputs[0]
+            worker_type = wo.get("worker_type", node_name.replace("_worker", ""))
+            # 提取 top 5 citations 作为 top_sources 推送到前端
+            citations = wo.get("citations", [])
+            if isinstance(citations, list) and citations:
+                top_sources = [_citation_to_source(c, worker_type) for c in citations[:5] if isinstance(c, dict)]
+            else:
+                top_sources = []
             event_data.update({
-                "worker": wo.get("worker_type", node_name.replace("_worker", "")),
+                "worker": worker_type,
                 "result_count": wo.get("result_count", 0),
                 "retrieval_method": "hybrid",
                 "elapsed_ms": 0,
+                "top_sources": top_sources,
             })
 
     return {"event": event_type, "data": json.dumps(event_data, ensure_ascii=False, default=str)}
