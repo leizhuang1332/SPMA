@@ -111,6 +111,9 @@ def route_to_workers(state: QueryOrchestratorState) -> list[Send]:
     目标节点为 "{source}_worker"，携带 WorkerDispatch 作为 arg。
 
     如果没有可派发的 source，发送到 synthesis 节点（跳过 worker）。
+
+    注意：Send API 会替换 state 而非合并，因此所有 dispatches 都需要
+    携带 _progress 以保证下游节点能访问进度发布器。
     """
     from spma.agents.supervisor.dispatcher import build_dispatches
 
@@ -121,9 +124,20 @@ def route_to_workers(state: QueryOrchestratorState) -> list[Send]:
         query_id=state.get("query_id", ""),
     )
 
+    # 确保 _progress 通过 Send API 传递（Send 替换 state 而非合并）
+    progress = state.get("_progress")
+    if progress is not None:
+        fixed_dispatches = []
+        for d in dispatches:
+            arg = dict(d.arg) if d.arg else {}
+            arg["_progress"] = progress
+            fixed_dispatches.append(Send(node=d.node, arg=arg))
+        dispatches = fixed_dispatches
+
     if not dispatches:
         # 没有需要派发的 worker，直接跳到 synthesis
-        return [Send("synthesis", {})]
+        send_arg = {"_progress": progress} if progress is not None else {}
+        return [Send("synthesis", send_arg)]
 
     return dispatches
 
