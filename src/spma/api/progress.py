@@ -11,11 +11,27 @@ from __future__ import annotations
 
 import json
 import logging
+from contextvars import ContextVar
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# Context variable for passing progress publisher through LangGraph nodes
+# without polluting the serializable state (ProgressPublisher contains a
+# Redis client and is not msgpack-serializable).
+_current_progress: ContextVar[Any | None] = ContextVar("_progress", default=None)
+
+
+def set_current_progress(publisher) -> None:
+    """Set the current progress publisher in the asyncio task context."""
+    _current_progress.set(publisher)
+
+
+def get_current_progress() -> Any | None:
+    """Get the current progress publisher from the asyncio task context."""
+    return _current_progress.get(None)
 
 
 @dataclass

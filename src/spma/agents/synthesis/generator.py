@@ -25,8 +25,12 @@ async def generate_draft_answer(
     print(f"GENERATION_PROMPT: {prompt}")
     print("="*50)
 
-    # Check if llm supports astream (LLMRouter does, LangChain ChatModel doesn't)
-    if hasattr(llm, 'astream'):
+    # Use LLMRouter.astream() for true streaming with thinking tokens.
+    # LangChain ChatModel also has astream() but with a different signature
+    # (no 'role' parameter) — we must not call it with role=, which would
+    # leak through to the underlying API as an unknown parameter.
+    from spma.llm.router import LLMRouter
+    if isinstance(llm, LLMRouter):
         answer_parts: list[str] = []
         async for chunk in llm.astream(
             [{"role": "user", "content": prompt}],
@@ -38,7 +42,7 @@ async def generate_draft_answer(
                 answer_parts.append(chunk.content)
         return "".join(answer_parts)
     else:
-        # fallback: LangChain ChatModel synchronous invoke
+        # LangChain ChatModel — use synchronous invoke (no thinking tokens)
         resp_obj = await llm.ainvoke(prompt)
         return resp_obj.content
 

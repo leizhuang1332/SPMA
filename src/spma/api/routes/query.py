@@ -581,12 +581,17 @@ async def query_stream(req: QueryStreamRequest, request: Request):
 
     progress = ProgressPublisher(redis_client, query_id)
 
+    # Set in asyncio task context so LangGraph nodes can access it
+    # without it being serialized into checkpoints (ProgressPublisher
+    # contains a Redis client and is not msgpack-serializable).
+    from spma.api.progress import set_current_progress
+    set_current_progress(progress)
+
     input_state = {
         "messages": [HumanMessage(content=req.query)],
         "original_query": req.query,
         "session_id": req.session_id,
         "sources_hint": req.sources_hint,
-        "_progress": progress,
     }
 
     merger = StreamMerger(
