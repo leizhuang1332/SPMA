@@ -241,7 +241,10 @@ function appReducer(state: AppState, action: Action): AppState {
           synthesis: {
             status: 'running',
             chunks: [...state.currentQuery.synthesis.chunks, action.data.chunk],
-            citations: [...state.currentQuery.synthesis.citations, ...action.data.citations],
+            citations: [
+              ...state.currentQuery.synthesis.citations,
+              ...(Array.isArray(action.data.citations) ? action.data.citations : []),
+            ],
           },
         },
       };
