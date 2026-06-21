@@ -197,8 +197,16 @@ class StreamMerger:
                     })
         except asyncio.CancelledError:
             raise
-        except Exception:
-            logger.warning("Progress stream 异常，进度通道关闭", exc_info=True)
+        except Exception as e:
+            # TimeoutError（内置或 redis.exceptions）是预期关闭路径：
+            # 1. 客户端断开 SSE → progress task 被 cancel → Redis TimeoutError
+            # 2. Graph 完成 → _shutdown 已发送 / Redis 不可用 → 自然超时
+            # 两种情况都是正常行为，非错误。
+            exc_name = type(e).__qualname__
+            if 'Timeout' in exc_name:
+                logger.debug("Progress stream closed (timeout: %s)", exc_name)
+            else:
+                logger.warning("Progress stream 异常，进度通道关闭", exc_info=True)
         finally:
             try:
                 await pubsub.unsubscribe(channel)
