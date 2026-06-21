@@ -1,12 +1,14 @@
 'use client';
 
 import { useState, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
 import { useAppContext } from '@/context/app-context';
 import SessionItem from './session-item';
 import * as api from '@/lib/api';
 
 export default function SessionList() {
   const { state, dispatch } = useAppContext();
+  const router = useRouter();
   const [search, setSearch] = useState('');
 
   const filtered = state.sessions.filter(s => {
@@ -16,7 +18,7 @@ export default function SessionList() {
 
   const handleSelect = (sessionId: string) => {
     dispatch({ type: 'SET_CURRENT_SESSION', sessionId });
-    window.history.pushState(null, '', `/chat/${sessionId}`);
+    router.push(`/chat/${sessionId}`);
   };
 
   const handleDelete = (sessionId: string) => {

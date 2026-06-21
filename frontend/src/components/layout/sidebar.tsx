@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
+import { useRouter } from 'next/navigation';
 import { useAppContext } from '@/context/app-context';
 import SessionList from '@/components/session/session-list';
 import SystemStatusBar from '@/components/session/system-status-bar';
@@ -12,6 +13,7 @@ const MAX_RETRIES = RETRY_DELAYS_MS.length;
 
 export default function Sidebar() {
   const { dispatch } = useAppContext();
+  const router = useRouter();
   const abortRef = useRef<AbortController | null>(null);
   const retryCount = useRef(0);
   const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -75,7 +77,7 @@ export default function Sidebar() {
     };
     dispatch({ type: 'ADD_SESSION', session: placeholder });
     dispatch({ type: 'SET_CURRENT_SESSION', sessionId: session_id });
-    window.history.pushState(null, '', `/chat/${session_id}`);
+    router.push(`/chat/${session_id}`);
   };
 
   return (

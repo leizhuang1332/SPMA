@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { useTheme } from 'next-themes';
 import { useAppContext } from '@/context/app-context';
 import { useSSE } from '@/hooks/useSSE';
@@ -11,6 +12,7 @@ import type { SourceType } from '@/types/api';
 
 export default function ChatPanel() {
   const { state, dispatch } = useAppContext();
+  const router = useRouter();
   const { startQuery, cancelQuery } = useSSE();
   const { setTheme, resolvedTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
@@ -37,7 +39,7 @@ export default function ChatPanel() {
       key: 'k', metaKey: true, handler: () => {
         dispatch({ type: 'RESET_QUERY' });
         dispatch({ type: 'SET_CURRENT_SESSION', sessionId: null });
-        window.history.pushState(null, '', '/');
+        router.push('/');
       },
     },
     {
