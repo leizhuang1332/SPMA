@@ -7,9 +7,9 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
-from spma.api.dependencies import get_session_store
+from spma.api.dependencies import get_checkpointer, get_session_store
 from spma.api.middleware.auth import get_current_user
 from spma.api.schemas.session import (
     SessionCreateRequest,
@@ -77,3 +77,28 @@ async def delete_session(
     deleted = await store.delete_session(session_id)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+
+from spma.api.extract_turns import extract_turns
+
+
+@router.get("/sessions/{session_id}/history")
+async def get_session_history(
+    session_id: str,
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    """GET /api/v1/sessions/{session_id}/history — 获取分页对话历史。
+
+    从 LangGraph checkpoint 中提取对话轮次，支持分页。
+    返回 {turns, total, offset, limit}。
+    """
+    try:
+        checkpointer = get_checkpointer()
+    except RuntimeError:
+        raise HTTPException(status_code=503, detail="Checkpointer not available")
+
+    result = await extract_turns(session_id, checkpointer, limit, offset)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found or has no history")
+    return result
