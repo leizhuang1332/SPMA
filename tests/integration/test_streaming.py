@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 
 class FakeRedis:
-    """模拟 Redis Pub/Sub。"""
+    """模拟 Redis Pub/Sub——polling 模式，能感知后发布的消息（含 _shutdown）。"""
     def __init__(self):
         self.channels: dict[str, list[str]] = {}
 
@@ -16,13 +16,22 @@ class FakeRedis:
         pubsub.unsubscribe = AsyncMock()
 
         async def listen():
-            # Yield any pre-published messages, then exit.
-            # In production, listen() blocks forever waiting for new messages,
-            # but in tests we want the progress channel to complete so the
-            # merger doesn't deadlock when there are no (or only pre-existing)
-            # progress events.
-            for msg in self.channels.get("spma:progress:test-query", []):
-                yield {"type": "message", "data": msg}
+            # Polling loop: 持续检查是否有新消息（模拟真实 Redis listen 行为）
+            # 收到 _shutdown 时停止
+            yielded = 0
+            while True:
+                msgs = self.channels.get("spma:progress:test-query", [])
+                while yielded < len(msgs):
+                    raw = msgs[yielded]
+                    yielded += 1
+                    try:
+                        data = json.loads(raw)
+                    except (json.JSONDecodeError, KeyError):
+                        continue
+                    if data.get("event_type") == "_shutdown":
+                        return
+                    yield {"type": "message", "data": raw}
+                await asyncio.sleep(0.01)
 
         pubsub.listen = listen
         return pubsub

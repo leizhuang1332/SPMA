@@ -69,6 +69,17 @@ class StreamMerger:
                     event = await asyncio.wait_for(self.queue.get(), timeout=30.0)
                     if event is _SENTINEL:
                         tasks_done += 1
+                        # Graph 通道完成时，向 Redis channel 发布 shutdown 消息，
+                        # 让 progress task 的 pubsub.listen() 立即收到消息并退出，
+                        # 避免阻塞等待 60-120s 直到 Redis socket timeout。
+                        if tasks_done == 1 and self.redis is not None:
+                            try:
+                                await self.redis.publish(
+                                    f"spma:progress:{self.query_id}",
+                                    json.dumps({"event_type": "_shutdown"}),
+                                )
+                            except Exception:
+                                pass
                     else:
                         yield event
                 except asyncio.TimeoutError:
@@ -154,6 +165,8 @@ class StreamMerger:
                     continue
 
                 event_type = data.get("event_type", "")
+                if event_type == "_shutdown":
+                    break  # graph 已完成，退出 listen 循环 → finally 发送 SENTINEL
                 if event_type == "worker_start":
                     await self.queue.put({
                         "event": "worker_start",
