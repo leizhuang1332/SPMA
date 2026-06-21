@@ -62,19 +62,20 @@ export default function Sidebar() {
     };
   }, [dispatch]);
 
-  const handleNewSession = async () => {
+  const handleNewSession = () => {
     dispatch({ type: 'RESET_QUERY' });
-    try {
-      const { session_id } = await api.createSession();
-      // 立即获取完整 SessionRecord 并加入列表，确保侧边栏实时显示
-      const session = await api.getSession(session_id);
-      dispatch({ type: 'ADD_SESSION', session });
-      dispatch({ type: 'SET_CURRENT_SESSION', sessionId: session_id });
-      window.history.pushState(null, '', `/chat/${session_id}`);
-    } catch {
-      dispatch({ type: 'SET_CURRENT_SESSION', sessionId: null });
-      window.history.pushState(null, '', '/');
-    }
+    const session_id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    const placeholder: import('@/types/api').SessionRecord = {
+      session_id,
+      turns: [],
+      first_query_text: null,
+      created_at: now,
+      updated_at: now,
+    };
+    dispatch({ type: 'ADD_SESSION', session: placeholder });
+    dispatch({ type: 'SET_CURRENT_SESSION', sessionId: session_id });
+    window.history.pushState(null, '', `/chat/${session_id}`);
   };
 
   return (
