@@ -15,6 +15,13 @@ import type {
 
 export type DetailPanelMode = 'idle' | 'progress' | 'sources';
 
+export interface SubStepState {
+  name: string;
+  message: string;
+  status: 'pending' | 'running' | 'done';
+  stats?: { found?: number; round?: number };
+}
+
 export interface WorkerState {
   status: 'idle' | 'running' | 'done' | 'timeout' | 'error' | 'waiting_confirmation';
   elapsed_ms?: number;
@@ -23,6 +30,8 @@ export interface WorkerState {
   query_used?: string;
   retrieval_method?: string;
   error_message?: string;
+  sub_steps: SubStepState[];
+  current_step?: string;
 }
 
 export interface SupervisorState {
@@ -46,6 +55,10 @@ export interface QueryState {
   synthesis: SynthesisState;
   degradation: DegradationInfo | null;
   error: { code: string; message: string } | null;
+  thinking: {
+    chunks: string[];
+    isStreaming: boolean;
+  };
   result: {
     answer: string;
     sources: Source[];
@@ -67,7 +80,7 @@ export interface AppState {
   highlightedSourceIndex: number | null;
 }
 
-const initialWorkerState: WorkerState = { status: 'idle' };
+const initialWorkerState: WorkerState = { status: 'idle', sub_steps: [], current_step: undefined };
 
 const initialState: AppState = {
   sessions: [],
@@ -84,6 +97,7 @@ const initialState: AppState = {
     synthesis: { status: 'idle', chunks: [], citations: [] },
     degradation: null,
     error: null,
+    thinking: { chunks: [], isStreaming: false },
     result: null,
     confirmationPrompt: null,
     elapsed_ms: 0,
@@ -112,12 +126,40 @@ type Action =
   | { type: 'SSE_DONE'; data: SSEDoneEvent; sources: Source[]; dataFreshness?: DataFreshness }
   | { type: 'SSE_ERROR'; data: SSEErrorEvent }
   | { type: 'SSE_CONFIRMATION_REQUIRED'; data: SSEConfirmationRequiredEvent }
+  | { type: 'SSE_THINKING'; chunk: string }
+  | { type: 'SSE_KEEPALIVE' }
+  | { type: 'SSE_WORKER_STEP'; worker: WorkerName; step: string; message: string; stats?: { found?: number; round?: number } }
   | { type: 'QUERY_CONFIRMATION_RESOLVED' }
   | { type: 'QUERY_CANCEL' }
   | { type: 'SET_DETAIL_MODE'; mode: DetailPanelMode }
   | { type: 'HIGHLIGHT_SOURCE'; index: number | null }
   | { type: 'SET_ELAPSED'; elapsed: number }
   | { type: 'RESET_QUERY' };
+
+// ═══════════════════════════════════════════
+// Helpers
+// ═══════════════════════════════════════════
+
+function updateSubStep(
+  existing: SubStepState[],
+  stepName: string,
+  message: string,
+  stats?: { found?: number; round?: number },
+): SubStepState[] {
+  // Mark previous 'running' steps as 'done'
+  const withPreviousDone: SubStepState[] = existing.map(s => {
+    const status: SubStepState['status'] = s.status === 'running' ? 'done' : s.status;
+    return { ...s, status };
+  });
+  // Check if step already exists
+  const idx = withPreviousDone.findIndex(s => s.name === stepName);
+  if (idx >= 0) {
+    const updated = [...withPreviousDone];
+    updated[idx] = { ...updated[idx], status: 'running' as SubStepState['status'], message, stats };
+    return updated;
+  }
+  return [...withPreviousDone, { name: stepName, message, status: 'running' as SubStepState['status'], stats }];
+}
 
 // ═══════════════════════════════════════════
 // Reducer
@@ -176,7 +218,7 @@ function appReducer(state: AppState, action: Action): AppState {
           ...state.currentQuery,
           workers: {
             ...state.currentQuery.workers,
-            [action.worker]: { status: 'running' },
+            [action.worker]: { status: 'running', sub_steps: [], current_step: undefined } as WorkerState,
           },
         },
       };
@@ -232,6 +274,43 @@ function appReducer(state: AppState, action: Action): AppState {
         },
       };
 
+    case 'SSE_THINKING':
+      return {
+        ...state,
+        currentQuery: {
+          ...state.currentQuery,
+          thinking: {
+            chunks: [...state.currentQuery.thinking.chunks, action.chunk],
+            isStreaming: true,
+          },
+        },
+      };
+
+    case 'SSE_KEEPALIVE':
+      return state;
+
+    case 'SSE_WORKER_STEP':
+      return {
+        ...state,
+        currentQuery: {
+          ...state.currentQuery,
+          workers: {
+            ...state.currentQuery.workers,
+            [action.worker]: {
+              ...state.currentQuery.workers[action.worker],
+              status: 'running' as const,
+              current_step: action.step,
+              sub_steps: updateSubStep(
+                state.currentQuery.workers[action.worker].sub_steps,
+                action.step,
+                action.message,
+                action.stats,
+              ),
+            },
+          },
+        },
+      };
+
     case 'SSE_SYNTHESIS_CHUNK':
       return {
         ...state,
@@ -274,6 +353,7 @@ function appReducer(state: AppState, action: Action): AppState {
         currentQuery: {
           ...state.currentQuery,
           phase: 'done' as const,
+          thinking: { ...state.currentQuery.thinking, isStreaming: false },
           queryId: action.data.query_id,
           synthesis: { ...state.currentQuery.synthesis, status: 'done' as const },
           degradation: action.data.degradation,
@@ -321,7 +401,7 @@ function appReducer(state: AppState, action: Action): AppState {
           phase: 'retrieving',
           workers: {
             ...state.currentQuery.workers,
-            sql: { status: 'running' },
+            sql: { status: 'running', sub_steps: [], current_step: undefined } as WorkerState,
           },
           confirmationPrompt: null,
         },

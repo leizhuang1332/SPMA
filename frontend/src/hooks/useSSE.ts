@@ -12,6 +12,7 @@ import type {
   SSEDoneEvent,
   SSEErrorEvent,
   SSEConfirmationRequiredEvent,
+  SSEThinkingEvent,
   SourceType,
   Source,
   DataFreshness,
@@ -149,8 +150,25 @@ function handleSSEEvent(
       dispatch({ type: 'SSE_WORKER_START', worker: ws.worker });
       break;
     }
+    case 'thinking': {
+      const t = data as SSEThinkingEvent;
+      dispatch({ type: 'SSE_THINKING', chunk: t.chunk });
+      break;
+    }
+    case 'keepalive':
+      dispatch({ type: 'SSE_KEEPALIVE' });
+      break;
     case 'worker_progress': {
       const wp = data as SSEWorkerProgressEvent;
+      if (wp.step) {
+        dispatch({
+          type: 'SSE_WORKER_STEP',
+          worker: wp.worker,
+          step: wp.step,
+          message: wp.message || '',
+          stats: wp.stats,
+        });
+      }
       dispatch({ type: 'SSE_WORKER_PROGRESS', worker: wp.worker, data: wp });
       break;
     }

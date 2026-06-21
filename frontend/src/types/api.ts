@@ -208,8 +208,10 @@ export type SSEEventType =
   | 'worker_progress'
   | 'worker_result'
   | 'synthesis'
+  | 'thinking'
   | 'done'
   | 'error'
+  | 'keepalive'
   | 'confirmation_required';
 
 export type WorkerName = 'doc' | 'code' | 'sql';
@@ -227,10 +229,22 @@ export interface SSEWorkerStartEvent {
   timestamp: string;
 }
 
+export interface SSEThinkingEvent {
+  node: string;
+  chunk: string;
+  timestamp: string;
+}
+
 export interface SSEWorkerProgressEvent {
   worker: WorkerName;
+  step: string;
+  message: string;
   status: string;
   query_used: string;
+  stats?: {
+    found?: number;
+    round?: number;
+  };
   elapsed_ms: number;
 }
 
@@ -277,8 +291,10 @@ export interface SSEEventMap {
   worker_progress: SSEWorkerProgressEvent;
   worker_result: SSEWorkerResultEvent;
   synthesis: SSESynthesisEvent;
+  thinking: SSEThinkingEvent;
   done: SSEDoneEvent;
   error: SSEErrorEvent;
+  keepalive: null;
   confirmation_required: SSEConfirmationRequiredEvent;
 }
 
