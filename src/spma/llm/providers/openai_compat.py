@@ -6,6 +6,7 @@ thinking 参数通过 extra_body 传递给 DeepSeek API。
 """
 
 import logging
+from collections.abc import AsyncGenerator
 
 import httpx
 from langchain_openai import ChatOpenAI
@@ -17,6 +18,7 @@ from spma.llm.providers.base import (
     LLMRateLimitError,
     LLMServiceError,
     ProviderConfig,
+    StreamChunk,
 )
 
 logger = logging.getLogger(__name__)
@@ -85,3 +87,40 @@ class OpenAICompatProvider(LLMProvider):
             temperature=0.3,
             max_tokens=4096,
         )
+
+    async def astream(self, messages: list[dict], model: str, **kwargs) -> AsyncGenerator[StreamChunk, None]:
+        """流式对话——使用 OpenAI 兼容 streaming API，支持 DeepSeek thinking tokens。"""
+        api_kwargs: dict = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": kwargs.get("max_tokens", 4096),
+            "temperature": kwargs.get("temperature", 0.3),
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+
+        if "thinking" in kwargs and not self._vllm:
+            api_kwargs["extra_body"] = {"thinking": kwargs["thinking"]}
+
+        stream = await self._client.chat.completions.create(**api_kwargs)
+        finish_reason = None
+
+        async for chunk in stream:
+            delta = chunk.choices[0].delta if chunk.choices else None
+            if delta is None:
+                continue
+
+            # DeepSeek 的 reasoning_content 包含 thinking tokens
+            reasoning = getattr(delta, "reasoning_content", None) or ""
+            if reasoning:
+                yield StreamChunk(type="thinking", content=reasoning, model=model)
+
+            if delta.content:
+                yield StreamChunk(type="output", content=delta.content, model=model)
+
+            if getattr(chunk.choices[0], "finish_reason", None):
+                finish_reason = chunk.choices[0].finish_reason
+
+        # 最终 yield finish_reason（如果还没有通过 chunk 传递）
+        if finish_reason:
+            yield StreamChunk(type="output", content="", model=model, finish_reason=finish_reason)
