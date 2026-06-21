@@ -56,7 +56,10 @@ export default function ProgressTracker() {
     if (node.worker) {
       const w = currentQuery.workers[node.worker];
       if (w.status === 'done') return `${w.elapsed_ms ?? 0}ms · ${w.result_count ?? 0}条`;
-      if (w.status === 'running') return w.progress_status ?? '检索中…';
+      if (w.status === 'running') {
+        if (w.current_step) return w.current_step;
+        return w.progress_status ?? '检索中…';
+      }
       if (w.status === 'timeout') return w.error_message ?? '超时';
       if (w.status === 'waiting_confirmation') return '等待确认';
       if (w.status === 'error') return w.error_message ?? '错误';
@@ -110,6 +113,55 @@ export default function ProgressTracker() {
                     className="h-full bg-[var(--primary)] rounded-full transition-all duration-500"
                     style={{ width: `${Math.min((currentQuery.workers[node.worker]?.elapsed_ms ?? 0) / 30, 95)}%` }}
                   />
+                </div>
+              )}
+
+              {/* Sub-step timeline for running workers */}
+              {status === 'running' && node.worker && (
+                currentQuery.workers[node.worker]?.sub_steps?.length > 0
+              ) && (
+                <div className="pl-6 border-l-2 border-[var(--primary)] ml-4 my-1 space-y-0.5">
+                  {currentQuery.workers[node.worker]!.sub_steps!.map((step, i) => (
+                    <div
+                      key={step.name}
+                      className="flex items-center gap-2 py-0.5 text-[10px]"
+                      style={{
+                        color:
+                          step.status === 'done' ? 'var(--success)' :
+                          step.status === 'running' ? 'var(--primary)' :
+                          'var(--muted-foreground)',
+                      }}
+                    >
+                      <span className="w-3 text-center flex-shrink-0">
+                        {step.status === 'done' ? '✓' :
+                         step.status === 'running' ? '◉' : '·'}
+                      </span>
+                      <span className="flex-1 truncate">{step.message || step.name}</span>
+                      {step.stats?.found !== undefined && (
+                        <span className="text-[var(--muted-foreground)] flex-shrink-0" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                          {step.stats.found}条
+                        </span>
+                      )}
+                      {step.stats?.round !== undefined && (
+                        <span className="text-[var(--muted-foreground)] flex-shrink-0 ml-1" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                          R{step.stats.round}
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                  {/* Progress bar for sub-steps */}
+                  <div className="h-[2px] bg-[var(--muted)] rounded-full mx-0.5 overflow-hidden mt-0.5 mb-1">
+                    <div
+                      className="h-full bg-[var(--primary)] rounded-full transition-all duration-500"
+                      style={{
+                        width: `${Math.min(
+                          ((currentQuery.workers[node.worker]?.sub_steps?.filter(s => s.status !== 'pending').length ?? 0) /
+                           Math.max(currentQuery.workers[node.worker]?.sub_steps?.length || 1, 1)) * 100,
+                          95
+                        )}%`,
+                      }}
+                    />
+                  </div>
                 </div>
               )}
             </div>

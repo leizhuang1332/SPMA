@@ -8,6 +8,7 @@ import AIAnswer from './ai-answer';
 import MessageActions from './message-actions';
 import FollowupPills from './followup-pills';
 import EmptyState from './empty-state';
+import ThinkingPanel from '@/components/detail/thinking-panel';
 import * as api from '@/lib/api';
 
 export default function MessageList() {
@@ -99,6 +100,12 @@ export default function MessageList() {
       {isStreaming && state.pendingQuery && (
         <div>
           <UserMessage text={state.pendingQuery} />
+          {state.currentQuery.thinking && (state.currentQuery.thinking.chunks.length > 0 || state.currentQuery.thinking.isStreaming) && (
+            <ThinkingPanel
+              chunks={state.currentQuery.thinking.chunks}
+              isStreaming={state.currentQuery.thinking.isStreaming}
+            />
+          )}
           {streamingAnswer && <AIAnswer text={streamingAnswer} />}
         </div>
       )}
