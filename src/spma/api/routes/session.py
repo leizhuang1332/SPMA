@@ -100,6 +100,7 @@ async def get_session_history(
     session_id: str,
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    store: SessionStore = Depends(get_session_store),
 ):
     """GET /api/v1/sessions/{session_id}/history — 获取分页对话历史。
 
@@ -113,5 +114,9 @@ async def get_session_history(
 
     result = await extract_turns(session_id, checkpointer, limit, offset)
     if result is None:
-        raise HTTPException(status_code=404, detail=f"Session {session_id} not found or has no history")
+        # Distinguish: session exists but has no checkpoints -> 200 empty
+        # vs session truly doesn't exist -> 404
+        if await store.session_exists(session_id):
+            return {"turns": [], "total": 0, "offset": offset, "limit": limit}
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
     return result
