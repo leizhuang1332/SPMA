@@ -3,7 +3,13 @@
 from spma.agents.synthesis.prompts import GENERATION_PROMPT
 
 
-async def generate_draft_answer(original_query: str, fused_citations: list[dict], worker_outputs: list[dict], llm) -> str:
+async def generate_draft_answer(
+    original_query: str,
+    fused_citations: list[dict],
+    worker_outputs: list[dict],
+    llm,
+    progress=None,
+) -> str:
     doc_results = _format_results([c for c in fused_citations if c.get("source_type") == "prd"], "文档")
     code_results = _format_results([c for c in fused_citations if c.get("source_type") == "code"], "代码")
     sql_results = _format_results([c for c in fused_citations if c.get("source_type") == "sql"], "数据库")
@@ -18,8 +24,23 @@ async def generate_draft_answer(original_query: str, fused_citations: list[dict]
     print("="*50)
     print(f"GENERATION_PROMPT: {prompt}")
     print("="*50)
-    resp_obj = await llm.ainvoke(prompt)
-    return resp_obj.content
+
+    # Check if llm supports astream (LLMRouter does, LangChain ChatModel doesn't)
+    if hasattr(llm, 'astream'):
+        answer_parts: list[str] = []
+        async for chunk in llm.astream(
+            [{"role": "user", "content": prompt}],
+            role="generation",
+        ):
+            if chunk.type == "thinking" and progress:
+                await progress.publish_thinking("synthesis", chunk.content)
+            elif chunk.type == "output":
+                answer_parts.append(chunk.content)
+        return "".join(answer_parts)
+    else:
+        # fallback: LangChain ChatModel synchronous invoke
+        resp_obj = await llm.ainvoke(prompt)
+        return resp_obj.content
 
 
 def _format_results(citations: list[dict], label: str) -> str:

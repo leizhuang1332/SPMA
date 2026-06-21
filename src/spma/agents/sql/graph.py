@@ -51,6 +51,8 @@ def _mock_rag(state: SQLAgentState) -> list[SchemaHit]:
 
 async def generate_node(state: SQLAgentState) -> dict:
     """generate 节点: LLM SQL 生成。"""
+    if progress:
+        await progress.publish_step("sql_worker", "generating", "正在生成 SQL…")
     state["current_round"] = state.get("current_round", 0) + 1
     if "start_time" not in state or state["start_time"] == 0:
         state["start_time"] = time.time()
@@ -77,8 +79,10 @@ async def generate_node(state: SQLAgentState) -> dict:
     return state
 
 
-def guard_node(state: SQLAgentState) -> dict:
+async def guard_node(state: SQLAgentState) -> dict:
     """guard 节点: 执行 L1-L4 SQL Guard 校验。"""
+    if progress:
+        await progress.publish_step("sql_worker", "guarding", "正在安全检查…")
     sql = state.get("generated_sql", "")
     result = run_full_guard(sql, _SCHEMA_SNAPSHOT)
     state["guard_result"] = result
@@ -88,6 +92,8 @@ def guard_node(state: SQLAgentState) -> dict:
 
 async def execute_node(state: SQLAgentState) -> dict:
     """execute 节点: 执行 SQL。"""
+    if progress:
+        await progress.publish_step("sql_worker", "executing", "正在执行查询…")
     session_executor = state.get("_executor")
     if session_executor is None:
         state["execution_success"] = False
@@ -107,8 +113,10 @@ async def execute_node(state: SQLAgentState) -> dict:
     return state
 
 
-def verify_node(state: SQLAgentState) -> dict:
+async def verify_node(state: SQLAgentState) -> dict:
     """verify 节点: 语义验证。"""
+    if progress:
+        await progress.publish_step("sql_worker", "verifying", "正在验证结果…")
     result = run_verification(state)
     state["semantic_check"] = result
     return state
@@ -138,7 +146,7 @@ def should_retry(state: SQLAgentState) -> Literal["generate", "END"]:
     return "END"
 
 
-def build_sql_agent_graph() -> StateGraph:
+def build_sql_agent_graph(progress=None) -> StateGraph:
     """构建 SQL Agent 的 LangGraph StateGraph。"""
     graph = StateGraph(SQLAgentState)
 

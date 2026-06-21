@@ -16,10 +16,13 @@ def build_code_agent_graph(
     llm,
     max_rounds: int = 3,
     timeout_ms: int = 2000,
+    progress=None,
 ) -> StateGraph:
     """Build Code Agent StateGraph with 4 nodes + conditional edge."""
 
     async def route_node(state: CodeAgentState) -> dict:
+        if progress:
+            await progress.publish_step("code_worker", "routing", "正在分析代码仓库…")
         entities = state.get("entities", {})
         route_result = await route_repos(entities, file_path_cache)
         state["candidate_repos"] = route_result["candidate_repos"]
@@ -29,6 +32,8 @@ def build_code_agent_graph(
         return state
 
     async def search_node(state: CodeAgentState) -> dict:
+        if progress:
+            await progress.publish_step("code_worker", "searching", "正在 ripgrep + AST 检索…")
         entities = state.get("entities", {})
         fallback_layer = state.get("fallback_layer", 0)
         search_terms = build_search_terms(entities)
@@ -60,6 +65,8 @@ def build_code_agent_graph(
         return state
 
     async def assess_node(state: CodeAgentState) -> dict:
+        if progress:
+            await progress.publish_step("code_worker", "assessing", "正在评估检索完整性…")
         outcome = await assess_code_completeness(
             ripgrep_results=state.get("ripgrep_results", []),
             expanded_context=state.get("expanded_context", []),

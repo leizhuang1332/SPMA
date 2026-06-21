@@ -9,8 +9,10 @@ from spma.agents.synthesis.auditor import audit_answer
 from spma.agents.synthesis.transparency import generate_transparency_annotations
 
 
-def build_synthesis_agent_graph(llm, audit_llm) -> StateGraph:
+def build_synthesis_agent_graph(llm, audit_llm, progress=None) -> StateGraph:
     async def fuse_node(state: SynthesisAgentState) -> dict:
+        if progress:
+            await progress.publish_step("synthesis", "fusing", "正在融合多源结果…")
         fused = synthesize_fusion(state.get("worker_outputs", []))
         state["fused_citations"] = fused
         return state
@@ -21,11 +23,14 @@ def build_synthesis_agent_graph(llm, audit_llm) -> StateGraph:
             fused_citations=state.get("fused_citations", []),
             worker_outputs=state.get("worker_outputs", []),
             llm=llm,
+            progress=progress,
         )
         state["draft_answer"] = draft
         return state
 
     async def audit_node(state: SynthesisAgentState) -> dict:
+        if progress:
+            await progress.publish_step("synthesis", "auditing", "正在审核回答质量…")
         result = await audit_answer(
             draft_answer=state.get("draft_answer", ""),
             original_query=state.get("original_query", ""),
@@ -52,6 +57,8 @@ def build_synthesis_agent_graph(llm, audit_llm) -> StateGraph:
         return state
 
     async def finalize_node(state: SynthesisAgentState) -> dict:
+        if progress:
+            await progress.publish_step("synthesis", "finalizing")
         draft = state.get("draft_answer", "")
         annotations = state.get("annotations", [])
         verdict = state.get("audit_result", {}).get("verdict", "pass")

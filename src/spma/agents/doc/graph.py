@@ -21,7 +21,8 @@ from spma.agents.doc.clue_expander import rule_based_expand, llm_based_expand
 
 def build_doc_agent_graph(
     es_client, vector_store, embedder, llm,
-    hyde_llm=None, weights_config=None
+    hyde_llm=None, weights_config=None,
+    progress=None,
 ):
     """构建 Doc Agent 的 LangGraph StateGraph——方案三深度集成 LlamaIndex。"""
     wc = weights_config or {}
@@ -54,6 +55,8 @@ def build_doc_agent_graph(
 
     # ========== 路由节点（不变）==========
     async def route_node(state: DocAgentState) -> dict:
+        if progress:
+            await progress.publish_step("doc_worker", "routing", "正在分析查询策略…")
         entities = state.get("entities", {})
         mode = route_retrieval_mode(entities)
         state["weight_mode"] = mode
@@ -74,6 +77,8 @@ def build_doc_agent_graph(
 
     # ========== 搜索节点（方案三改造：委托给管道）==========
     async def search_node(state: DocAgentState) -> dict:
+        if progress:
+            await progress.publish_step("doc_worker", "searching", "正在检索 ES + PGVector…")
         query = state.get("current_query", state.get("original_query", ""))
         entities = state.get("entities", {})
         mode = state.get("weight_mode", "hybrid")
@@ -103,6 +108,12 @@ def build_doc_agent_graph(
     # ========== 以下节点完全不变 ==========
 
     async def aggregate_node(state: DocAgentState) -> dict:
+        if progress:
+            round_num = state.get("round", 1)
+            fused = state.get("fused_results", [])
+            await progress.publish_step("doc_worker", "aggregating",
+                                        f"正在聚合第 {round_num} 轮结果…",
+                                        stats={"found": len(fused) if fused else 0, "round": round_num})
         prev = state.get("accumulated_results", [])
         current = state.get("fused_results", [])
         seen_ids = {r["chunk_id"] for r in prev}
@@ -114,6 +125,8 @@ def build_doc_agent_graph(
         return state
 
     async def assess_node(state: DocAgentState) -> dict:
+        if progress:
+            await progress.publish_step("doc_worker", "assessing", "正在评估检索完整性…")
         results = state.get("accumulated_results", [])
         entities = state.get("entities", {})
         thresholds = wc.get("thresholds", {})
@@ -138,6 +151,8 @@ def build_doc_agent_graph(
         return state
 
     async def expand_node(state: DocAgentState) -> dict:
+        if progress:
+            await progress.publish_step("doc_worker", "expanding", "正在扩展查询…")
         round_num = state.get("round", 1)
         original_query = state.get("original_query", "")
         results = state.get("accumulated_results", [])
