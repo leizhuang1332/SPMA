@@ -56,11 +56,25 @@ class StreamMerger:
         self.queue: asyncio.Queue = asyncio.Queue()
         self._all_worker_outputs: list[dict] = []
         self._start_time = time_module.time()
+        self._progress_subscribed = asyncio.Event()  # 订阅确认信号
 
     async def run(self) -> AsyncGenerator[dict, None]:
         """启动双通道，yield 统一的 SSE event dict。"""
         graph_task = asyncio.create_task(self._consume_graph_stream())
         progress_task = asyncio.create_task(self._consume_progress_stream())
+
+        # Wait for Redis subscription to be confirmed before processing
+        # graph events. Prevents race: if graph finishes before pubsub.subscribe()
+        # completes, the _shutdown message would be published with no subscriber
+        # and lost, causing the progress task to block until Redis timeout.
+        if self.redis is not None:
+            try:
+                await asyncio.wait_for(self._progress_subscribed.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Progress channel subscribe timeout after 5s — "
+                    "_shutdown may not be delivered, progress will exit via timeout"
+                )
 
         tasks_done = 0
         try:
@@ -156,6 +170,10 @@ class StreamMerger:
 
         try:
             await pubsub.subscribe(channel)
+            # Signal that subscription is active — run() must wait for this
+            # before publishing _shutdown, otherwise the message is lost if
+            # graph finishes before subscribe completes (race condition).
+            self._progress_subscribed.set()
             async for msg in pubsub.listen():
                 if msg["type"] != "message":
                     continue
@@ -197,16 +215,8 @@ class StreamMerger:
                     })
         except asyncio.CancelledError:
             raise
-        except Exception as e:
-            # TimeoutError（内置或 redis.exceptions）是预期关闭路径：
-            # 1. 客户端断开 SSE → progress task 被 cancel → Redis TimeoutError
-            # 2. Graph 完成 → _shutdown 已发送 / Redis 不可用 → 自然超时
-            # 两种情况都是正常行为，非错误。
-            exc_name = type(e).__qualname__
-            if 'Timeout' in exc_name:
-                logger.debug("Progress stream closed (timeout: %s)", exc_name)
-            else:
-                logger.warning("Progress stream 异常，进度通道关闭", exc_info=True)
+        except Exception:
+            logger.warning("Progress stream 异常，进度通道关闭", exc_info=True)
         finally:
             try:
                 await pubsub.unsubscribe(channel)
