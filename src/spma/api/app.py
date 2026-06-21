@@ -367,9 +367,12 @@ def create_app() -> FastAPI:
             from spma.api.dependencies import set_checkpointer, set_query_graph
             from spma.api.query_graph import build_query_orchestrator_graph
 
-            checkpointer = AsyncPostgresSaver.from_conn_string(dsn)
+            checkpointer_cm = AsyncPostgresSaver.from_conn_string(dsn)
+            checkpointer = await checkpointer_cm.__aenter__()
             await checkpointer.setup()
             set_checkpointer(checkpointer)
+            # Keep reference for shutdown cleanup
+            setattr(app.state, '_checkpointer_cm', checkpointer_cm)
 
             graph = build_query_orchestrator_graph().compile(checkpointer=checkpointer)
             set_query_graph(graph)
@@ -377,6 +380,17 @@ def create_app() -> FastAPI:
             logger.info("AsyncPostgresSaver + QueryOrchestrator graph 初始化完成")
         except Exception as e:
             logger.warning("Checkpointer/Graph 初始化失败: %s", e)
+
+    @app.on_event("shutdown")
+    async def shutdown_checkpointer():
+        """关闭 AsyncPostgresSaver 连接池。"""
+        cm = getattr(app.state, '_checkpointer_cm', None)
+        if cm is not None:
+            try:
+                await cm.__aexit__(None, None, None)
+                logger.info("AsyncPostgresSaver 已关闭")
+            except Exception as e:
+                logger.warning("关闭 AsyncPostgresSaver 失败: %s", e)
 
     return app
 
