@@ -305,10 +305,11 @@ async def synthesis_node(state: QueryOrchestratorState) -> dict:
 
     llm = get_langchain_client(role="generation")
 
+    original_query = state.get("original_query", "")
     try:
         synthesis_graph = build_synthesis_agent_graph(llm=llm, audit_llm=llm)
         synthesis_result = await synthesis_graph.ainvoke({
-            "original_query": state["original_query"],
+            "original_query": original_query,
             "worker_outputs": state.get("worker_outputs", []),
             "max_rounds": 2,
             "round": 0,
@@ -319,7 +320,7 @@ async def synthesis_node(state: QueryOrchestratorState) -> dict:
         worker_count = len(state.get("worker_outputs", []))
         classification = state.get("classification", {})
         final_answer = (
-            f"[降级回答] 针对查询 '{state['original_query']}' "
+            f"[降级回答] 针对查询 '{original_query}' "
             f"已分类为 {classification.get('sources', [])} 源，"
             f"Worker 输出 {worker_count} 条结果。完整合成失败: {str(e)[:200]}"
         )
