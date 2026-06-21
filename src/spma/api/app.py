@@ -344,6 +344,40 @@ def create_app() -> FastAPI:
         except Exception as e:
             logger.warning("Code Agent 依赖初始化失败: %s", e)
 
+    # 启动时初始化 Checkpointer + QueryOrchestrator Graph
+    @app.on_event("startup")
+    async def startup_checkpointer_and_graph():
+        """初始化 AsyncPostgresSaver + 编译 QueryOrchestrator graph 单例。"""
+        try:
+            yaml_path = _resolve_config_path()
+            with open(yaml_path) as f:
+                raw = yaml.safe_load(f) or {}
+        except Exception as e:
+            logger.warning("无法读取配置，跳过 checkpointer 初始化: %s", e)
+            return
+
+        postgres_cfg = raw.get("spma", {}).get("connections", {}).get("postgres", {})
+        dsn = postgres_cfg.get("readonly_replica", "")
+        if not dsn:
+            logger.warning("PostgreSQL DSN 未配置，跳过 checkpointer 初始化")
+            return
+
+        try:
+            from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+            from spma.api.dependencies import set_checkpointer, set_query_graph
+            from spma.api.query_graph import build_query_orchestrator_graph
+
+            checkpointer = AsyncPostgresSaver.from_conn_string(dsn)
+            await checkpointer.setup()
+            set_checkpointer(checkpointer)
+
+            graph = build_query_orchestrator_graph().compile(checkpointer=checkpointer)
+            set_query_graph(graph)
+
+            logger.info("AsyncPostgresSaver + QueryOrchestrator graph 初始化完成")
+        except Exception as e:
+            logger.warning("Checkpointer/Graph 初始化失败: %s", e)
+
     return app
 
 
