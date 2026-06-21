@@ -36,9 +36,13 @@ class SessionStore:
     def _use_db(self) -> bool:
         return self._db_pool is not None
 
-    async def create_session(self, title: str | None = None, user_id: str = "") -> str:
-        """创建新会话，返回 session_id (UUID)。"""
-        session_id = str(uuid.uuid4())
+    async def create_session(self, title: str | None = None, user_id: str = "", session_id: str | None = None) -> str:
+        """创建新会话，返回 session_id (UUID)。
+
+        如果提供了 session_id，则使用提供的值（懒创建场景）；
+        否则自动生成新的 UUID（POST /sessions 场景）。
+        """
+        session_id = session_id or str(uuid.uuid4())
         now = datetime.now(timezone.utc)
 
         if self._use_db:

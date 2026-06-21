@@ -62,7 +62,7 @@ async def general_query(req: QueryRequest):
             store = get_session_store()
             if not await store.session_exists(req.session_id):
                 title = req.query[:10] if req.query else None
-                await store.create_session(title=title)
+                await store.create_session(title=title, session_id=req.session_id)
             # 首轮查询自动设置标题（取前 10 字符）
             session = await store.get_session(req.session_id)
             if session and not session.get("title") and req.query:
@@ -558,7 +558,7 @@ async def query_stream(req: QueryStreamRequest, request: Request):
     store = get_session_store()
     if not await store.session_exists(req.session_id):
         title = req.query[:10] if req.query else None
-        await store.create_session(title=title)
+        await store.create_session(title=title, session_id=req.session_id)
 
     query_id = str(uuid.uuid4())
 
