@@ -553,10 +553,11 @@ async def query_stream(req: QueryStreamRequest, request: Request):
     from spma.api.stream_merger import StreamMerger
     from spma.api.progress import ProgressPublisher
 
-    # Route-level validation: fail fast before generator
+    # Route-level: ensure session exists (lazy-create on first query)
     store = get_session_store()
     if not await store.session_exists(req.session_id):
-        raise HTTPException(status_code=404, detail=f"Session {req.session_id} not found")
+        title = req.query[:10] if req.query else None
+        await store.create_session(title=title)
 
     query_id = str(uuid.uuid4())
 
@@ -564,7 +565,7 @@ async def query_stream(req: QueryStreamRequest, request: Request):
     try:
         session = await store.get_session(req.session_id)
         if session and not session.get("title") and req.query:
-            await store.update_session_title(req.session_id, req.query[:50])
+            await store.update_session_title(req.session_id, req.query[:10])
     except Exception:
         pass
 
