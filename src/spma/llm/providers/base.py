@@ -5,8 +5,9 @@
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 # ── 异常类 ──────────────────────────────────────────────────────────────────
 
@@ -99,6 +100,17 @@ class RetryConfig:
     max_wait_seconds: float = 2.0
 
 
+# ── StreamChunk ──────────────────────────────────────────────────────────────
+
+@dataclass
+class StreamChunk:
+    """LLM 流式响应的单个 chunk——区分思考 token 和输出 token。"""
+    type: Literal["thinking", "output"]
+    content: str
+    model: str | None = None
+    finish_reason: str | None = None  # "stop" | "length" | None
+
+
 # ── 抽象基类 ────────────────────────────────────────────────────────────────
 
 class LLMProvider(ABC):
@@ -141,6 +153,15 @@ class LLMProvider(ABC):
         各子类覆写此方法返回对应的 LangChain 客户端类型。
         """
         raise NotImplementedError(f"{self.name} 不支持 get_langchain_client")
+
+    async def astream(self, messages: list[dict], model: str, **kwargs) -> AsyncGenerator[StreamChunk, None]:
+        """流式对话——yield StreamChunk 逐个返回思考和输出 token。
+
+        默认实现回退到同步 chat()，将整个响应作为一个 output chunk 返回。
+        支持 streaming 的 Provider 应覆写此方法。
+        """
+        text = await self.chat(messages, model, **kwargs)
+        yield StreamChunk(type="output", content=text, model=model, finish_reason="stop")
 
     @property
     def default_model(self) -> str | None:
