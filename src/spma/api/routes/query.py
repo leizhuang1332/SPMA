@@ -3,13 +3,18 @@
 设计依据: API-01 §2 核心端点
 """
 
+import asyncio
+import json
 import logging
-import time
+import time as time_module
 import uuid
 from datetime import datetime, timezone
+from typing import AsyncGenerator
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Request
+from langchain_core.messages import AIMessageChunk, HumanMessage
 from pydantic import BaseModel
+from sse_starlette.sse import EventSourceResponse
 
 logger = logging.getLogger(__name__)
 
@@ -530,3 +535,125 @@ async def sql_query_confirm(req: ConfirmRequest):
         "status": "completed",
         "message": "确认后执行完成（Slice 3 完整实现待接入 Agent 循环）",
     }
+
+
+class QueryStreamRequest(BaseModel):
+    query: str
+    session_id: str
+    sources_hint: list[str] | None = None
+
+
+@router.post("/api/v1/query/stream")
+async def query_stream(req: QueryStreamRequest, request: Request):
+    """SSE 流式查询端点——graph.astream() → SSE events 实时推送到前端。
+
+    conversation_history 由后端从 checkpoint 的 messages 中自动获取。
+    """
+    from spma.api.dependencies import get_session_store, get_query_graph
+
+    # Route-level validation: fail fast before generator
+    store = get_session_store()
+    if not await store.session_exists(req.session_id):
+        raise HTTPException(status_code=404, detail=f"Session {req.session_id} not found")
+
+    query_id = str(uuid.uuid4())
+    start_time = time_module.time()
+
+    # Auto-set session title on first query
+    try:
+        session = await store.get_session(req.session_id)
+        if session and not session.get("title") and req.query:
+            await store.update_session_title(req.session_id, req.query[:50])
+    except Exception:
+        pass
+
+    graph = get_query_graph()
+    config = {"configurable": {"thread_id": req.session_id}}
+
+    async def event_gen() -> AsyncGenerator[dict, None]:
+        try:
+            async for mode, data in graph.astream(
+                {
+                    "messages": [HumanMessage(content=req.query)],
+                    "original_query": req.query,
+                    "session_id": req.session_id,
+                    "sources_hint": req.sources_hint,
+                },
+                config,
+                stream_mode=["messages", "updates"],
+            ):
+                if mode == "updates":
+                    for node_name, payload in data.items():
+                        event = _map_node_to_event(node_name, payload, query_id)
+                        if event:
+                            yield event
+                elif mode == "messages":
+                    msg, _ = data
+                    if isinstance(msg, AIMessageChunk) and msg.content:
+                        content = msg.content
+                        if isinstance(content, str) and content:
+                            yield {
+                                "event": "synthesis",
+                                "data": json.dumps({"chunk": content}, ensure_ascii=False),
+                            }
+
+            total_latency = int((time_module.time() - start_time) * 1000)
+            yield {
+                "event": "done",
+                "data": json.dumps({
+                    "query_id": query_id,
+                    "latency_ms": total_latency,
+                    "degradation": None,
+                    "suggested_followups": [],
+                }, ensure_ascii=False),
+            }
+
+        except asyncio.CancelledError:
+            yield {
+                "event": "error",
+                "data": json.dumps({"code": "CANCELLED", "message": "客户端取消请求"}, ensure_ascii=False),
+            }
+        except Exception as e:
+            logger.exception("Query stream error for session %s", req.session_id)
+            yield {
+                "event": "error",
+                "data": json.dumps({"code": "INTERNAL", "message": str(e)}, ensure_ascii=False),
+            }
+
+    return EventSourceResponse(event_gen())
+
+
+def _map_node_to_event(node_name: str, payload: dict, query_id: str) -> dict | None:
+    """将 graph node 完成事件映射为 SSE event dict。"""
+    mapping = {
+        "classify": "classification",
+        "doc_worker": "worker_result",
+        "code_worker": "worker_result",
+        "sql_worker": "worker_result",
+    }
+    event_type = mapping.get(node_name)
+    if event_type is None:
+        return None
+
+    event_data = {"node": node_name, "query_id": query_id}
+
+    if node_name == "classify":
+        classification = payload.get("classification", {})
+        event_data.update({
+            "sources": classification.get("sources", []),
+            "is_cross_source": classification.get("is_cross_source", False),
+            "entities": classification.get("entities", {}),
+            "elapsed_ms": 0,
+        })
+    elif node_name.endswith("_worker"):
+        worker_outputs = payload.get("worker_outputs", [])
+        if worker_outputs:
+            wo = worker_outputs[0]
+            event_data.update({
+                "worker": wo.get("worker_type", node_name.replace("_worker", "")),
+                "result_count": wo.get("result_count", 0),
+                "retrieval_method": "hybrid",
+                "elapsed_ms": 0,
+            })
+
+    return {"event": event_type, "data": json.dumps(event_data, ensure_ascii=False, default=str)}
