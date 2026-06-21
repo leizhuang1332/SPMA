@@ -174,6 +174,15 @@ class StreamMerger:
             # before publishing _shutdown, otherwise the message is lost if
             # graph finishes before subscribe completes (race condition).
             self._progress_subscribed.set()
+
+            # Override socket_timeout for the pubsub connection.
+            # redis-py 8.0.0 changed DEFAULT_SOCKET_TIMEOUT from None to 5s,
+            # which breaks long-lived pubsub listeners. PubSub connections
+            # must block indefinitely — they exit via _shutdown message or
+            # task cancellation, not via socket timeout.
+            if pubsub.connection is not None:
+                pubsub.connection.socket_timeout = None
+
             async for msg in pubsub.listen():
                 if msg["type"] != "message":
                     continue
@@ -215,8 +224,22 @@ class StreamMerger:
                     })
         except asyncio.CancelledError:
             raise
-        except Exception:
-            logger.warning("Progress stream 异常，进度通道关闭", exc_info=True)
+        except Exception as e:
+            # TimeoutError（内置 asyncio 或 redis.exceptions）是预期关闭路径：
+            # 1. SSE 客户端断开 → progress task 被 cancel → Redis 连接清理
+            # 2. 正常超时 → pubsub listen 自然到期（socket_timeout 默认值导致）
+            # 两种情况都是正常行为，非错误。
+            #
+            # 注意：虽然上面设置了 socket_timeout=None 来避免 8.0.0 的 5s 默认超时，
+            # 但在以下场景仍可能触发 TimeoutError：
+            # - 连接池重连后 socket_timeout 被重置
+            # - Task 取消导致的连锁超时
+            # - 网络层面的 TCP 超时
+            exc_name = type(e).__qualname__
+            if "Timeout" in exc_name:
+                logger.debug("Progress stream closed (timeout: %s)", exc_name)
+            else:
+                logger.warning("Progress stream 异常，进度通道关闭", exc_info=True)
         finally:
             try:
                 await pubsub.unsubscribe(channel)
