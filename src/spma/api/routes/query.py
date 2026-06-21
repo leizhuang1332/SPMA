@@ -61,11 +61,12 @@ async def general_query(req: QueryRequest):
             from spma.api.dependencies import get_session_store
             store = get_session_store()
             if not await store.session_exists(req.session_id):
-                await store.create_session()
-            # 首轮查询自动设置标题（取前 50 字符）
+                title = req.query[:10] if req.query else None
+                await store.create_session(title=title)
+            # 首轮查询自动设置标题（取前 10 字符）
             session = await store.get_session(req.session_id)
             if session and not session.get("title") and req.query:
-                await store.update_session_title(req.session_id, req.query[:50])
+                await store.update_session_title(req.session_id, req.query[:10])
         except RuntimeError:
             pass  # db_pool 未初始化时静默降级
 
