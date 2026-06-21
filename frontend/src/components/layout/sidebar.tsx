@@ -1,19 +1,65 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useAppContext } from '@/context/app-context';
 import SessionList from '@/components/session/session-list';
 import SystemStatusBar from '@/components/session/system-status-bar';
 import * as api from '@/lib/api';
 
+// Retry delays for session list loading (ms)
+const RETRY_DELAYS_MS = [1000, 2000];
+const MAX_RETRIES = RETRY_DELAYS_MS.length;
+
 export default function Sidebar() {
   const { dispatch } = useAppContext();
+  const abortRef = useRef<AbortController | null>(null);
+  const retryCount = useRef(0);
+  const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // 页面加载时获取会话列表
+  // 加载会话列表（支持 abort 和失败重试）
   useEffect(() => {
-    api.listSessions({ limit: 50 })
-      .then(sessions => dispatch({ type: 'SET_SESSIONS', sessions }))
-      .catch(console.error);
+    let cancelled = false;
+
+    const loadSessions = async () => {
+      // Abort previous in-flight request
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+
+      try {
+        const sessions = await api.listSessions({ limit: 50 }, controller.signal);
+        if (!cancelled && !controller.signal.aborted) {
+          dispatch({ type: 'SET_SESSIONS', sessions });
+          retryCount.current = 0;
+        }
+      } catch (err) {
+        if (cancelled || controller.signal.aborted) return;
+
+        if (retryCount.current < MAX_RETRIES) {
+          const delay = RETRY_DELAYS_MS[retryCount.current];
+          retryCount.current++;
+          console.warn(
+            `listSessions 失败，将在 ${delay}ms 后重试 (${retryCount.current}/${MAX_RETRIES})`,
+            err,
+          );
+          retryTimer.current = setTimeout(loadSessions, delay);
+        } else {
+          console.error('listSessions 全部重试失败', err);
+          dispatch({ type: 'SESSIONS_LOAD_ERROR' });
+        }
+      }
+    };
+
+    loadSessions();
+
+    return () => {
+      cancelled = true;
+      abortRef.current?.abort();
+      if (retryTimer.current !== null) {
+        clearTimeout(retryTimer.current);
+        retryTimer.current = null;
+      }
+    };
   }, [dispatch]);
 
   const handleNewSession = async () => {

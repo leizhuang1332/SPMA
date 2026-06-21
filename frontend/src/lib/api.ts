@@ -5,10 +5,11 @@ import type {
   PaginatedResponse, SessionHistoryResponse,
 } from '@/types/api';
 
-async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
+async function fetchJSON<T>(path: string, init?: RequestInit, signal?: AbortSignal): Promise<T> {
   const res = await fetch(`${API_BASE_URL}${path}`, {
     credentials: 'include',
     headers: { 'Content-Type': 'application/json', ...init?.headers },
+    signal,
     ...init,
   });
   if (!res.ok) {
@@ -54,21 +55,25 @@ export function createSession(title?: string): Promise<{ session_id: string; cre
   });
 }
 
-export function getSession(sessionId: string): Promise<SessionRecord> {
-  return fetchJSON<SessionRecord>(`/sessions/${sessionId}`);
+export function getSession(sessionId: string, signal?: AbortSignal): Promise<SessionRecord> {
+  return fetchJSON<SessionRecord>(`/sessions/${sessionId}`, undefined, signal);
 }
 
-export function listSessions(params?: { limit?: number; offset?: number }): Promise<SessionRecord[]> {
+export function listSessions(
+  params?: { limit?: number; offset?: number },
+  signal?: AbortSignal,
+): Promise<SessionRecord[]> {
   const sp = new URLSearchParams();
   if (params?.limit) sp.set('limit', String(params.limit));
   if (params?.offset) sp.set('offset', String(params.offset));
   const qs = sp.toString();
-  return fetchJSON<SessionRecord[]>(`/sessions${qs ? `?${qs}` : ''}`);
+  return fetchJSON<SessionRecord[]>(`/sessions${qs ? `?${qs}` : ''}`, undefined, signal);
 }
 
 export function getSessionHistory(
   sessionId: string,
   params?: { limit?: number; offset?: number },
+  signal?: AbortSignal,
 ): Promise<SessionHistoryResponse> {
   const sp = new URLSearchParams();
   if (params?.limit) sp.set('limit', String(params.limit));
@@ -76,6 +81,8 @@ export function getSessionHistory(
   const qs = sp.toString();
   return fetchJSON<SessionHistoryResponse>(
     `/sessions/${sessionId}/history${qs ? `?${qs}` : ''}`,
+    undefined,
+    signal,
   );
 }
 

@@ -157,14 +157,19 @@ class SessionStore:
         return session_id in self._memory_sessions
 
     async def list_sessions(self, user_id: str = "", limit: int = 50, offset: int = 0) -> list[dict]:
-        """列出会话列表（按 updated_at 降序）。"""
+        """列出会话列表（按 updated_at 降序），包含第一条 query_text 用于侧边栏预览。"""
         if self._use_db:
             async with self._db_pool.acquire() as conn:
                 rows = await conn.fetch(
-                    """SELECT session_id, title, user_id, created_at, updated_at
-                       FROM sessions
-                       WHERE ($1 = '' OR user_id = $1)
-                       ORDER BY updated_at DESC
+                    """SELECT s.session_id, s.title, s.user_id, s.created_at, s.updated_at,
+                              (SELECT t.original_query
+                               FROM agent_traces t
+                               WHERE t.session_id = s.session_id
+                               ORDER BY t.created_at ASC
+                               LIMIT 1) AS first_query_text
+                       FROM sessions s
+                       WHERE ($1 = '' OR s.user_id = $1)
+                       ORDER BY s.updated_at DESC
                        LIMIT $2 OFFSET $3""",
                     user_id, limit, offset,
                 )
@@ -173,18 +178,30 @@ class SessionStore:
                     "session_id": row["session_id"],
                     "title": row["title"],
                     "user_id": row["user_id"],
+                    "first_query_text": row["first_query_text"],
                     "created_at": row["created_at"].isoformat() if hasattr(row["created_at"], "isoformat") else str(row["created_at"]),
                     "updated_at": row["updated_at"].isoformat() if hasattr(row["updated_at"], "isoformat") else str(row["updated_at"]),
                 }
                 for row in rows
             ]
-        # 内存模式
+        # 内存模式：也返回 first_query_text
         sessions = sorted(
             self._memory_sessions.values(),
             key=lambda s: s.get("updated_at", ""),
             reverse=True,
         )
-        return sessions[offset:offset + limit]
+        result = []
+        for s in sessions[offset:offset + limit]:
+            turns = self._memory_turns.get(s["session_id"], [])
+            result.append({
+                "session_id": s["session_id"],
+                "title": s.get("title"),
+                "user_id": s.get("user_id", ""),
+                "first_query_text": turns[0].get("query_text") if turns else None,
+                "created_at": s["created_at"],
+                "updated_at": s["updated_at"],
+            })
+        return result
 
     async def update_session_title(self, session_id: str, title: str) -> None:
         """更新会话标题。"""

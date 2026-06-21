@@ -78,6 +78,7 @@ export interface AppState {
   currentQuery: QueryState;
   detailPanelMode: DetailPanelMode;
   highlightedSourceIndex: number | null;
+  sessionsLoadError: boolean;
 }
 
 const initialWorkerState: WorkerState = { status: 'idle', sub_steps: [], current_step: undefined };
@@ -104,6 +105,7 @@ const initialState: AppState = {
   },
   detailPanelMode: 'idle',
   highlightedSourceIndex: null,
+  sessionsLoadError: false,
 };
 
 // ═══════════════════════════════════════════
@@ -134,7 +136,8 @@ type Action =
   | { type: 'SET_DETAIL_MODE'; mode: DetailPanelMode }
   | { type: 'HIGHLIGHT_SOURCE'; index: number | null }
   | { type: 'SET_ELAPSED'; elapsed: number }
-  | { type: 'RESET_QUERY' };
+  | { type: 'RESET_QUERY' }
+  | { type: 'SESSIONS_LOAD_ERROR' };
 
 // ═══════════════════════════════════════════
 // Helpers
@@ -168,7 +171,19 @@ function updateSubStep(
 function appReducer(state: AppState, action: Action): AppState {
   switch (action.type) {
     case 'SET_SESSIONS':
-      return { ...state, sessions: action.sessions };
+      return {
+        ...state,
+        sessions: action.sessions.map(newSession => {
+          const existing = state.sessions.find(s => s.session_id === newSession.session_id);
+          // Preserve turns from existing state if they were loaded via SET_SESSION_TURNS
+          // (the list endpoint may not include turns)
+          if (existing?.turns?.length) {
+            return { ...newSession, turns: existing.turns };
+          }
+          return newSession;
+        }),
+        sessionsLoadError: false,
+      };
 
     case 'SET_CURRENT_SESSION':
       return { ...state, currentSessionId: action.sessionId };
@@ -423,15 +438,36 @@ function appReducer(state: AppState, action: Action): AppState {
     case 'SET_ELAPSED':
       return { ...state, currentQuery: { ...state.currentQuery, elapsed_ms: action.elapsed } };
 
-    case 'SET_SESSION_TURNS':
+    case 'SET_SESSION_TURNS': {
+      const exists = state.sessions.some(s => s.session_id === action.sessionId);
+      if (exists) {
+        return {
+          ...state,
+          sessions: state.sessions.map(s =>
+            s.session_id === action.sessionId
+              ? { ...s, turns: action.turns }
+              : s
+          ),
+        };
+      }
+      // Session not in list yet (e.g. history loaded before listSessions)
+      // Create a placeholder entry to preserve the turns data
       return {
         ...state,
-        sessions: state.sessions.map(s =>
-          s.session_id === action.sessionId
-            ? { ...s, turns: action.turns }
-            : s
-        ),
+        sessions: [
+          ...state.sessions,
+          {
+            session_id: action.sessionId,
+            turns: action.turns,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          },
+        ],
       };
+    }
+
+    case 'SESSIONS_LOAD_ERROR':
+      return { ...state, sessionsLoadError: true };
 
     case 'RESET_QUERY':
       return { ...state, currentQuery: initialState.currentQuery, detailPanelMode: 'idle' };

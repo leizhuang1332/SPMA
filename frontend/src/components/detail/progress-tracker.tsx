@@ -121,7 +121,7 @@ export default function ProgressTracker() {
                 currentQuery.workers[node.worker]?.sub_steps?.length > 0
               ) && (
                 <div className="pl-6 border-l-2 border-[var(--primary)] ml-4 my-1 space-y-0.5">
-                  {currentQuery.workers[node.worker]!.sub_steps!.map((step, i) => (
+                  {currentQuery.workers[node.worker]!.sub_steps!.map((step) => (
                     <div
                       key={step.name}
                       className="flex items-center gap-2 py-0.5 text-[10px]"

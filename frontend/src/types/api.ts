@@ -173,6 +173,7 @@ export interface SessionHistoryResponse {
 export interface SessionRecord {
   session_id: string;
   turns: QueryRecord[];
+  first_query_text?: string | null;
   created_at: string;
   updated_at: string;
 }

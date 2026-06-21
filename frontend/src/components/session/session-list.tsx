@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { useAppContext } from '@/context/app-context';
 import SessionItem from './session-item';
 import * as api from '@/lib/api';
@@ -10,7 +10,7 @@ export default function SessionList() {
   const [search, setSearch] = useState('');
 
   const filtered = state.sessions.filter(s => {
-    const text = s.turns?.[0]?.query_text ?? '';
+    const text = s.first_query_text ?? s.turns?.[0]?.query_text ?? '';
     return text.toLowerCase().includes(search.toLowerCase());
   });
 
@@ -25,6 +25,31 @@ export default function SessionList() {
       dispatch({ type: 'REMOVE_SESSION', sessionId });
     }).catch(console.error);
   };
+
+  const handleRetry = useCallback(() => {
+    api.listSessions({ limit: 50 })
+      .then(sessions => dispatch({ type: 'SET_SESSIONS', sessions }))
+      .catch(() => dispatch({ type: 'SESSIONS_LOAD_ERROR' }));
+  }, [dispatch]);
+
+  // Error state: all retries exhausted
+  if (state.sessionsLoadError && state.sessions.length === 0) {
+    return (
+      <div className="flex-1 flex flex-col min-h-0 px-2">
+        <div className="flex-1 flex flex-col items-center justify-center gap-3 px-4">
+          <p className="text-[11px] text-[var(--muted-foreground)] text-center">
+            会话列表加载失败
+          </p>
+          <button
+            onClick={handleRetry}
+            className="px-3 py-1.5 text-[11px] rounded-[7px] bg-[var(--primary)] text-white hover:opacity-90 transition-opacity active:scale-[0.97]"
+          >
+            点击重试
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex-1 flex flex-col min-h-0 px-2">
@@ -46,7 +71,7 @@ export default function SessionList() {
             onDelete={() => handleDelete(s.session_id)}
           />
         ))}
-        {filtered.length === 0 && (
+        {filtered.length === 0 && !state.sessionsLoadError && (
           <p className="text-[10px] text-[var(--muted-foreground)] text-center py-8">暂无会话</p>
         )}
       </div>
