@@ -137,10 +137,12 @@ async def _run_worker(
     从 dependencies 获取共享检索基础设施（es_client/vector_store/embedder），
     失败时优雅降级返回空结果。
     """
-    original_query = state["original_query"]
     agent_type = dispatch_arg.get("agent_type", "doc")
-    rewritten_query = dispatch_arg.get("rewritten_query", dispatch_arg.get("original_query", original_query))
+    # Send API 会用 dispatch_arg 替换 state，因此所有字段从 dispatch_arg 读取
+    original_query = dispatch_arg.get("original_query") or state.get("original_query", "")
+    rewritten_query = dispatch_arg.get("rewritten_query") or original_query
     query_id = dispatch_arg.get("query_id", "")
+    entities = dispatch_arg.get("entities") or state.get("entities", {})
 
     try:
         if agent_type == "doc":
@@ -175,7 +177,7 @@ async def _run_worker(
                 "rewritten_queries": [rewritten_query],
                 "retriever": None,
                 "query_id": query_id,
-                "entities": state.get("entities", {}),
+                "entities": entities,
             })
             from spma.agents.supervisor.dispatcher import normalize_citations
             citations = result.get("final_results", [])
