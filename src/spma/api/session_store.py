@@ -166,11 +166,14 @@ class SessionStore:
             async with self._db_pool.acquire() as conn:
                 rows = await conn.fetch(
                     """SELECT s.session_id, s.title, s.user_id, s.created_at, s.updated_at,
-                              (SELECT t.original_query
-                               FROM agent_traces t
-                               WHERE t.session_id = s.session_id
-                               ORDER BY t.created_at ASC
-                               LIMIT 1) AS first_query_text
+                              COALESCE(
+                                  (SELECT t.original_query
+                                   FROM agent_traces t
+                                   WHERE t.session_id = s.session_id
+                                   ORDER BY t.created_at ASC
+                                   LIMIT 1),
+                                  s.title
+                              ) AS first_query_text
                        FROM sessions s
                        WHERE ($1 = '' OR s.user_id = $1)
                        ORDER BY s.updated_at DESC
@@ -201,7 +204,7 @@ class SessionStore:
                 "session_id": s["session_id"],
                 "title": s.get("title"),
                 "user_id": s.get("user_id", ""),
-                "first_query_text": turns[0].get("query_text") if turns else None,
+                "first_query_text": turns[0].get("query_text") if turns else s.get("title"),
                 "created_at": s["created_at"],
                 "updated_at": s["updated_at"],
             })

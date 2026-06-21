@@ -11,7 +11,7 @@ interface SessionItemProps {
 }
 
 export default function SessionItem({ session, isActive, onClick, onDelete }: SessionItemProps) {
-  const firstQuery = session.first_query_text ?? session.turns?.[0]?.query_text ?? '新会话';
+  const firstQuery = session.first_query_text ?? session.title ?? session.turns?.[0]?.query_text ?? '新会话';
   const turnCount = session.turns?.length ?? 0;
   const updatedAt = session.updated_at
     ? new Date(session.updated_at).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
