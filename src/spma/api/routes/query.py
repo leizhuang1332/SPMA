@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from typing import AsyncGenerator
 
 from fastapi import APIRouter, HTTPException, Request
-from langchain_core.messages import AIMessageChunk, HumanMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
@@ -588,8 +588,18 @@ async def query_stream(req: QueryStreamRequest, request: Request):
                         if event:
                             yield event
                 elif mode == "messages":
-                    msg, _ = data
-                    if isinstance(msg, AIMessageChunk) and msg.content:
+                    msg, metadata = data
+                    # 只转发 synthesis 节点（或 synthesis 子图）产生的消息，
+                    # 避免将 classify/rewrite/worker 等节点的 LLM 输出误标为 synthesis。
+                    node_name = metadata.get("langgraph_node", "")
+                    is_synthesis = (
+                        node_name == "synthesis"
+                        or node_name.startswith("synthesis:")
+                        or node_name == "generate"  # synthesis 子图的 generate 节点
+                    )
+                    # AIMessageChunk 是 AIMessage 的子类；合成节点返回完整 AIMessage，
+                    # 流式 LLM 调用产生 AIMessageChunk，两者都需要接受。
+                    if is_synthesis and isinstance(msg, AIMessage) and msg.content:
                         content = msg.content
                         if isinstance(content, str) and content:
                             yield {
