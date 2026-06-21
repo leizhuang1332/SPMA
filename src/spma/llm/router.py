@@ -10,6 +10,7 @@
 import logging
 import os
 import threading
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 
 import yaml
@@ -23,6 +24,7 @@ from spma.llm.providers.base import (
     ProviderConfig,
     RetryConfig,
     RoleConfig,
+    StreamChunk,
 )
 from spma.llm.providers.openai_compat import OpenAICompatProvider
 
@@ -210,6 +212,63 @@ class LLMRouter:
                     raise LLMUnavailableError(
                         f"fallback provider '{fallback_cfg.provider}' 也失败: {e2}", cause=e2
                     ) from e2
+        raise LLMUnavailableError(f"Provider '{provider_name}' 不可用且无可用 fallback")
+
+    async def astream(
+        self, messages: list[dict], *, role: str | None = None,
+        model: str | None = None, **kwargs,
+    ) -> AsyncGenerator[StreamChunk, None]:
+        """流式对话——与 chat() 同路由逻辑，但返回异步生成器。"""
+        role_name = role or "default"
+
+        with self._lock:
+            role_cfg = self._roles.get(role_name)
+            if role_cfg is None:
+                role_cfg = self._roles.get("default")
+                if role_cfg is None:
+                    raise LLMConfigError(f"Role '{role_name}' 未配置且无 default role")
+
+            provider_name = role_cfg.provider
+            resolved_model = model or role_cfg.model
+            resolved_kwargs = {
+                "max_tokens": role_cfg.max_tokens,
+                "temperature": role_cfg.temperature,
+            }
+            if role_cfg.thinking:
+                resolved_kwargs["thinking"] = {"type": "enabled", "budget_tokens": 2048}
+            resolved_kwargs.update(role_cfg.extra_kwargs)
+            resolved_kwargs.update(kwargs)
+
+        try:
+            provider = self._providers[provider_name]
+        except KeyError as err:
+            raise LLMConfigError(f"Provider '{provider_name}' 不存在") from err
+
+        try:
+            async for chunk in provider.astream(messages, resolved_model, **resolved_kwargs):
+                yield chunk
+            return
+        except Exception as e:
+            logger.warning(f"Provider '{provider_name}' astream 失败: {e}")
+
+        # 降级到 fallback
+        fallback_cfg = self._roles.get("fallback")
+        if fallback_cfg and fallback_cfg.provider != provider_name:
+            try:
+                fb_provider = self._providers[fallback_cfg.provider]
+            except KeyError:
+                fb_provider = None
+            if fb_provider:
+                logger.info(f"astream 降级到 fallback: {fallback_cfg.provider}/{fallback_cfg.model}")
+                try:
+                    async for chunk in fb_provider.astream(messages, fallback_cfg.model):
+                        yield chunk
+                    return
+                except Exception as e2:
+                    raise LLMUnavailableError(
+                        f"fallback provider '{fallback_cfg.provider}' astream 也失败: {e2}", cause=e2
+                    ) from e2
+
         raise LLMUnavailableError(f"Provider '{provider_name}' 不可用且无可用 fallback")
 
     def set_role(self, role: str, provider: str, model: str, **kwargs) -> None:
