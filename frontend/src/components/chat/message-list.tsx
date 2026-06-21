@@ -17,6 +17,10 @@ export default function MessageList() {
   const turns = session?.turns ?? [];
   const currentPhase = state.currentQuery.phase;
 
+  const isStreaming = ['classifying', 'retrieving', 'synthesizing'].includes(currentPhase);
+  const streamingChunks = state.currentQuery.synthesis.chunks;
+  const streamingAnswer = streamingChunks.join('');
+
   // Derive suggested followups from the current query result (last SSE_DONE event)
   const suggestedFollowups = state.currentQuery.result?.suggested_followups ?? [];
 
@@ -91,8 +95,16 @@ export default function MessageList() {
         );
       })}
 
-      {/* Loading indicator for active query phases */}
-      {(['classifying', 'retrieving', 'synthesizing', 'waiting_confirmation'] as string[]).includes(currentPhase) && (
+      {/* Realtime streaming: show current user input + live AI answer */}
+      {isStreaming && state.pendingQuery && (
+        <div>
+          <UserMessage text={state.pendingQuery} />
+          {streamingAnswer && <AIAnswer text={streamingAnswer} />}
+        </div>
+      )}
+
+      {/* Loading indicator for early phases */}
+      {(['classifying', 'retrieving'] as string[]).includes(currentPhase) && (
         <div className="flex gap-3 mb-4">
           <div className="w-7 h-7 rounded-md bg-[var(--muted)] flex items-center justify-center text-[13px] flex-shrink-0">
             S
@@ -105,8 +117,42 @@ export default function MessageList() {
             <span className="text-[var(--muted-foreground)] text-[13px]">
               {currentPhase === 'classifying' && '正在理解你的问题…'}
               {currentPhase === 'retrieving' && '正在检索多源数据…'}
-              {currentPhase === 'synthesizing' && '正在生成回答…'}
-              {currentPhase === 'waiting_confirmation' && '等待 SQL 确认…'}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Synthesis waiting indicator (when no content yet) */}
+      {currentPhase === 'synthesizing' && !streamingAnswer && (
+        <div className="flex gap-3 mb-4">
+          <div className="w-7 h-7 rounded-md bg-[var(--muted)] flex items-center justify-center text-[13px] flex-shrink-0">
+            S
+          </div>
+          <div
+            className="flex items-center gap-3 bg-[var(--muted)] border rounded-[10px] px-4 py-3"
+            style={{ borderColor: 'var(--border)' }}
+          >
+            <div className="w-[18px] h-[18px] border-2 border-[var(--border)] border-t-[var(--primary)] rounded-full animate-spin" />
+            <span className="text-[var(--muted-foreground)] text-[13px]">
+              正在生成回答…
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Waiting for SQL confirmation */}
+      {currentPhase === 'waiting_confirmation' && (
+        <div className="flex gap-3 mb-4">
+          <div className="w-7 h-7 rounded-md bg-[var(--muted)] flex items-center justify-center text-[13px] flex-shrink-0">
+            S
+          </div>
+          <div
+            className="flex items-center gap-3 bg-[var(--muted)] border rounded-[10px] px-4 py-3"
+            style={{ borderColor: 'var(--border)' }}
+          >
+            <div className="w-[18px] h-[18px] border-2 border-[var(--border)] border-t-[var(--primary)] rounded-full animate-spin" />
+            <span className="text-[var(--muted-foreground)] text-[13px]">
+              等待 SQL 确认…
             </span>
           </div>
         </div>

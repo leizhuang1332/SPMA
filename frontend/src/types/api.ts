@@ -104,6 +104,12 @@ export interface DataFreshness {
 // Query
 // ═══════════════════════════════════════════
 
+export interface QueryStreamRequest {
+  query: string;
+  session_id: string;
+  sources_hint?: SourceType[];
+}
+
 export interface QueryRequest {
   query: string;
   session_id?: string;
@@ -141,6 +147,23 @@ export interface QueryRecord {
   latency_ms?: number;
   user_feedback?: 'positive' | 'negative' | 'none';
   created_at: string;
+}
+
+// ═══════════════════════════════════════════
+// Session History
+// ═══════════════════════════════════════════
+
+export interface SessionHistoryTurn {
+  query_text: string;
+  answer: string;
+  tool_calls: Array<{ id: string; name: string; args: Record<string, unknown> }>;
+}
+
+export interface SessionHistoryResponse {
+  turns: SessionHistoryTurn[];
+  total: number;
+  offset: number;
+  limit: number;
 }
 
 // ═══════════════════════════════════════════

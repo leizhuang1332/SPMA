@@ -3,7 +3,7 @@
 import React, { createContext, useContext, useReducer } from 'react';
 import type {
   SessionRecord, Source, DegradationInfo,
-  WorkerName, SourceType,
+  WorkerName, SourceType, QueryRecord,
   SSEClassificationEvent, SSEWorkerProgressEvent, SSEWorkerResultEvent,
   SSESynthesisEvent, SSEDoneEvent, SSEErrorEvent, SSEConfirmationRequiredEvent,
   DataFreshness,
@@ -61,6 +61,7 @@ export interface QueryState {
 export interface AppState {
   sessions: SessionRecord[];
   currentSessionId: string | null;
+  pendingQuery: string;
   currentQuery: QueryState;
   detailPanelMode: DetailPanelMode;
   highlightedSourceIndex: number | null;
@@ -71,6 +72,7 @@ const initialWorkerState: WorkerState = { status: 'idle' };
 const initialState: AppState = {
   sessions: [],
   currentSessionId: null,
+  pendingQuery: '',
   currentQuery: {
     phase: 'idle',
     supervisor: { status: 'idle' },
@@ -99,7 +101,8 @@ type Action =
   | { type: 'SET_CURRENT_SESSION'; sessionId: string | null }
   | { type: 'REMOVE_SESSION'; sessionId: string }
   | { type: 'ADD_SESSION'; session: SessionRecord }
-  | { type: 'QUERY_START' }
+  | { type: 'QUERY_START'; query: string }
+  | { type: 'SET_SESSION_TURNS'; sessionId: string; turns: QueryRecord[]; total: number }
   | { type: 'SSE_CLASSIFICATION'; data: SSEClassificationEvent }
   | { type: 'SSE_WORKER_START'; worker: WorkerName }
   | { type: 'SSE_WORKER_PROGRESS'; worker: WorkerName; data: SSEWorkerProgressEvent }
@@ -146,6 +149,7 @@ function appReducer(state: AppState, action: Action): AppState {
     case 'QUERY_START':
       return {
         ...state,
+        pendingQuery: action.query,
         currentQuery: { ...initialState.currentQuery, phase: 'classifying' },
         detailPanelMode: 'progress',
       };
@@ -242,25 +246,45 @@ function appReducer(state: AppState, action: Action): AppState {
         },
       };
 
-    case 'SSE_DONE':
+    case 'SSE_DONE': {
+      const completedTurn: QueryRecord = {
+        query_id: action.data.query_id,
+        session_id: state.currentSessionId ?? '',
+        query_text: state.pendingQuery,
+        answer: state.currentQuery.synthesis.chunks.join(''),
+        sources: action.sources,
+        latency_ms: action.data.latency_ms,
+        user_feedback: 'none',
+        created_at: new Date().toISOString(),
+      };
+
+      const updatedSessions = state.sessions.map(s =>
+        s.session_id === state.currentSessionId
+          ? { ...s, turns: [...(s.turns ?? []), completedTurn] }
+          : s
+      );
+
       return {
         ...state,
+        sessions: updatedSessions,
+        pendingQuery: '',
         currentQuery: {
           ...state.currentQuery,
-          phase: 'done',
+          phase: 'done' as const,
           queryId: action.data.query_id,
-          synthesis: { ...state.currentQuery.synthesis, status: 'done' },
+          synthesis: { ...state.currentQuery.synthesis, status: 'done' as const },
           degradation: action.data.degradation,
           result: {
-            answer: state.currentQuery.synthesis.chunks.join(''),
+            answer: completedTurn.answer!,
             sources: action.sources,
             suggested_followups: action.data.suggested_followups ?? [],
             data_freshness: action.dataFreshness,
             latency_ms: action.data.latency_ms,
           },
         },
-        detailPanelMode: 'sources',
+        detailPanelMode: 'sources' as const,
       };
+    }
 
     case 'SSE_ERROR':
       return {
@@ -315,6 +339,16 @@ function appReducer(state: AppState, action: Action): AppState {
 
     case 'SET_ELAPSED':
       return { ...state, currentQuery: { ...state.currentQuery, elapsed_ms: action.elapsed } };
+
+    case 'SET_SESSION_TURNS':
+      return {
+        ...state,
+        sessions: state.sessions.map(s =>
+          s.session_id === action.sessionId
+            ? { ...s, turns: action.turns }
+            : s
+        ),
+      };
 
     case 'RESET_QUERY':
       return { ...state, currentQuery: initialState.currentQuery, detailPanelMode: 'idle' };

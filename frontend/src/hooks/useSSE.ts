@@ -45,7 +45,7 @@ export function useSSE() {
   ) => {
     // Reset for new query
     reconnectCount.current = 0;
-    dispatch({ type: 'QUERY_START' });
+    dispatch({ type: 'QUERY_START', query });
 
     const controller = new AbortController();
     abortRef.current = controller;
@@ -53,8 +53,7 @@ export function useSSE() {
     const body = JSON.stringify({
       query,
       session_id: sessionId ?? undefined,
-      max_sources: maxSources,
-      timeout_ms: 30000,
+      sources_hint: maxSources,
     });
 
     try {

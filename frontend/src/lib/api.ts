@@ -2,7 +2,7 @@ import { API_BASE_URL, DEFAULT_TIMEOUT_MS } from './constants';
 import type {
   QueryRequest, QueryResponse, QueryRecord, SessionRecord,
   FeedbackRequest, SQLConfirmationRequest,
-  PaginatedResponse,
+  PaginatedResponse, SessionHistoryResponse,
 } from '@/types/api';
 
 async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
@@ -56,6 +56,19 @@ export function createSession(title?: string): Promise<{ session_id: string; cre
 
 export function getSession(sessionId: string): Promise<SessionRecord> {
   return fetchJSON<SessionRecord>(`/sessions/${sessionId}`);
+}
+
+export function getSessionHistory(
+  sessionId: string,
+  params?: { limit?: number; offset?: number },
+): Promise<SessionHistoryResponse> {
+  const sp = new URLSearchParams();
+  if (params?.limit) sp.set('limit', String(params.limit));
+  if (params?.offset) sp.set('offset', String(params.offset));
+  const qs = sp.toString();
+  return fetchJSON<SessionHistoryResponse>(
+    `/sessions/${sessionId}/history${qs ? `?${qs}` : ''}`,
+  );
 }
 
 export function deleteSession(sessionId: string): Promise<void> {
