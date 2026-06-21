@@ -105,11 +105,18 @@ def _merge_turns(messages: list) -> list[dict]:
                 current_turn["answer"] += content
             if hasattr(msg, "tool_calls") and msg.tool_calls:
                 for tc in msg.tool_calls:
-                    current_turn["tool_calls"].append({
-                        "id": getattr(tc, "id", ""),
-                        "name": getattr(tc, "name", ""),
-                        "args": getattr(tc, "args", {}),
-                    })
+                    if isinstance(tc, dict):
+                        current_turn["tool_calls"].append({
+                            "id": tc.get("id", ""),
+                            "name": tc.get("name", ""),
+                            "args": tc.get("args", {}),
+                        })
+                    else:
+                        current_turn["tool_calls"].append({
+                            "id": getattr(tc, "id", ""),
+                            "name": getattr(tc, "name", ""),
+                            "args": getattr(tc, "args", {}),
+                        })
 
     if current_turn is not None and (current_turn["query_text"] or current_turn["answer"]):
         turns.append(current_turn)
