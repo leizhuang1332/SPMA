@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock
-from spma.agents.supervisor.query_rewriter import _evaluate_quality, _normalize_with_synonyms, _resolve_references, _expand_query
+from spma.agents.supervisor.query_rewriter import _evaluate_quality, _normalize_with_synonyms, _resolve_references, _expand_query, _decompose_query
 
 
 class TestResolveReferences:
@@ -168,3 +168,41 @@ class TestExpandQuery:
         result = await _expand_query("用户登录", classification, entities, llm)
         assert "追踪" in result or "login" in result.lower() or "->" in result
         llm.ainvoke.assert_called()
+
+
+class TestDecomposeQuery:
+    """查询分解测试"""
+
+    @pytest.mark.asyncio
+    async def test_decompose_query_no_llm(self):
+        """无 LLM 时返回默认子查询"""
+        result = await _decompose_query("用户登录", {}, ["doc", "code"], None)
+        assert len(result) == 2
+        assert all(r["query"] == "用户登录" for r in result)
+
+    @pytest.mark.asyncio
+    async def test_decompose_query_valid_json(self):
+        """正常 JSON 返回"""
+        llm = AsyncMock()
+        llm.ainvoke.return_value = MagicMock(content='[{"query": "用户登录需求", "target": "doc"}, {"query": "用户登录代码", "target": "code"}]')
+        result = await _decompose_query("用户登录", {}, ["doc", "code"], llm)
+        assert len(result) == 2
+        assert result[0]["target"] == "doc"
+        assert result[1]["target"] == "code"
+
+    @pytest.mark.asyncio
+    async def test_decompose_query_invalid_json_regex_fallback(self):
+        """JSON 解析失败时正则提取"""
+        llm = AsyncMock()
+        llm.ainvoke.return_value = MagicMock(content='Here is the result: [{"query": "用户登录需求", "target": "doc"}, {"query": "用户登录代码", "target": "code"}]')
+        result = await _decompose_query("用户登录", {}, ["doc", "code"], llm)
+        assert len(result) == 2
+
+    @pytest.mark.asyncio
+    async def test_decompose_query_complete_failure(self):
+        """完全解析失败时返回默认子查询"""
+        llm = AsyncMock()
+        llm.ainvoke.return_value = MagicMock(content="这是一段无法解析的文本")
+        result = await _decompose_query("用户登录", {}, ["doc", "code", "sql"], llm)
+        assert len(result) == 3
+        assert all(r["query"] == "用户登录" for r in result)

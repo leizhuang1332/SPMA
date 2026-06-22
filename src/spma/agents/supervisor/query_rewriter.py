@@ -44,19 +44,79 @@ async def rewrite_queries(
     return result
 
 
-async def _decompose_query(query: str, entities: dict, sources: list[str], llm) -> list[dict]:
+async def _decompose_query(
+    query: str,
+    entities: dict,
+    sources: list[str],
+    llm,
+) -> list[dict]:
+    """跨源查询分解：多层级容错"""
+    if not sources:
+        return []
+
+    # 无 LLM 时返回默认子查询
+    if not llm:
+        return [{"query": query, "target": source} for source in sources]
+
+    # Guard against None entities
+    if entities is None:
+        entities = {}
+
+    import re
+
     entities_str = str({k: v for k, v in entities.items() if v})
-    prompt = f"""将以下复杂查询分解为 2-4 个独立的子查询，每个子查询面向单一数据源。
+
+    prompt = f"""将以下复杂查询分解为 {len(sources)} 个独立的子查询，每个子查询面向单一数据源。
+
 已抽取实体: {entities_str}
 可用数据源: {', '.join(sources)}
 用户查询: {query}
-输出 JSON: [{{"query": "子查询", "target": "doc|code|sql"}}, ...]"""
-    resp_obj = await llm.ainvoke(prompt)
-    resp = resp_obj.content
+
+输出格式要求：
+- 必须输出合法的 JSON 数组
+- 每个元素包含 "query" 和 "target" 两个字段
+- "target" 必须是 {', '.join(sources)} 中的一个
+- 子查询应覆盖原始查询的所有核心意图
+
+输出示例：
+[{{"query": "子查询1", "target": "doc"}}, {{"query": "子查询2", "target": "code"}}]"""
+
     try:
-        return json.loads(resp)
-    except json.JSONDecodeError:
-        return []
+        resp_obj = await llm.ainvoke(prompt)
+        resp = resp_obj.content
+
+        # 策略1：直接 JSON 解析
+        try:
+            return json.loads(resp)
+        except json.JSONDecodeError:
+            pass
+
+        # 策略2：正则提取 JSON 数组
+        json_match = re.search(r'\[.*\]', resp, re.DOTALL)
+        if json_match:
+            try:
+                return json.loads(json_match.group())
+            except json.JSONDecodeError:
+                pass
+
+        # 策略3：提取键值对
+        target_patterns = {
+            source: re.search(rf'{source}[\s:]+["\']([^"\']+)["\']', resp)
+            for source in sources
+        }
+        result = []
+        for source, pattern in target_patterns.items():
+            if pattern:
+                result.append({"query": pattern.group(1), "target": source})
+
+        if result:
+            return result
+
+        # 策略4：兜底——每个 source 返回原始查询
+        return [{"query": query, "target": source} for source in sources]
+
+    except Exception:
+        return [{"query": query, "target": source} for source in sources]
 
 
 async def _normalize_with_synonyms(
