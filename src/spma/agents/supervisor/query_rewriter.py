@@ -67,6 +67,34 @@ async def _decompose_query(query: str, entities: dict, sources: list[str], llm) 
         return []
 
 
+async def _normalize_with_synonyms(
+    query: str,
+    synonym_map: dict | None,
+    entities: dict,
+) -> str:
+    """同义词标准化：用户用语 → 系统标准术语"""
+    if not synonym_map:
+        return query
+
+    normalized = query
+
+    # 基于 synonym_map 的术语替换
+    for user_term, system_terms in synonym_map.items():
+        if user_term in normalized:
+            normalized = normalized.replace(user_term, " ".join(system_terms))
+
+    # 基于实体的精确映射
+    entity_terms = []
+    for key in ["table_names", "column_names", "code_refs", "req_ids"]:
+        if key in entities and entities[key]:
+            entity_terms.extend(entities[key])
+
+    if entity_terms:
+        normalized = f"{normalized} {' '.join(entity_terms)}"
+
+    return normalized.strip()
+
+
 async def _evaluate_quality(
     original: str,
     rewritten: str,

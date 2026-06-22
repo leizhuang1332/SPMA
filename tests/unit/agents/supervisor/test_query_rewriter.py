@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock
-from spma.agents.supervisor.query_rewriter import _evaluate_quality
+from spma.agents.supervisor.query_rewriter import _evaluate_quality, _normalize_with_synonyms
 
 
 class TestEvaluateQuality:
@@ -29,3 +29,32 @@ class TestEvaluateQuality:
         llm.ainvoke.return_value = MagicMock(content="invalid")
         score = await _evaluate_quality("用户登录", "用户登录功能", llm)
         assert score == 0.5
+
+
+class TestNormalizeWithSynonyms:
+    """同义词标准化测试"""
+
+    @pytest.mark.asyncio
+    async def test_normalize_with_synonyms_empty_map(self):
+        """synonym_map 为空时直接返回原查询"""
+        result = await _normalize_with_synonyms("用户登录查询", None, {})
+        assert result == "用户登录查询"
+
+    @pytest.mark.asyncio
+    async def test_normalize_with_synonyms_basic(self):
+        """基本同义词替换"""
+        synonym_map = {"用户": ["user", "账号"], "登录": ["login", "authentication"]}
+        entities = {}
+        result = await _normalize_with_synonyms("用户登录", synonym_map, entities)
+        assert "user" in result
+        assert "login" in result
+
+    @pytest.mark.asyncio
+    async def test_normalize_with_synonyms_with_entities(self):
+        """基于实体的精确映射"""
+        synonym_map = {"用户": ["user"]}
+        entities = {"req_ids": ["REQ-001", "REQ-002"], "table_names": ["users"]}
+        result = await _normalize_with_synonyms("用户查询", synonym_map, entities)
+        assert "REQ-001" in result
+        assert "REQ-002" in result
+        assert "users" in result
