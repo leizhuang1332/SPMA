@@ -100,6 +100,8 @@ async def general_query(req: QueryRequest):
         classification=classification,
         entities=entities,
         llm=llm,
+        synonym_map=None,  # API 层面暂不从数据库获取
+        conversation_history=req.conversation_history or "",
     )
 
     # ---- 4. 派发 Worker (并行) ----
