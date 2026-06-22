@@ -46,8 +46,11 @@ class TestNormalizeWithSynonyms:
         synonym_map = {"用户": ["user", "账号"], "登录": ["login", "authentication"]}
         entities = {}
         result = await _normalize_with_synonyms("用户登录", synonym_map, entities)
+        # Verify both "user" and "login" appear, and no "用户"/"登录" remain
         assert "user" in result
         assert "login" in result
+        assert "用户" not in result
+        assert "登录" not in result
 
     @pytest.mark.asyncio
     async def test_normalize_with_synonyms_with_entities(self):

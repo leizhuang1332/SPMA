@@ -78,8 +78,8 @@ async def _normalize_with_synonyms(
 
     normalized = query
 
-    # 基于 synonym_map 的术语替换
-    for user_term, system_terms in synonym_map.items():
+    # 基于 synonym_map 的术语替换（按术语长度降序排列，确保长术语优先匹配）
+    for user_term, system_terms in sorted(synonym_map.items(), key=lambda x: len(x[0]), reverse=True):
         if user_term in normalized:
             normalized = normalized.replace(user_term, " ".join(system_terms))
 
@@ -90,7 +90,10 @@ async def _normalize_with_synonyms(
             entity_terms.extend(entities[key])
 
     if entity_terms:
-        normalized = f"{normalized} {' '.join(entity_terms)}"
+        existing_terms = set(normalized.lower().split())
+        new_terms = [t for t in entity_terms if t.lower() not in existing_terms]
+        if new_terms:
+            normalized = f"{normalized} {' '.join(new_terms)}"
 
     return normalized.strip()
 
