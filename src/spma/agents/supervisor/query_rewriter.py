@@ -65,3 +65,32 @@ async def _decompose_query(query: str, entities: dict, sources: list[str], llm) 
         return json.loads(resp)
     except json.JSONDecodeError:
         return []
+
+
+async def _evaluate_quality(
+    original: str,
+    rewritten: str,
+    llm,
+) -> float:
+    """评估重写查询与原始查询的语义相似度（0-1）"""
+    if not llm:
+        return 0.5
+
+    prompt = f"""评估以下重写查询是否保持了原始查询的核心语义。
+
+评分标准：
+- 1.0：完全一致，语义无偏差
+- 0.8-0.9：略有扩展，但核心语义保持
+- 0.5-0.7：有一定偏差，但仍相关
+- < 0.5：语义偏差严重或完全无关
+
+原始查询: {original}
+重写查询: {rewritten}
+
+评分(0-1):"""
+
+    try:
+        resp_obj = await llm.ainvoke(prompt)
+        return float(resp_obj.content.strip())
+    except (ValueError, AttributeError):
+        return 0.5
