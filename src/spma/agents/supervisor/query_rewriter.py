@@ -98,6 +98,41 @@ async def _normalize_with_synonyms(
     return normalized.strip()
 
 
+async def _resolve_references(
+    query: str,
+    conversation_history: str,
+    llm,
+) -> str:
+    """指代消解：基于对话历史解析指代性表达式"""
+    if not conversation_history:
+        return query
+
+    reference_patterns = ["这个", "那个", "上次", "之前", "刚才", "上述", "此"]
+    has_reference = any(pattern in query for pattern in reference_patterns)
+
+    if not has_reference:
+        return query
+
+    if not llm:
+        return query
+
+    prompt = f"""你是一个上下文理解助手。请根据对话历史，将以下查询中的指代性表达式还原为具体内容。
+
+对话历史：
+{conversation_history}
+
+当前查询：
+{query}
+
+要求：
+1. 将"这个问题"、"那个需求"等指代性表达式替换为具体内容
+2. 保持查询的核心语义不变
+3. 输出还原后的完整查询，不要添加额外解释"""
+
+    resp_obj = await llm.ainvoke(prompt)
+    return resp_obj.content.strip()
+
+
 async def _evaluate_quality(
     original: str,
     rewritten: str,
