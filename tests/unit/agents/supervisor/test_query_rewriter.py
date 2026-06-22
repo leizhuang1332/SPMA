@@ -113,14 +113,58 @@ class TestExpandQuery:
     async def test_expand_query_search_type(self):
         """search 类型扩展"""
         llm = AsyncMock()
+        mock_response = "用户登录 authentication login 涉及哪些需求和代码实现"
         # 第一次调用返回扩展结果，第二次调用返回高质量评分
         llm.ainvoke.side_effect = [
-            MagicMock(content="用户登录 authentication login 涉及哪些需求和代码实现"),
+            MagicMock(content=mock_response),
             MagicMock(content="0.9")
         ]
         classification = {"query_type": "search"}
         entities = {"req_ids": ["REQ-001"]}
         result = await _expand_query("用户登录", classification, entities, llm)
+        assert result == mock_response
         assert "用户登录" in result
-        # 验证 LLM 被调用（至少一次，因为扩展和质量评估都会调用）
+        # 验证 LLM 被调用（扩展和质量评估都会调用）
         assert llm.ainvoke.call_count >= 1
+
+    @pytest.mark.asyncio
+    async def test_expand_query_data_query_type(self):
+        """data_query 类型扩展"""
+        llm = AsyncMock()
+        llm.ainvoke.side_effect = [
+            MagicMock(content="SELECT COUNT(*) FROM users WHERE login_time > '2024-01-01'"),
+            MagicMock(content="0.9")
+        ]
+        classification = {"query_type": "data_query"}
+        entities = {"table_names": ["users"], "column_names": ["login_time"]}
+        result = await _expand_query("用户登录统计", classification, entities, llm)
+        assert "users" in result.lower() or "SELECT" in result.upper()
+        llm.ainvoke.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_expand_query_explain_type(self):
+        """explain 类型扩展"""
+        llm = AsyncMock()
+        llm.ainvoke.side_effect = [
+            MagicMock(content="用户登录功能涉及认证模块 auth.py 和会话管理 session.py"),
+            MagicMock(content="0.9")
+        ]
+        classification = {"query_type": "explain"}
+        entities = {}
+        result = await _expand_query("用户登录", classification, entities, llm)
+        assert "用户登录" in result
+        llm.ainvoke.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_expand_query_trace_type(self):
+        """trace 类型扩展"""
+        llm = AsyncMock()
+        llm.ainvoke.side_effect = [
+            MagicMock(content="追踪：login endpoint -> auth service -> session store"),
+            MagicMock(content="0.9")
+        ]
+        classification = {"query_type": "trace"}
+        entities = {}
+        result = await _expand_query("用户登录", classification, entities, llm)
+        assert "追踪" in result or "login" in result.lower() or "->" in result
+        llm.ainvoke.assert_called()

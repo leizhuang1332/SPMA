@@ -139,6 +139,10 @@ async def _expand_query(
     if not llm:
         return query
 
+    # Guard against None entities
+    if entities is None:
+        entities = {}
+
     query_type = classification.get("query_type", "search")
 
     if query_type == "search":
