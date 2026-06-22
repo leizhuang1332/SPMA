@@ -20,7 +20,7 @@ async def rewrite_queries(
     # Short query expansion (<=30 chars)
     if len(query) <= 30 and llm is not None:
         try:
-            expanded = await _expand_query(query, llm)
+            expanded = await _expand_query(query, classification, entities, llm)
             if expanded:
                 result["expanded"] = expanded
         except Exception as e:
@@ -42,14 +42,6 @@ async def rewrite_queries(
             result[source] = result.get("expanded", query)
 
     return result
-
-
-async def _expand_query(query: str, llm) -> str:
-    prompt = f"为以下用户查询生成 3-5 个相关的搜索关键词或术语（仅输出关键词列表，用逗号分隔）。\n查询: {query}\n关键词:"
-    resp_obj = await llm.ainvoke(prompt)
-    resp = resp_obj.content
-    keywords = [k.strip() for k in resp.split(",") if k.strip()]
-    return f"{query} {' '.join(keywords[:5])}"
 
 
 async def _decompose_query(query: str, entities: dict, sources: list[str], llm) -> list[dict]:
@@ -135,6 +127,78 @@ async def _resolve_references(
     except Exception as e:
         logger.warning(f"指代消解失败: {e}")
         return query  # Fallback to original query on error
+
+
+async def _expand_query(
+    query: str,
+    classification: dict,
+    entities: dict,
+    llm,
+) -> str:
+    """基于意图的查询扩展"""
+    if not llm:
+        return query
+
+    query_type = classification.get("query_type", "search")
+
+    if query_type == "search":
+        prompt = f"""为以下搜索查询生成扩展查询，保留核心语义，增加相关术语和实体。
+
+查询: {query}
+已识别实体: {entities}
+要求:
+1. 保留原始查询的核心语义
+2. 增加相关的技术术语和实体名称
+3. 输出一个扩展后的完整查询（不是关键词列表）
+4. 查询长度控制在原查询的 1.5-2 倍"""
+
+    elif query_type == "data_query":
+        prompt = f"""将以下数据查询扩展为更精确的查询，包含表名、字段名等技术术语。
+
+查询: {query}
+已知表: {entities.get('table_names', [])}
+已知字段: {entities.get('column_names', [])}
+已知指标: {entities.get('metrics', [])}
+要求:
+1. 将中文术语转换为可能的表名/字段名
+2. 保留原始查询的统计意图
+3. 输出扩展后的查询"""
+
+    elif query_type == "explain":
+        prompt = f"""将以下解释性查询扩展为更详细的查询，增加相关的技术概念和实现细节。
+
+查询: {query}
+已识别实体: {entities}
+要求:
+1. 保留原始查询的解释意图
+2. 增加相关的技术概念和实现细节
+3. 输出扩展后的查询"""
+
+    elif query_type == "trace":
+        prompt = f"""将以下追踪查询扩展为更精确的查询，包含具体的追踪路径和关联实体。
+
+查询: {query}
+已识别实体: {entities}
+要求:
+1. 保留原始查询的追踪意图
+2. 增加具体的追踪路径和关联实体
+3. 输出扩展后的查询"""
+
+    else:
+        return query
+
+    try:
+        resp_obj = await llm.ainvoke(prompt)
+        expanded = resp_obj.content.strip()
+
+        # 质量校验：质量低于 0.5 时回退到原查询
+        if await _evaluate_quality(query, expanded, llm) < 0.5:
+            return query
+
+        return expanded
+    except Exception as e:
+        logger.warning(f"查询扩展失败: {e}")
+        return query
 
 
 async def _evaluate_quality(

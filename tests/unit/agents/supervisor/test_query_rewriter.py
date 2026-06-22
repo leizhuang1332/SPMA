@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock
-from spma.agents.supervisor.query_rewriter import _evaluate_quality, _normalize_with_synonyms, _resolve_references
+from spma.agents.supervisor.query_rewriter import _evaluate_quality, _normalize_with_synonyms, _resolve_references, _expand_query
 
 
 class TestResolveReferences:
@@ -89,3 +89,38 @@ class TestNormalizeWithSynonyms:
         assert "REQ-001" in result
         assert "REQ-002" in result
         assert "users" in result
+
+
+class TestExpandQuery:
+    """查询扩展测试"""
+
+    @pytest.mark.asyncio
+    async def test_expand_query_no_llm(self):
+        """无 LLM 时返回原查询"""
+        classification = {"query_type": "search"}
+        result = await _expand_query("用户登录", classification, {}, None)
+        assert result == "用户登录"
+
+    @pytest.mark.asyncio
+    async def test_expand_query_unknown_type(self):
+        """未知 query_type 时返回原查询"""
+        llm = AsyncMock()
+        classification = {"query_type": "unknown_type"}
+        result = await _expand_query("用户登录", classification, {}, llm)
+        assert result == "用户登录"
+
+    @pytest.mark.asyncio
+    async def test_expand_query_search_type(self):
+        """search 类型扩展"""
+        llm = AsyncMock()
+        # 第一次调用返回扩展结果，第二次调用返回高质量评分
+        llm.ainvoke.side_effect = [
+            MagicMock(content="用户登录 authentication login 涉及哪些需求和代码实现"),
+            MagicMock(content="0.9")
+        ]
+        classification = {"query_type": "search"}
+        entities = {"req_ids": ["REQ-001"]}
+        result = await _expand_query("用户登录", classification, entities, llm)
+        assert "用户登录" in result
+        # 验证 LLM 被调用（至少一次，因为扩展和质量评估都会调用）
+        assert llm.ainvoke.call_count >= 1
