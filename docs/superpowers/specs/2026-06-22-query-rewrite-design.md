@@ -382,49 +382,49 @@ async def _evaluate_quality(
 
 ## 4. 实施计划
 
-### Phase 1：基础优化（1-2 周）
+**实施方式**：一次性完整实现所有功能
 
-- [ ] 集成 `synonym_map` 参数，实现同义词标准化
-- [ ] 增强 `_decompose_query` 的容错机制（多层级降级）
-- [ ] 增加 `conversation_history` 参数支持
-- [ ] 更新 `graph.py` 调用处，传递新参数
+### 实施清单
 
-### Phase 2：质量提升（2-3 周）
-
-- [ ] 实现基于意图的查询扩展策略（search/data_query/explain/trace）
-- [ ] 实现指代消解功能（LLM 驱动，完整对话历史）
-- [ ] 实现重写质量评估（每次重写调用 LLM）
-- [ ] 实现质量门降级机制
-
-### Phase 3：持续优化（持续）
-
-- [ ] 创建 `rewrite_logs` 表
-- [ ] 实现自动记录重写日志
-- [ ] 实现人工抽检流程
-- [ ] 实现 A/B 测试框架（`rewrite_strategy` 参数）
+- [ ] 实现同义词标准化（`_normalize_with_synonyms`）
+- [ ] 实现指代消解（`_resolve_references`）
+- [ ] 实现四类意图感知扩展（`_expand_query`）
+- [ ] 实现多层级容错分解（`_decompose_query`）
+- [ ] 实现质量评估 + 质量门降级机制（`_evaluate_quality`）
+- [ ] 实现轻量级日志（logging 模块）
+- [ ] 更新 `graph.py` 调用处，传递 `synonym_map` 和 `conversation_history` 参数
+- [ ] 更新 API routes 调用处
 
 ---
 
-## 5. 数据库设计
+## 5. 日志方案（轻量级）
 
-### 5.1 rewrite_logs 表
+采用内存/日志框架方式，不创建数据库表。
 
-```sql
-CREATE TABLE rewrite_logs (
-    id SERIAL PRIMARY KEY,
-    query_id UUID NOT NULL,
-    original_query TEXT NOT NULL,
-    rewritten_query TEXT NOT NULL,
-    query_type TEXT NOT NULL,
-    sources TEXT[],
-    quality_score FLOAT,
-    worker_result_counts JSONB,
-    created_at TIMESTAMP DEFAULT NOW()
-);
+### 5.1 日志格式
 
-CREATE INDEX idx_rewrite_logs_query_id ON rewrite_logs(query_id);
-CREATE INDEX idx_rewrite_logs_created_at ON rewrite_logs(created_at);
+使用 Python `logging` 模块，每次重写操作记录：
+
+```python
+logger.info(f"Query rewrite: original={query[:50]}, "
+            f"quality_score={score}, "
+            f"sources={sources}, "
+            f"expanded={expanded[:50] if expanded else None}")
 ```
+
+### 5.2 日志内容
+
+- 原始查询（前 50 字符）
+- 质量评分
+- 目标数据源
+- 扩展/分解结果摘要
+
+### 5.3 后续扩展
+
+如需更详细的日志，可后续添加：
+- 持久化到 `rewrite_logs` 表
+- 人工抽检流程
+- A/B 测试框架（`rewrite_strategy` 参数）
 
 ---
 
