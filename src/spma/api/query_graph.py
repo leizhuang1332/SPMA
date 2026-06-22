@@ -423,11 +423,11 @@ def build_query_orchestrator_graph() -> StateGraph:
 
     图结构：
     ```
-    classify → rewrite → dispatch ──Send API──┬─ doc_worker ─┐
-                                               ├─ code_worker ─┼─→ synthesis → quality ─┬→ END
-                                               └─ sql_worker ─┘                         │
-                                                        ↑                               │
-                                                        └─── reschedule ←── < 0.6 ──────┘
+    classify → rewrite → dispatch ──Send API────┬─ doc_worker ──┐
+                            ↑                   ├─ code_worker ─┼─→ synthesis → quality ──→ END
+                            │                   └─ sql_worker ──┘                  │
+                            │                                                      │
+                            └───────────────────── reschedule ←─────── < 0.6 ──────┘
     ```
     """
     graph = StateGraph(QueryOrchestratorState)

@@ -35,7 +35,7 @@ class PipelineConfig:
     dsn: str = "postgresql+asyncpg://spma:spma123@localhost:5433/spma"
 
     vector_top_k: int = 20
-    bm25_top_k: int = 20
+    bm25_top_k: int = 2
     hybrid_final_top_k: int = 15
 
     rrf_k: int = 60
@@ -150,6 +150,18 @@ class AdvancedLlamaIndexPipeline:
 
         retriever = self._build_retriever(mode, entities)
         nodes = await retriever.aretrieve(query_bundle)
+
+        bm25_nodes = [n for n in nodes if n.node.metadata.get("retrieval_source") == "bm25"]
+        vector_nodes = [n for n in nodes if n.node.metadata.get("retrieval_source") != "bm25"]
+        print("=" * 50)
+        print(f"[BM25 召回] 共 {len(bm25_nodes)} 条:")
+        for i, n in enumerate(bm25_nodes, 1):
+            print(f"  {i}. score={n.score:.4f} | id={n.node.node_id} | {n.node.get_content()[:60]}")
+        print("-" * 50)
+        print(f"[向量召回] 共 {len(vector_nodes)} 条:")
+        for i, n in enumerate(vector_nodes, 1):
+            print(f"  {i}. score={n.score:.4f} | id={n.node.node_id} | {n.node.get_content()[:60]}")
+        print("=" * 50)
 
         # 后处理：复用已初始化的 postprocessor 实例
         if self._config.enable_rerank and mode != "precise" and self._reranker is not None:
