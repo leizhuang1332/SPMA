@@ -41,15 +41,9 @@ def build_supervisor_graph(
         return {"classification": result, "entities": result.get("entities", {})}
 
     async def rewrite_node(state: SupervisorState) -> dict:
-        # 获取 synonym_map（如果可用）
+        # synonym_map 暂未实现，保持为 None
+        # 后续可以通过 spma.api.dependencies 获取
         synonym_map = None
-        try:
-            from spma.api.dependencies import get_synonym_map_store
-            store = get_synonym_map_store()
-            if store:
-                synonym_map = store
-        except Exception:
-            pass
 
         rewritten = await rewrite_queries(
             query=state["original_query"],
