@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock
-from spma.agents.supervisor.query_rewriter import _evaluate_quality, _normalize_with_synonyms, _resolve_references, _expand_query, _decompose_query
+from spma.agents.supervisor.query_rewriter import _evaluate_quality, _normalize_with_synonyms, _resolve_references, _expand_query, _decompose_query, rewrite_queries
 
 
 class TestResolveReferences:
@@ -206,3 +206,76 @@ class TestDecomposeQuery:
         result = await _decompose_query("用户登录", {}, ["doc", "code", "sql"], llm)
         assert len(result) == 3
         assert all(r["query"] == "用户登录" for r in result)
+
+    @pytest.mark.asyncio
+    async def test_decompose_query_none_entities(self):
+        """entities 为 None 时正常处理"""
+        from spma.agents.supervisor.query_rewriter import _decompose_query
+        llm = AsyncMock()
+        llm.ainvoke.return_value = MagicMock(content='[{"query": "用户登录需求", "target": "doc"}]')
+        result = await _decompose_query("用户登录", None, ["doc", "code"], llm)
+        assert len(result) >= 1
+
+
+class TestRewriteQueries:
+    """主函数集成测试"""
+
+    @pytest.mark.asyncio
+    async def test_rewrite_queries_basic(self):
+        """基本调用：参数完整但无 LLM"""
+        classification = {"sources": ["doc", "code"], "is_cross_source": True}
+        result = await rewrite_queries(
+            query="用户登录",
+            classification=classification,
+            entities={"req_ids": ["REQ-001"]},
+            llm=None,
+        )
+        assert result["original"] == "用户登录"
+        assert "normalized" in result
+        assert "doc" in result
+        assert "code" in result
+
+    @pytest.mark.asyncio
+    async def test_rewrite_queries_with_synonym_map(self):
+        """同义词映射生效"""
+        classification = {"sources": ["doc"], "is_cross_source": False}
+        synonym_map = {"用户": ["user", "账号"]}
+        result = await rewrite_queries(
+            query="用户登录",
+            classification=classification,
+            entities={},
+            llm=None,
+            synonym_map=synonym_map,
+        )
+        assert "user" in result["normalized"]
+        assert "账号" in result["normalized"]
+
+    @pytest.mark.asyncio
+    async def test_rewrite_queries_with_conversation_history(self):
+        """指代消解生效"""
+        llm = AsyncMock()
+        llm.ainvoke.return_value = MagicMock(content="用户登录 authentication login 涉及哪些需求")
+        classification = {"sources": ["doc"], "is_cross_source": False, "query_type": "search"}
+        result = await rewrite_queries(
+            query="这个问题",
+            classification=classification,
+            entities={},
+            llm=llm,
+            conversation_history="用户登录涉及哪些需求和代码",
+        )
+        assert "resolved" in result
+
+    @pytest.mark.asyncio
+    async def test_rewrite_queries_cross_source_decomposition(self):
+        """跨源分解生效"""
+        llm = AsyncMock()
+        llm.ainvoke.return_value = MagicMock(content='[{"query": "用户登录需求", "target": "doc"}, {"query": "用户登录代码", "target": "code"}]')
+        classification = {"sources": ["doc", "code"], "is_cross_source": True, "query_type": "search"}
+        result = await rewrite_queries(
+            query="用户登录",
+            classification=classification,
+            entities={},
+            llm=llm,
+        )
+        assert result["doc"] == "用户登录需求"
+        assert result["code"] == "用户登录代码"

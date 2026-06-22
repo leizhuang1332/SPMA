@@ -44,6 +44,7 @@ async def rewrite_queries(
     result["resolved"] = resolved
 
     # 阶段三：查询扩展（触发条件：查询长度 <= 50 或 query_type == "search"）
+    # 注意：阈值从 30 调整为 50，以覆盖更多中等长度查询的扩展场景
     query_type = classification.get("query_type", "search")
     sources = classification.get("sources", [])
     is_cross_source = classification.get("is_cross_source", False)
@@ -57,11 +58,17 @@ async def rewrite_queries(
 
     # 阶段四：查询分解（仅跨源时执行）
     if is_cross_source and len(sources) > 1 and llm:
-        sub_queries = await _decompose_query(resolved, entities, sources, llm)
-        for sq in sub_queries:
-            target = sq.get("target", "")
-            if target in sources:
-                result[target] = sq.get("query", resolved)
+        try:
+            sub_queries = await _decompose_query(resolved, entities, sources, llm)
+            for sq in sub_queries:
+                target = sq.get("target", "")
+                if target in sources:
+                    result[target] = sq.get("query", resolved)
+        except Exception as e:
+            logger.warning(f"查询分解失败: {e}")
+            # Fallback: 各 source 使用扩展后的查询
+            for source in sources:
+                result[source] = result.get("expanded", resolved)
     else:
         # 非跨源或无 LLM 时，各 source 使用扩展后的查询
         for source in sources:
