@@ -129,8 +129,12 @@ async def _resolve_references(
 2. 保持查询的核心语义不变
 3. 输出还原后的完整查询，不要添加额外解释"""
 
-    resp_obj = await llm.ainvoke(prompt)
-    return resp_obj.content.strip()
+    try:
+        resp_obj = await llm.ainvoke(prompt)
+        return resp_obj.content.strip()
+    except Exception as e:
+        logger.warning(f"指代消解失败: {e}")
+        return query  # Fallback to original query on error
 
 
 async def _evaluate_quality(

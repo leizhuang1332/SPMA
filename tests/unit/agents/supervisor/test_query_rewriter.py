@@ -26,7 +26,9 @@ class TestResolveReferences:
         llm.ainvoke.return_value = MagicMock(content="用户登录 authentication login 涉及哪些需求和代码")
         history = "用户登录涉及哪些需求和代码"
         result = await _resolve_references("这个问题", history, llm)
-        assert "用户登录" in result or "authentication" in result
+        # Verify the reference "这个问题" was replaced (result should be different from input)
+        assert result == "用户登录 authentication login 涉及哪些需求和代码"
+        assert "这个问题" not in result
 
 
 class TestEvaluateQuality:
