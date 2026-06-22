@@ -1,6 +1,32 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock
-from spma.agents.supervisor.query_rewriter import _evaluate_quality, _normalize_with_synonyms
+from spma.agents.supervisor.query_rewriter import _evaluate_quality, _normalize_with_synonyms, _resolve_references
+
+
+class TestResolveReferences:
+    """指代消解测试"""
+
+    @pytest.mark.asyncio
+    async def test_resolve_references_no_history(self):
+        """无对话历史时直接返回原查询"""
+        result = await _resolve_references("用户登录", "", None)
+        assert result == "用户登录"
+
+    @pytest.mark.asyncio
+    async def test_resolve_references_no_reference_words(self):
+        """查询中无指代性词汇时直接返回"""
+        history = "之前我们讨论了用户登录问题"
+        result = await _resolve_references("查询相关代码", history, None)
+        assert result == "查询相关代码"
+
+    @pytest.mark.asyncio
+    async def test_resolve_references_with_llm(self):
+        """有指代词汇且有 LLM 时调用消解"""
+        llm = AsyncMock()
+        llm.ainvoke.return_value = MagicMock(content="用户登录 authentication login 涉及哪些需求和代码")
+        history = "用户登录涉及哪些需求和代码"
+        result = await _resolve_references("这个问题", history, llm)
+        assert "用户登录" in result or "authentication" in result
 
 
 class TestEvaluateQuality:
