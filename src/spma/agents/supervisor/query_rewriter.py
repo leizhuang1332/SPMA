@@ -12,34 +12,65 @@ async def rewrite_queries(
     entities: dict,
     llm,
     synonym_map: dict | None = None,
+    conversation_history: str = "",
 ) -> dict[str, str]:
+    """
+    查询重写主函数 - 五阶段管道
+
+    参数：
+        query: 用户原始查询
+        classification: 分类结果（包含 sources, is_cross_source, query_type）
+        entities: 已抽取的实体
+        llm: LLM 实例
+        synonym_map: 同义词映射表（可选）
+        conversation_history: 对话历史（可选）
+
+    返回：
+        dict[str, str]: 重写结果字典
+            - "original": 原始查询
+            - "normalized": 标准化后的查询
+            - "resolved": 指代消解后的查询
+            - "expanded": 扩展后的查询
+            - "{source}": 面向各数据源的子查询
+    """
     result: dict[str, str] = {"original": query}
+
+    # 阶段一：同义词标准化
+    normalized = await _normalize_with_synonyms(query, synonym_map, entities)
+    result["normalized"] = normalized
+
+    # 阶段二：指代消解
+    resolved = await _resolve_references(normalized, conversation_history, llm)
+    result["resolved"] = resolved
+
+    # 阶段三：查询扩展（触发条件：查询长度 <= 50 或 query_type == "search"）
+    query_type = classification.get("query_type", "search")
     sources = classification.get("sources", [])
     is_cross_source = classification.get("is_cross_source", False)
 
-    # Short query expansion (<=30 chars)
-    if len(query) <= 30 and llm is not None:
-        try:
-            expanded = await _expand_query(query, classification, entities, llm)
-            if expanded:
-                result["expanded"] = expanded
-        except Exception as e:
-            logger.warning(f"查询扩展失败: {e}")
+    should_expand = len(query) <= 50 or query_type == "search"
+    if should_expand and llm:
+        expanded = await _expand_query(resolved, classification, entities, llm)
+        result["expanded"] = expanded
+    else:
+        result["expanded"] = resolved
 
-    # Cross-source decomposition
-    if is_cross_source and len(sources) > 1 and llm is not None:
-        try:
-            sub_queries = await _decompose_query(query, entities, sources, llm)
-            for sq in sub_queries:
-                target = sq.get("target", "")
-                if target in sources:
-                    result[target] = sq.get("query", query)
-        except Exception as e:
-            logger.warning(f"查询分解失败: {e}")
+    # 阶段四：查询分解（仅跨源时执行）
+    if is_cross_source and len(sources) > 1 and llm:
+        sub_queries = await _decompose_query(resolved, entities, sources, llm)
+        for sq in sub_queries:
+            target = sq.get("target", "")
+            if target in sources:
+                result[target] = sq.get("query", resolved)
+    else:
+        # 非跨源或无 LLM 时，各 source 使用扩展后的查询
+        for source in sources:
+            result[source] = result.get("expanded", resolved)
 
-    for source in sources:
-        if source not in result:
-            result[source] = result.get("expanded", query)
+    # 日志记录
+    logger.info(f"Query rewrite: original={query[:50]}, "
+                f"sources={sources}, "
+                f"expanded={result.get('expanded', '')[:50] if result.get('expanded') else None}")
 
     return result
 
