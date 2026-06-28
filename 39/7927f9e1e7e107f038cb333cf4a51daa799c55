@@ -1,0 +1,26 @@
+docs/superpowers/specs/2026-06-28-quality-scoring-v2-design.md
+  s_94504d5aed7f2f::t_98096c9330a009 1-186,191-431,433-636
+  s_94504d5aed7f2f::t_f939ea7545ecb8 187-190
+  s_94504d5aed7f2f::t_de281d6d96bb68 432
+docs/superpowers/plans/2026-06-28-quality-scoring-v2.md
+  s_94504d5aed7f2f::t_ff709239cd7954 1532-1602
+  s_94504d5aed7f2f::t_d6579bf400221e 1053-1054,1064,1069,1099
+  s_94504d5aed7f2f::t_43486b28407af7 1764
+  s_94504d5aed7f2f::t_17f07daf73ec1a 1-1052,1055-1063,1065-1068,1070-1098,1100-1531,1603-1763,1765-2541
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "397927f9e1e7e107f038cb333cf4a51daa799c55",
+  "prompts": {},
+  "sessions": {
+    "s_94504d5aed7f2f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "803e7940-621c-47b1-9092-4d6129397e1c",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "leizhuang <lorcan.lei@jtexpress.com>"
+    }
+  }
+}
