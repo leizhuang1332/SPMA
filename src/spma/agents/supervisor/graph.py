@@ -5,9 +5,12 @@
   -> 质量评估 -> 评分>=0.6 收敛 / <0.6 + 重调度<2 -> 调整参数重派
 """
 
+import asyncio
 import operator
+import logging
 from typing import Literal, Annotated
 
+import asyncpg
 from langgraph.graph import StateGraph, END
 from langgraph.types import Send
 
@@ -16,6 +19,33 @@ from spma.agents.supervisor.classifier_fallback import classify_with_fallback
 from spma.agents.supervisor.query_rewriter import rewrite_queries
 from spma.agents.supervisor.dispatcher import build_dispatches, extract_discovered_entities
 from spma.agents.supervisor.quality import evaluate_workers
+from spma.api.dependencies import get_db_pool
+from spma.ingestion.synonym_map import SynonymMap
+
+logger = logging.getLogger(__name__)
+
+
+async def _load_synonym_map() -> dict[str, list[str]]:
+    """从 DB 加载活跃 synonym_map;DB 异常时降级到空 dict。
+
+    捕获 DB/IO/Runtime 类异常(PostgresError、OSError、TimeoutError、RuntimeError),
+    编程错误(KeyError、TypeError 等)仍会正常抛出以便测试发现。
+    RuntimeError 包含 db_pool 未初始化的场景(常见于测试和启动期)。
+    """
+    try:
+        syn_map = SynonymMap(get_db_pool())
+        result = await syn_map.query(status="active", limit=1000)
+        synonym_map: dict[str, list[str]] = {}
+        for entry in result["entries"]:
+            synonym_map.setdefault(entry["user_term"], []).append(
+                entry["canonical_term"]
+            )
+        return synonym_map
+    except (asyncpg.PostgresError, OSError, asyncio.TimeoutError, RuntimeError) as e:
+        # RuntimeError 包含 db_pool 未初始化的场景(常见于测试和启动期)
+        # 编程错误(KeyError/TypeError 等)仍会传播
+        logger.info(f"synonym_map unavailable, degrading to empty: {e}")
+        return {}
 
 
 def build_supervisor_graph(
@@ -45,9 +75,8 @@ def build_supervisor_graph(
         return {"classification": result, "entities": result.get("entities", {})}
 
     async def rewrite_node(state: SupervisorState) -> dict:
-        # synonym_map 暂未实现，保持为 None
-        # 后续可以通过 spma.api.dependencies 获取
-        synonym_map = None
+        # P1 修复:从 DB 加载活跃 synonym_map(异常时降级到空 dict)
+        synonym_map = await _load_synonym_map()
 
         if qr_state_lookup is not None:
             weights_v, synonym_v = await qr_state_lookup()

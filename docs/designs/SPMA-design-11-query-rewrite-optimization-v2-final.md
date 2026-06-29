@@ -17,8 +17,8 @@
 
 | ID | 类别 | 缺陷 | 实际代码状态 | 严重程度 |
 |----|------|------|-------------|---------|
-| **G1** | P1 | `synonym_map` SQL 表不存在,但代码已 SELECT 它 | `src/spma/ingestion/synonym_map.py:63` / `freshness.py:98-110` 引用不存在的表 | **🔴 P0 运行报错** |
-| **G2** | P1 | `graph.rewrite_node:50` 硬编码 `synonym_map = None`,含注释"# 暂未实现" | stub 未激活 | **🔴 P0 阻断 P1 验收** |
+| ~~G1~~ | ~~P1~~ | ~~`synonym_map` SQL 表不存在~~ | ✅ 已修复: migration 004 创建表 (commit 3791498f) | - |
+| ~~G2~~ | ~~P1~~ | ~~`graph.rewrite_node:50` 硬编码 `synonym_map = None`~~ | ✅ 已修复: `_load_synonym_map()` 替换 stub (commit c7a156d7 / 9d5fca3f / b3863073) | - |
 | **G3** | P2 | `StrategyOrchestrator` / `FallbackManager` 不存在 | supervisor 模块下无 | 🟡 P1 |
 | **G4** | P2 | `CircuitBreaker` 在 `infrastructure/circuit_breaker.py` 已实现,但 supervisor 模块**未引用** | 已实现但未集成 | 🟢(只缺集成) |
 | **G5** | P3 | `_resolve_references` 是单策略 + 简单关键词匹配 | `query_rewriter.py:243` | 🟡 P1 |

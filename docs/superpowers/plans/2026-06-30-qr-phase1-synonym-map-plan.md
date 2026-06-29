@@ -609,14 +609,14 @@ git commit -m "docs(qr): G1/G2 标记为已修复(P1 完成)
 
 ## 验收 checklist(P1 完成时)
 
-- [ ] Task 1:migration 004 已部署,`test_synonym_table.py` 通过
-- [ ] Task 2:`grep "synonym_map = None" graph.py` 为 0 行,`test_graph_synonym.py` 通过
-- [ ] Task 3:`api/routes/query.py` 已修复
-- [ ] Task 4:`test_synonym_e2e.py` 2 case 通过
-- [ ] Task 5:24h 灰度无 P0 故障
-- [ ] 现有 13 个 supervisor 单测无回归
-- [ ] 主文件 §1.1 G1/G2 标记为已修复
-- [ ] P1 spec 文件 commit
+- [x] Task 1:migration 004 已部署,`test_synonym_table.py` 通过
+- [x] Task 2:`grep "synonym_map = None" graph.py` 为 0 行,`test_graph_synonym.py` 通过
+- [x] Task 3:`api/routes/query.py` 已修复
+- [x] Task 4:`test_synonym_e2e.py` 2 case 通过
+- [ ] Task 5:24h 灰度无 P0 故障(待执行,本 commit 仅完成 runbook + 文档)
+- [x] 现有 13 个 supervisor 单测无回归
+- [x] 主文件 §1.1 G1/G2 标记为已修复
+- [x] P1 spec 文件 commit
 
 ---
 

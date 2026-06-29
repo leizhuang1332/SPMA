@@ -94,13 +94,17 @@ async def general_query(req: QueryRequest):
 
     # ---- 3. 查询改写 ----
     from spma.agents.supervisor.query_rewriter import rewrite_queries
+    from spma.agents.supervisor.graph import _load_synonym_map
+
+    # P1 修复:从 DB 加载(与 graph.rewrite_node 同模式)
+    synonym_map = await _load_synonym_map()
 
     rewritten = await rewrite_queries(
         query=req.query,
         classification=classification,
         entities=entities,
         llm=llm,
-        synonym_map=None,  # API 层面暂不从数据库获取
+        synonym_map=synonym_map,  # CHANGED
         conversation_history=req.conversation_history or "",
     )
 
