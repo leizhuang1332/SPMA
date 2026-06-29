@@ -82,8 +82,9 @@ async def test_l2_lookup_passes_versions_into_sql():
     sql = conn.fetchrow.await_args.args[0]
     assert "weights_version" in sql
     assert "synonym_version" in sql
-    # values must include version 7 and 3
-    assert 7 in conn.fetchrow.await_args.args
+    # positional params: args[1]=hash, [2]=embedding, [3]=threshold, [4]=weights_v, [5]=synonym_v
+    assert conn.fetchrow.await_args.args[4] == 7
+    assert conn.fetchrow.await_args.args[5] == 3
 
 
 @pytest.mark.asyncio

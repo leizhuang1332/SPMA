@@ -9,6 +9,7 @@ import re
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 
+import asyncpg
 import redis
 
 logger = logging.getLogger(__name__)
@@ -129,7 +130,7 @@ class L2Cache:
                     sql, query_hash, list(query_embedding),
                     self._threshold, weights_version, synonym_version,
                 )
-        except Exception as e:
+        except (asyncpg.PostgresError, ConnectionError, TimeoutError, OSError) as e:
             logger.warning("qr l2 lookup failed: %s: %s", type(e).__name__, e)
             return None
         if row is None:
@@ -174,6 +175,6 @@ class L2Cache:
                     ttl_ts, query[:64],
                 )
                 return int(new_id) if new_id is not None else None
-        except Exception as e:
+        except (asyncpg.PostgresError, ConnectionError, TimeoutError, OSError, json.JSONDecodeError) as e:
             logger.warning("qr l2 put failed: %s: %s", type(e).__name__, e)
             return None
