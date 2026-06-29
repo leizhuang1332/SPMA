@@ -4,6 +4,7 @@
 """
 
 import asyncio
+import contextlib
 import json
 import logging
 from datetime import UTC, datetime
@@ -29,6 +30,10 @@ class QrAuditBuffer:
              latency_ms, cache_hit_l1, cache_hit_l2, cache_layer,
              error_stage, fallback_level)
         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12, $13, $14, $15)
+    """
+
+    SQL_FALLBACK_INSERT = """
+        INSERT INTO qr_audit_buffer (payload) VALUES ($1::jsonb)
     """
 
     def __init__(self, pool, *, flush_interval_s: float = 5.0, batch_size: int = 100):
@@ -80,8 +85,18 @@ class QrAuditBuffer:
             async with self._pool.acquire() as conn:
                 await conn.executemany(self.SQL_INSERT, params)
         except Exception as e:
-            logger.warning("qr audit flush failed: %s: %s",
+            logger.warning("qr audit flush failed (%s: %s); persisting to qr_audit_buffer fallback",
                            type(e).__name__, e)
+            try:
+                if self._pool is not None:
+                    async with self._pool.acquire() as conn:
+                        await conn.executemany(
+                            self.SQL_FALLBACK_INSERT,
+                            [(json.dumps(r, ensure_ascii=False),) for r in batch],
+                        )
+            except Exception as e2:
+                logger.warning("qr audit fallback persist also failed: %s: %s",
+                               type(e2).__name__, e2)
             async with self._lock:
                 self._queue = batch + self._queue  # 归还
 
@@ -96,10 +111,8 @@ class QrAuditBuffer:
         if self._task is None:
             return
         self._task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError, Exception):
             await self._task
-        except (asyncio.CancelledError, Exception):
-            pass
         self._task = None
         await self._flush()
 

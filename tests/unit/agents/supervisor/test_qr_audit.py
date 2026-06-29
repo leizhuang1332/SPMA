@@ -51,6 +51,27 @@ async def test_flush_swallows_db_errors_and_retains_records(caplog):
 
 
 @pytest.mark.asyncio
+async def test_flush_falls_back_to_qr_audit_buffer_on_pg_failure():
+    """PG 写入失败时,记录落 qr_audit_buffer 兜底表,不丢失。"""
+    pool = MagicMock()
+    conn = AsyncMock()
+    # executemany 失败(模拟 PG 不可用)
+    conn.executemany = AsyncMock(side_effect=[Exception("pg down"), None])
+    pool.acquire.return_value.__aenter__ = AsyncMock(return_value=conn)
+    pool.acquire.return_value.__aexit__ = AsyncMock(return_value=None)
+
+    buf = QrAuditBuffer(pool=pool, flush_interval_s=3600)
+    await buf.enqueue({"request_id": "1", "ts": "now"})
+    await buf._flush()
+    # 第一次 executemany(qr_request_audit)失败,第二次(qr_audit_buffer 兜底)成功
+    assert conn.executemany.await_count == 2
+    second_sql = conn.executemany.call_args_list[1].args[0]
+    assert "qr_audit_buffer" in second_sql.lower()
+    # batch 仍归还
+    assert len(buf._queue) == 1
+
+
+@pytest.mark.asyncio
 async def test_flush_respects_batch_size():
     pool = MagicMock()
     conn = AsyncMock()
