@@ -6,6 +6,8 @@
 import json
 import logging
 
+import redis
+
 logger = logging.getLogger(__name__)
 
 
@@ -24,15 +26,20 @@ class L1Cache:
     async def get(self, query_hash: str) -> dict | None:
         try:
             raw = await self._redis.get(self._key(query_hash))
-        except Exception as e:
-            logger.warning("qr l1 get failed: %s: %s", type(e).__name__, e)
+        except (redis.RedisError, ConnectionError, TimeoutError, OSError) as e:
+            logger.warning(
+                "qr l1 get failed for hash=%s: %s: %s",
+                query_hash,
+                type(e).__name__,
+                e,
+            )
             return None
         if raw is None:
             return None
         try:
             return json.loads(raw)
         except json.JSONDecodeError:
-            logger.warning("qr l1 payload not json, dropping")
+            logger.warning("qr l1 payload not json, dropping hash=%s", query_hash)
             return None
 
     async def set(self, query_hash: str, payload: dict) -> None:
@@ -42,11 +49,21 @@ class L1Cache:
                 self._ttl,
                 json.dumps(payload, ensure_ascii=False).encode("utf-8"),
             )
-        except Exception as e:
-            logger.warning("qr l1 set failed: %s: %s", type(e).__name__, e)
+        except (redis.RedisError, ConnectionError, TimeoutError, OSError) as e:
+            logger.warning(
+                "qr l1 set failed for hash=%s: %s: %s",
+                query_hash,
+                type(e).__name__,
+                e,
+            )
 
     async def delete(self, query_hash: str) -> None:
         try:
             await self._redis.delete(self._key(query_hash))
-        except Exception as e:
-            logger.warning("qr l1 delete failed: %s: %s", type(e).__name__, e)
+        except (redis.RedisError, ConnectionError, TimeoutError, OSError) as e:
+            logger.warning(
+                "qr l1 delete failed for hash=%s: %s: %s",
+                query_hash,
+                type(e).__name__,
+                e,
+            )

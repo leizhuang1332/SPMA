@@ -54,9 +54,32 @@ async def test_l1_set_calls_setex_with_ttl():
 @pytest.mark.asyncio
 async def test_l1_set_swallows_connection_errors(caplog):
     """Redis 不可用时写 L1 不应阻塞 hot path。"""
+    import logging
+
     from redis.exceptions import ConnectionError
 
     redis = AsyncMock()
     redis.setex = AsyncMock(side_effect=ConnectionError("redis down"))
     l1 = L1Cache(redis)
-    await l1.set("deadbeef", {"rewrite": "x"})  # 不抛异常
+    with caplog.at_level(logging.WARNING):
+        await l1.set("deadbeef", {"rewrite": "x"})  # 不抛异常
+    assert any("qr l1 set failed" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_l1_delete_calls_redis_delete():
+    redis = AsyncMock()
+    redis.delete = AsyncMock(return_value=1)
+    l1 = L1Cache(redis)
+    await l1.delete("deadbeef")
+    redis.delete.assert_awaited_once_with("qr:exact:deadbeef")
+
+
+@pytest.mark.asyncio
+async def test_l1_delete_swallows_connection_errors():
+    from redis.exceptions import ConnectionError
+
+    redis = AsyncMock()
+    redis.delete = AsyncMock(side_effect=ConnectionError("redis down"))
+    l1 = L1Cache(redis)
+    await l1.delete("deadbeef")  # 不抛异常
