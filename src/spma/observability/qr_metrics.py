@@ -14,6 +14,7 @@ HISTOGRAM_CACHE_L2_DISTANCE = "qr_cache_l2_distance"
 COUNTER_FALLBACK = "qr_fallback_total"
 GAUGE_WEIGHT_VERSION = "qr_state_weight_version"
 GAUGE_FLUSH_LAG = "qr_audit_flush_lag_seconds"
+GAUGE_CACHE_HIT_RATIO = "qr_cache_hit_ratio"
 
 
 @dataclass
@@ -26,6 +27,7 @@ class QrMetrics:
     fallback_total: Counter
     weight_version: Gauge
     flush_lag: Gauge
+    cache_hit_ratio: Gauge
 
     def observe_request(self, *, layer: str, stage: str = "rewrite") -> None:
         self.cache_requests.labels(layer=layer, stage=stage).inc()
@@ -47,6 +49,10 @@ class QrMetrics:
 
     def observe_flush_lag(self, *, seconds: float) -> None:
         self.flush_lag.set(seconds)
+
+    def observe_hit_ratio(self, *, layer: str, ratio: float) -> None:
+        """在 1m 滚动窗口里设置命中率(0.0-1.0)."""
+        self.cache_hit_ratio.labels(layer=layer).set(ratio)
 
 
 def build_qr_metrics() -> QrMetrics:
@@ -94,6 +100,12 @@ def build_qr_metrics() -> QrMetrics:
         flush_lag=Gauge(
             GAUGE_FLUSH_LAG,
             "QR audit buffer flush lag seconds",
+            registry=registry,
+        ),
+        cache_hit_ratio=Gauge(
+            GAUGE_CACHE_HIT_RATIO,
+            "QR cache hit ratio (rolling 1m) — labels: {layer}",
+            labelnames=("layer",),
             registry=registry,
         ),
     )

@@ -68,7 +68,20 @@ def test_qr_metrics_well_known_names():
         _family_name(COUNTER_CACHE_ERRORS),
         "qr_cache_latency_seconds",
         "qr_cache_l2_distance",
+        "qr_cache_hit_ratio",        # NEW
         GAUGE_WEIGHT_VERSION,
         "qr_audit_flush_lag_seconds",
     }
     assert expected <= fam_names
+
+
+def test_qr_metrics_hit_ratio():
+    m = build_qr_metrics()
+    m.observe_hit_ratio(layer="l1", ratio=0.65)
+    m.observe_hit_ratio(layer="l2", ratio=0.20)
+    fam_names = {fam.name for fam in m.registry.collect()}
+    assert "qr_cache_hit_ratio" in fam_names
+    samples = {s.labels.get("layer"): s.value for fam in m.registry.collect()
+               if fam.name == "qr_cache_hit_ratio" for s in fam.samples if s.labels}
+    assert samples.get("l1") == 0.65
+    assert samples.get("l2") == 0.20
