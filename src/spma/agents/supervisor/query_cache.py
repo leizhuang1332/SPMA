@@ -3,6 +3,7 @@
 设计依据: docs/superpowers/specs/2026-06-29-qr-cache-and-observability-design.md §3
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -178,3 +179,123 @@ class L2Cache:
         except (asyncpg.PostgresError, ConnectionError, TimeoutError, OSError, json.JSONDecodeError) as e:
             logger.warning("qr l2 put failed: %s: %s", type(e).__name__, e)
             return None
+
+
+class EmbedderProtocol:
+    """最小协议:QueryCache 需要 embedder.embed_query 同步返回 list[float]。"""
+
+    async def embed_query(self, text: str) -> list[float]:  # pragma: no cover
+        ...
+
+
+class QueryCache:
+    """双层缓存编排:L1 精确 → L2 语义(单 SQL)→ compute(回调用)→ 异步回填。
+
+    行为契约:
+      * L1 hit   → 直接返回, layer='l1', 不调 embedder
+      * L1 miss + L2 hit → 返回 L2 结果, layer='l2', 同步回填 L1
+      * L1 miss + L2 miss → 调 compute, layer='miss', 异步回填 L1 + L2
+      * compute 抛 TimeoutError 时**永不**写 L1/L2(防污染)
+      * query 含 PII 时跳过 L2 lookup 与 L2 put(仅写 L1)
+    """
+
+    def __init__(
+        self,
+        *,
+        l1: "L1Cache",
+        l2: "L2Cache",
+        pool,
+        embedder: EmbedderProtocol,
+    ):
+        self._l1 = l1
+        self._l2 = l2
+        self._pool = pool
+        self._embedder = embedder
+
+    async def lookup_or_compute(
+        self,
+        *,
+        query: str,
+        history_fingerprint: str,
+        entities: dict,
+        weights_version: int,
+        synonym_version: int,
+        compute,
+    ) -> dict:
+        from spma.agents.supervisor.qr_state import build_cache_key
+
+        query_hash = build_cache_key(
+            query=query,
+            history_fingerprint=history_fingerprint,
+            entities=entities,
+            weights_version=weights_version,
+            synonym_version=synonym_version,
+        )
+
+        # 1) L1 hit
+        try:
+            hit = await self._l1.get(query_hash)
+        except Exception as e:
+            logger.warning(
+                "qr l1 get raised (degrade to l2): %s: %s",
+                type(e).__name__, e,
+            )
+            hit = None
+        if hit is not None:
+            return {**hit, "cache_layer": "l1"}
+
+        # 2) L2 hit(PII 路径直接跳过)
+        if not contains_pii(query):
+            try:
+                embedding = await self._embedder.embed_query(query)
+                l2_hit = await self._l2.lookup(
+                    query_hash=query_hash,
+                    query_embedding=embedding,
+                    weights_version=weights_version,
+                    synonym_version=synonym_version,
+                )
+            except Exception as e:
+                logger.warning(
+                    "qr l2 lookup raised (degrade to compute): %s: %s",
+                    type(e).__name__, e,
+                )
+                l2_hit = None
+            if l2_hit is not None:
+                # 同步回填 L1(hot path 上做,避免再次落到编排器)
+                await self._l1.set(query_hash, l2_hit["payload"])
+                return {**l2_hit["payload"], "cache_layer": "l2"}
+
+        # 3) compute — 绝不能在 timeout 时落库
+        result = await compute(query=query, entities=entities)  # type: ignore[arg-type]
+        # 必须 compute 成功才回填(异常会向上抛,不会落库)
+        await self._refill(
+            query=query,
+            query_hash=query_hash,
+            result=result,
+            weights_version=weights_version,
+            synonym_version=synonym_version,
+        )
+        return {**result, "cache_layer": "miss"}
+
+    async def _refill(self, *, query, query_hash, result, weights_version, synonym_version):
+        # L1 同步(短 TTL,因为 PII 路径也走 L1)
+        await self._l1.set(query_hash, result)
+        # L2 异步(失败仅日志)
+        if not contains_pii(query):
+            try:
+                embedding = await self._embedder.embed_query(query)
+                asyncio.create_task(
+                    self._l2.put(
+                        query=query,
+                        query_embedding=embedding,
+                        payload=result,
+                        weights_version=weights_version,
+                        synonym_version=synonym_version,
+                        query_hash=query_hash,
+                    )
+                )
+            except Exception as e:
+                logger.warning(
+                    "qr l2 refill embed failed: %s: %s",
+                    type(e).__name__, e,
+                )
