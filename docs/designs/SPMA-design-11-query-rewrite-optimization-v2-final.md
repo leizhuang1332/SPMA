@@ -11,14 +11,59 @@
 
 ## 一、问题回顾：当前实现的核心缺陷
 
-| 缺陷 | 影响 | 严重程度 |
-|------|------|---------|
-| **synonym_map 未启用** | 用户用语无法映射到系统标准术语，召回率下降 | 高 |
-| **指代消解触发条件简单** | 仅关键词匹配，易漏判/误判 | 中 |
-| **缺乏查询缓存** | 每次请求都调用LLM，成本高、延迟大 | 高 |
-| **扩展阈值不灵活** | 固定阈值50，无法自适应调整 | 中 |
-| **分解策略不稳定** | 依赖LLM输出，缺乏规则兜底 | 中 |
-| **缺乏学习机制** | 无法从历史反馈中优化重写策略 | 中 |
+> **更新于 2026-06-29**：本文档为 v3.1 目标态设计;实际代码已经走在 P7 中段(15 个 commit 推进了缓存/审计/状态/指标,详见 §1.2)。下表 §1.1 为"实际未完成项"而非 v3.0 缺陷,§1.2 列出已实现项及改进空间。
+
+### 1.1 实际未完成项(15 项,基于代码核查)
+
+| ID | 类别 | 缺陷 | 实际代码状态 | 严重程度 |
+|----|------|------|-------------|---------|
+| **G1** | P1 | `synonym_map` SQL 表不存在,但代码已 SELECT 它 | `src/spma/ingestion/synonym_map.py:63` / `freshness.py:98-110` 引用不存在的表 | **🔴 P0 运行报错** |
+| **G2** | P1 | `graph.rewrite_node:50` 硬编码 `synonym_map = None`,含注释"# 暂未实现" | stub 未激活 | **🔴 P0 阻断 P1 验收** |
+| **G3** | P2 | `StrategyOrchestrator` / `FallbackManager` 不存在 | supervisor 模块下无 | 🟡 P1 |
+| **G4** | P2 | `CircuitBreaker` 在 `infrastructure/circuit_breaker.py` 已实现,但 supervisor 模块**未引用** | 已实现但未集成 | 🟢(只缺集成) |
+| **G5** | P3 | `_resolve_references` 是单策略 + 简单关键词匹配 | `query_rewriter.py:243` | 🟡 P1 |
+| **G6** | P4 | `_expand_query` 是单策略 + 简单意图感知 | `query_rewriter.py:282` | 🟡 P1 |
+| **G7** | P5 | `_decompose_query` 是单策略 + 4 步 JSON 解析兜底 | `query_rewriter.py:137` | 🟡 P1 |
+| **G8** | P6 | 离线评估 / EMA 权重进化未实现 | 无相关类 | 🟡 P1 |
+| **G9** | P6 | 分布漂移检测(MMD)未实现 | 无相关类 | 🟡 P2 |
+| **G10** | P6 | 人工审核闭环(HumanInTheLoop)未实现 | 无相关类 | 🟡 P2 |
+| **G11** | P7 | `CostController`(分级模型 + 预算)未实现 | 无相关类 | 🟡 P1 |
+| **G12** | P7 | `QPSLimiter` 未实现 | 无相关类 | 🟡 P1 |
+| **G13** | P7 | `PIIDetector` 未实现 | 无相关类 | 🔴 P0(合规) |
+| **G14** | P7 | `PromptInjectionGuard` 未实现 | 无相关类 | 🔴 P0(安全) |
+| **G15** | P8 | `StrategyFeatureFlag` / `RollbackManager` 未实现 | 仅 `qr_state.bump_weights_version` / `write_weights_snapshot` | 🟡 P1 |
+
+### 1.2 已完成项(12 项,基于代码核查)
+
+| 已完成 | 文件 / commit | 改进空间 |
+|--------|--------------|---------|
+| QueryCache(L1 Redis + L2 pgvector + lookup_or_compute) | `query_cache.py` + `0850ef7a` `3831ee87` `bf8ae795` | L2 距离阈值调优;hit/miss 比例监控 |
+| QrAuditBuffer(5s 异步 flush + PG 持久化兜底) | `qr_audit.py` + `81c9cdac` `6249bf96` | 告警规则待补(`qr_audit_flush_lag_seconds`) |
+| qr_state_meta(权重+synonym 版本号 + 快照写入) | `qr_state.py` + migration 002 | 多实例下读写一致性 |
+| 8 项 Prometheus 指标(已实现,见下) | `src/spma/observability/qr_metrics.py` | **指标名与本主文件 §3.11 描述略不同,以代码为准** |
+| OTel trace(`qr.cache.lookup` span) | `b9c983aa` | 待补 `qr.strategy.*` / `qr.fallback` spans |
+| `rewrite_queries` 注入 cache/audit_buffer/versions | `query_rewriter.py:18-60` + `d92cbc0b` | 已与 P7 子系统正确集成 |
+| CircuitBreaker 完整实现(registry + 装饰器 + async lock) | `infrastructure/circuit_breaker.py` | supervisor 模块需引入 |
+| `_normalize_with_synonyms`(单策略 + 长度优先匹配) | `query_rewriter.py:212` | 待扩展为多路 |
+| `_expand_query`(单策略 + LLM 生成) | `query_rewriter.py:282` | 待扩展为多路 |
+| `_decompose_query`(单策略 + 4 步 JSON 兜底) | `query_rewriter.py:137` | 待扩展为多路 |
+| `_resolve_references`(关键词触发 + LLM 替换) | `query_rewriter.py:243` | 待扩展为多路 |
+| 13 个单元测试 + 1 集成测试 | `tests/unit/agents/supervisor/test_*.py` | 覆盖率尚可,待补 P6/P7 缺的测试 |
+
+**已实现的 8 项 Prometheus 指标实际名称**(以 `src/spma/observability/qr_metrics.py` 为准):
+
+| 常量名 | Prometheus name | 含义 |
+|--------|-----------------|------|
+| `COUNTER_CACHE_REQUESTS` | `qr_cache_requests_total` | 缓存请求数,labels={layer, stage} |
+| `COUNTER_CACHE_ERRORS` | `qr_cache_errors_total` | 缓存错误数,labels={layer, error_type} |
+| `HISTOGRAM_CACHE_LATENCY` | `qr_cache_latency_seconds` | 缓存延迟,labels={layer, op} |
+| `HISTOGRAM_CACHE_L2_DISTANCE` | `qr_cache_l2_distance` | L2 余弦距离,labels={match_type} |
+| `COUNTER_FALLBACK` | `qr_fallback_total` | 降级触发,labels={level, stage} |
+| `GAUGE_WEIGHT_VERSION` | `qr_state_weight_version` | 当前权重版本(PG qr_state_meta) |
+| `GAUGE_FLUSH_LAG` | `qr_audit_flush_lag_seconds` | 审计 buffer flush 延迟 |
+| `GAUGE_CACHE_HIT_RATIO` | `qr_cache_hit_ratio` | 1 分钟滚动命中率,labels={layer} |
+
+> ⚠️ **与本主文件 §3.11 表的差异**:主文件原列出 8 个指标(`qr_requests_total` / `qr_latency_seconds` / `qr_llm_calls_total` / `qr_cache_hits_total` / `qr_strategy_weight` / `qr_circuit_breaker_state` / `qr_fallback_level_total` / `qr_budget_used_ratio`)是目标态,**实际代码命名略有不同**。子 spec 中以实际代码为准。
 
 ---
 
@@ -2182,18 +2227,46 @@ async def _evaluate_rewrite_quality(
 
 ---
 
-## 六、实施计划
+## 六、子 spec 索引与实施计划
 
-| 阶段 | 任务 | 时间 | 关键文件 |
-|------|------|------|---------|
-| Phase 1 | 激活 synonym_map，修改调用点 | 1周 | `graph.py`, `query.py` |
-| Phase 2 | 实现策略编排器+熔断器+分级降级基础设施 | 1.5周 | `strategy_orchestrator.py`, `circuit_breaker.py`, `fallback_manager.py` |
-| Phase 3 | 实现多路指代消解+语义投票 | 1.5周 | `query_rewriter.py` |
-| Phase 4 | 实现多路扩展策略+质量评估选择 | 1.5周 | `query_rewriter.py` |
-| Phase 5 | 实现多策略分解+语义聚类一致性校验 | 1.5周 | `query_rewriter.py` |
-| Phase 6 | 实现离线评估+EMA权重进化+运维监控 | 2周 | `strategy_evaluator.py`, `monitor.py` |
-| Phase 7 | 接入查询缓存（语义+结果双层）、成本控制、安全与链路追踪 | 2周 | `query_cache.py`, `cost_controller.py`, `audit.py`, `tracer.py` |
-| Phase 8 | 冷启动、灰度放量与回滚链路 | 1周 | `feature_flag.py`, `rollback.py` |
+> **2026-06-29 v2 拆分声明**:本文档原 §3.0-§3.11 已按 Phase 1-8 拆分为 8 份独立子 spec,采用 **gap-driven** 结构(§1 现状核查基于实际代码,§2 差距分析,§3 详细设计基于现有代码扩展)。**不再从零设计**。
+> 上一次拆分 (commit `42ba24c4`) 因与实际代码不符已回退,本次拆分严格基于 §1.1 G1-G15 实际未完成项。
+
+### 6.0 子 spec 索引(2026-06-29 v2 gap-driven 拆分)
+
+| Phase | 子 spec | 涵盖缺陷 | 状态 | 依赖 | 预估工时 | 优先级 |
+|-------|---------|---------|------|------|---------|--------|
+| Phase 1 | [SPMA-design-11-phase1-synonym-map-activation.md](SPMA-design-11-phase1-synonym-map-activation.md) | G1 / G2 | 待开始 | - | 1 周 | 🔴 P0 |
+| Phase 2 | [SPMA-design-11-phase2-strategy-orchestration.md](SPMA-design-11-phase2-strategy-orchestration.md) | G3 / G4 | 待开始 | P1 | 1 周 | 🟡 P1 |
+| Phase 3 | [SPMA-design-11-phase3-multi-strategy-resolution.md](SPMA-design-11-phase3-multi-strategy-resolution.md) | G5 | 待开始 | P2 | 1 周 | 🟡 P1 |
+| Phase 4 | [SPMA-design-11-phase4-multi-strategy-expansion.md](SPMA-design-11-phase4-multi-strategy-expansion.md) | G6 | 待开始 | P1 + P2 | 1 周 | 🟡 P1 |
+| Phase 5 | [SPMA-design-11-phase5-multi-strategy-decomposition.md](SPMA-design-11-phase5-multi-strategy-decomposition.md) | G7 | 待开始 | P2 | 1 周 | 🟡 P1 |
+| Phase 6 | [SPMA-design-11-phase6-feedback-and-monitoring.md](SPMA-design-11-phase6-feedback-and-monitoring.md) | G8 / G9 / G10 | 待开始 | P3-P5 | 2 周 | 🟡 P1 |
+| Phase 7 | [SPMA-design-11-phase7-production-hardening.md](SPMA-design-11-phase7-production-hardening.md) | G11 / G12 / G13 / G14 | 待开始 | P2 | 2 周 | 🔴 P0 (G13/G14 合规) |
+| Phase 8 | [SPMA-design-11-phase8-rollout-and-rollback.md](SPMA-design-11-phase8-rollout-and-rollback.md) | G15 | 待开始 | P6 + P7 | 1 周 | 🟡 P1 |
+
+**总周期**:10 周(原 v3.1 spec 12 周,因 P7 4 子系统已实现而缩短 2 周)。
+
+**已实现但不在本拆分范围**(详见 §1.2):
+- P7.1 QueryCache(L1+L2)— `query_cache.py`
+- P7.2 QrAuditBuffer(异步 flush)— `qr_audit.py` + migration 003
+- P7.3 qr_state_meta(权重快照)— `qr_state.py` + migration 002
+- P7.4 Prometheus 8 项指标 — `observability/qr_metrics.py`
+- P7.5 OTel trace(`qr.cache.lookup` span)
+- P2 基础设施 CircuitBreaker — `infrastructure/circuit_breaker.py`(已实现,需在 supervisor 模块下接入)
+
+### 6.1 实施计划(原表,与子 spec 对应,供参考)
+
+| 阶段 | 任务 | 时间 | 关键文件 | 对应子 spec |
+|------|------|------|---------|-----------|
+| Phase 1 | 激活 synonym_map，修改调用点 | 1周 | `graph.py`, `query.py` | [P1](SPMA-design-11-phase1-synonym-map-activation.md) |
+| Phase 2 | 实现策略编排器+分级降级(CB 复用已有) | 1周 | `strategy_orchestrator.py`, `fallback_manager.py` | [P2](SPMA-design-11-phase2-strategy-orchestration.md) |
+| Phase 3 | 多路指代消解(基于已有 `_resolve_references`) | 1周 | `reference_strategies.py`, `semantic_voter.py` | [P3](SPMA-design-11-phase3-multi-strategy-resolution.md) |
+| Phase 4 | 多路扩展(基于已有 `_expand_query`) | 1周 | `expansion_strategies.py`, `quality_evaluator.py` | [P4](SPMA-design-11-phase4-multi-strategy-expansion.md) |
+| Phase 5 | 多路分解(基于已有 `_decompose_query`) | 1周 | `decomposition_strategies.py`, `semantic_consensus.py` | [P5](SPMA-design-11-phase5-multi-strategy-decomposition.md) |
+| Phase 6 | 离线评估+EMA+MMD+HITL(指标复用已有) | 2周 | `strategy_evaluator.py`, `shift_detector.py`, `human_validator.py`, `qr_metrics_bridge.py` | [P6](SPMA-design-11-phase6-feedback-and-monitoring.md) |
+| Phase 7 | 5 个未实现子系统(成本/限流/PII/注入/审计) | 2周 | `cost_controller.py`, `qps_limiter.py`, `pii_detector.py`, `prompt_guard.py`, `audit_logger.py` | [P7](SPMA-design-11-phase7-production-hardening.md) |
+| Phase 8 | 灰度+KILL SWITCH+回滚(权重管理复用已有) | 1周 | `feature_flag.py`, `rollback_manager.py`, `canary.py`, `api/routes/canary.py` | [P8](SPMA-design-11-phase8-rollout-and-rollback.md) |
 
 **总周期：12 周**（原 8 周 + 新增 4 周）
 
