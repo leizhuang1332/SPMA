@@ -1,9 +1,18 @@
 """Supervisor 查询改写器——标准化、扩展、分解。"""
 
+import hashlib
 import json
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def _history_fingerprint(conversation_history: str) -> str:
+    """取最近 3 轮作为 fingerprint(sha256[:16]);空历史返回 'none'。"""
+    if not conversation_history:
+        return "none"
+    turns = [t for t in conversation_history.splitlines() if t.strip()][-3:]
+    return hashlib.sha256("|".join(turns).encode("utf-8")).hexdigest()[:16]
 
 
 async def rewrite_queries(
@@ -13,26 +22,69 @@ async def rewrite_queries(
     llm,
     synonym_map: dict | None = None,
     conversation_history: str = "",
+    *,
+    cache=None,
+    audit_buffer=None,
+    weights_version: int = 1,
+    synonym_version: int = 1,
 ) -> dict[str, str]:
     """
-    查询重写主函数 - 五阶段管道
+    查询重写主函数 - 五阶段管道 + 可选缓存
 
-    参数：
-        query: 用户原始查询
-        classification: 分类结果（包含 sources, is_cross_source, query_type）
-        entities: 已抽取的实体
-        llm: LLM 实例
-        synonym_map: 同义词映射表（可选）
-        conversation_history: 对话历史（可选）
-
-    返回：
-        dict[str, str]: 重写结果字典
-            - "original": 原始查询
-            - "normalized": 标准化后的查询
-            - "resolved": 指代消解后的查询
-            - "expanded": 扩展后的查询
-            - "{source}": 面向各数据源的子查询
+    参数(新增):
+        cache: QueryCache 实例,None 时禁用缓存
+        audit_buffer: QrAuditBuffer 实例,None 时禁用审计
+        weights_version: 当前权重版本号(参与 cache key)
+        synonym_version: 当前 synonym 版本号(参与 cache key)
     """
+    if cache is not None:
+        async def _compute(query: str, entities: dict) -> dict:
+            return await _do_rewrite_pipeline(
+                query, classification, entities, llm, synonym_map, conversation_history
+            )
+
+        history_fp = _history_fingerprint(conversation_history)
+        cached = await cache.lookup_or_compute(
+            query=query,
+            history_fingerprint=history_fp,
+            entities=entities,
+            weights_version=weights_version,
+            synonym_version=synonym_version,
+            compute=_compute,
+        )
+        result = dict(cached)
+
+        if audit_buffer is not None:
+            await audit_buffer.enqueue({
+                "request_id": hashlib.md5(
+                    (query + history_fp).encode()).hexdigest(),
+                "ts": None,  # 由 audit buffer 补
+                "query_hash": hashlib.sha256(query.encode()).hexdigest()[:16],
+                "rewritten_hash": hashlib.sha256(
+                    (result.get("expanded") or "").encode()).hexdigest()[:16],
+                "pii_types": [],
+                "stage": "rewrite",
+                "strategy_weights": None,
+                "weights_version": weights_version,
+                "synonym_version": synonym_version,
+                "latency_ms": 0,  # 调用方可在 graph 层补
+                "cache_hit_l1": cached.get("cache_layer") == "l1",
+                "cache_hit_l2": cached.get("cache_layer") == "l2",
+                "cache_layer": cached.get("cache_layer"),
+                "error_stage": None,
+                "fallback_level": None,
+            })
+        return result
+    # cache=None 走原 5 阶段管道
+    return await _do_rewrite_pipeline(
+        query, classification, entities, llm, synonym_map, conversation_history
+    )
+
+
+async def _do_rewrite_pipeline(
+    query, classification, entities, llm, synonym_map, conversation_history,
+) -> dict:
+    """原 rewrite_queries 主体(去掉外层 cache wrap)."""
     result: dict[str, str] = {"original": query}
 
     # 阶段一：同义词标准化

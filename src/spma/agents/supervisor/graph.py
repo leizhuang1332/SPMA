@@ -29,6 +29,10 @@ def build_supervisor_graph(
     timeout_ms: int = 5000,
     quality_threshold: float = 0.6,
     reschedule_max: int = 2,
+    *,
+    qr_cache=None,           # 新增
+    qr_audit_buffer=None,    # 新增
+    qr_state_lookup=None,    # 新增:async () -> (weights_v, synonym_v)
 ) -> StateGraph:
 
     async def classify_and_extract_node(state: SupervisorState) -> dict:
@@ -45,6 +49,11 @@ def build_supervisor_graph(
         # 后续可以通过 spma.api.dependencies 获取
         synonym_map = None
 
+        if qr_state_lookup is not None:
+            weights_v, synonym_v = await qr_state_lookup()
+        else:
+            weights_v, synonym_v = 1, 1
+
         rewritten = await rewrite_queries(
             query=state["original_query"],
             classification=state["classification"],
@@ -52,6 +61,10 @@ def build_supervisor_graph(
             llm=primary_llm,
             synonym_map=synonym_map,
             conversation_history=state.get("conversation_history", ""),
+            cache=qr_cache,
+            audit_buffer=qr_audit_buffer,
+            weights_version=weights_v,
+            synonym_version=synonym_v,
         )
         return {"rewritten_queries": rewritten}
 
