@@ -27,6 +27,8 @@ async def rewrite_queries(
     audit_buffer=None,
     weights_version: int = 1,
     synonym_version: int = 1,
+    strategy_orchestrator=None,
+    fallback_manager=None,
 ) -> dict[str, str]:
     """
     查询重写主函数 - 五阶段管道 + 可选缓存
@@ -36,11 +38,15 @@ async def rewrite_queries(
         audit_buffer: QrAuditBuffer 实例,None 时禁用审计
         weights_version: 当前权重版本号(参与 cache key)
         synonym_version: 当前 synonym 版本号(参与 cache key)
+        strategy_orchestrator: P2 — 转发到 _do_rewrite_pipeline,P3-5 启用
+        fallback_manager: P2 — 转发到 _do_rewrite_pipeline,P3-5 启用
     """
     if cache is not None:
         async def _compute(query: str, entities: dict) -> dict:
             return await _do_rewrite_pipeline(
-                query, classification, entities, llm, synonym_map, conversation_history
+                query, classification, entities, llm, synonym_map, conversation_history,
+                strategy_orchestrator=strategy_orchestrator,
+                fallback_manager=fallback_manager,
             )
 
         history_fp = _history_fingerprint(conversation_history)
@@ -77,14 +83,55 @@ async def rewrite_queries(
         return result
     # cache=None 走原 5 阶段管道
     return await _do_rewrite_pipeline(
-        query, classification, entities, llm, synonym_map, conversation_history
+        query, classification, entities, llm, synonym_map, conversation_history,
+        strategy_orchestrator=strategy_orchestrator,
+        fallback_manager=fallback_manager,
     )
+
+
+def _validate_injected_components(
+    strategy_orchestrator, fallback_manager,
+):
+    """轻量运行时校验:防止 P3-5 集成时传错实例类型 → 静默失效。
+
+    使用 duck typing (`hasattr`) 而非 isinstance 检查,以避免循环依赖。
+    P3-5 真正使用编排器时,如果传入了错误类型的实例(例如传了 None 但签名允许、
+    或者传了 mock 但缺少必需方法),会立即抛 TypeError,而不是静默走原路径。
+    """
+    if strategy_orchestrator is not None:
+        # duck typing:必须实现 execute_parallel 方法
+        if not hasattr(strategy_orchestrator, "execute_parallel"):
+            raise TypeError(
+                "strategy_orchestrator must implement 'execute_parallel' "
+                f"(got {type(strategy_orchestrator).__name__})"
+            )
+    if fallback_manager is not None:
+        # duck typing:必须实现 execute_with_fallback 方法
+        if not hasattr(fallback_manager, "execute_with_fallback"):
+            raise TypeError(
+                "fallback_manager must implement 'execute_with_fallback' "
+                f"(got {type(fallback_manager).__name__})"
+            )
 
 
 async def _do_rewrite_pipeline(
     query, classification, entities, llm, synonym_map, conversation_history,
+    *,
+    strategy_orchestrator=None,
+    fallback_manager=None,
 ) -> dict:
-    """原 rewrite_queries 主体(去掉外层 cache wrap)."""
+    """原 rewrite_queries 主体(去掉外层 cache wrap)。
+
+    P2 扩展:接受可选 strategy_orchestrator / fallback_manager。
+    - 关键字参数(避免未来参数膨胀时 positional 顺序歧义)
+    - None 时:走原串行(向后兼容)
+    - 注入时:P3-5 多路策略将用编排器替换对应阶段
+    - 不匹配契约:TypeError(防 P3-5 集成时静默失效)
+
+    since: P2 Task 3, see plans/2026-06-30-qr-phase2-strategy-orchestration-plan.md
+    """
+    # P2 占位:验证注入的组件 duck-type 契约,失败立刻抛错而非静默走原路径
+    _validate_injected_components(strategy_orchestrator, fallback_manager)
     result: dict[str, str] = {"original": query}
 
     # 阶段一：同义词标准化

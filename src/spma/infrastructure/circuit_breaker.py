@@ -83,6 +83,14 @@ class CircuitBreaker:
     def state(self) -> CircuitState:
         return self._state
 
+    def is_open(self) -> bool:
+        """便捷判断: 熔断器是否处于 OPEN 状态。
+
+        注意: 仅检查 state, 不做 OPEN→HALF_OPEN 的转移(那是 call() 的职责)。
+        用于编排器层在执行前过滤, 不触发状态机副作用。
+        """
+        return self._state == CircuitState.OPEN
+
     @property
     def stats(self) -> CircuitBreakerStats:
         return CircuitBreakerStats(

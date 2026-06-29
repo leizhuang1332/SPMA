@@ -21,8 +21,42 @@ from spma.agents.supervisor.dispatcher import build_dispatches, extract_discover
 from spma.agents.supervisor.quality import evaluate_workers
 from spma.api.dependencies import get_db_pool
 from spma.ingestion.synonym_map import SynonymMap
+from spma.agents.supervisor.strategy_orchestrator import StrategyOrchestrator
+from spma.agents.supervisor.fallback_manager import FallbackManager
 
 logger = logging.getLogger(__name__)
+
+
+# P2: 策略名注册表(P3-P5 接入具体 strategy 时复用)。
+# - P3 指代消解: rule_based / entity_based / llm_semantic
+# - P4 扩展: intent_aware / synonym_based / entity_injection / context_aware
+# - P5 分解: template_based / llm_based / entity_guided
+_STRATEGY_NAMES: tuple[str, ...] = (
+    # P3
+    "rule_based", "entity_based", "llm_semantic",
+    # P4
+    "intent_aware", "synonym_based", "entity_injection", "context_aware",
+    # P5
+    "template_based", "llm_based", "entity_guided",
+)
+
+
+# P2: 编排器 + 降级单例(模块级,所有 build_* 调用共享)。
+# 测试可注入 mock;P3-P5 阶段会把 _default_primary_backup 替换为多路语义 fallback。
+async def _default_primary_backup(q, *a, **kw):
+    """P2 占位:P3-P5 替换为多路语义 fallback;P2 阶段返回 None 触发 L3 兜底。"""
+    return None
+
+
+_orchestrator = StrategyOrchestrator(
+    stage="rewrite",
+    names=list(_STRATEGY_NAMES),  # 引用常量,避免双源
+)
+_fallback = FallbackManager(
+    orchestrator=_orchestrator,
+    primary_backup_fn=_default_primary_backup,
+    rule_only_fn=lambda q, *a, **kw: q,
+)
 
 
 async def _load_synonym_map() -> dict[str, list[str]]:
@@ -63,7 +97,12 @@ def build_supervisor_graph(
     qr_cache=None,           # 新增
     qr_audit_buffer=None,    # 新增
     qr_state_lookup=None,    # 新增:async () -> (weights_v, synonym_v)
+    strategy_orchestrator=None,  # NEW: P2 — 默认用模块级 _orchestrator
+    fallback_manager=None,       # NEW: P2 — 默认用模块级 _fallback
 ) -> StateGraph:
+    # 默认用模块级单例;测试可注入 mock 覆盖。
+    strategy_orchestrator = strategy_orchestrator or _orchestrator
+    fallback_manager = fallback_manager or _fallback
 
     async def classify_and_extract_node(state: SupervisorState) -> dict:
         result = await classify_with_fallback(
@@ -94,6 +133,8 @@ def build_supervisor_graph(
             audit_buffer=qr_audit_buffer,
             weights_version=weights_v,
             synonym_version=synonym_v,
+            strategy_orchestrator=strategy_orchestrator,
+            fallback_manager=fallback_manager,
         )
         return {"rewritten_queries": rewritten}
 
@@ -232,3 +273,7 @@ def build_supervisor_graph(
     graph.add_edge("reschedule", "dispatch")
 
     return graph.compile()
+
+
+# 别名:与 plan 文件命名保持兼容(plan 全文使用 build_graph,代码实际命名为 build_supervisor_graph)
+build_graph = build_supervisor_graph

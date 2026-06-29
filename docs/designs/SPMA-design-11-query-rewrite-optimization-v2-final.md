@@ -19,8 +19,8 @@
 |----|------|------|-------------|---------|
 | ~~G1~~ | ~~P1~~ | ~~`synonym_map` SQL 表不存在~~ | ✅ 已修复: migration 004 创建表 (commit 3791498f) | - |
 | ~~G2~~ | ~~P1~~ | ~~`graph.rewrite_node:50` 硬编码 `synonym_map = None`~~ | ✅ 已修复: `_load_synonym_map()` 替换 stub (commit c7a156d7 / 9d5fca3f / b3863073) | - |
-| **G3** | P2 | `StrategyOrchestrator` / `FallbackManager` 不存在 | supervisor 模块下无 | 🟡 P1 |
-| **G4** | P2 | `CircuitBreaker` 在 `infrastructure/circuit_breaker.py` 已实现,但 supervisor 模块**未引用** | 已实现但未集成 | 🟢(只缺集成) |
+| ~~G3~~ | ~~P2~~ | ~~`StrategyOrchestrator` / `FallbackManager` 不存在~~ | ✅ 已修复: 新建 `strategy_orchestrator.py`(80 行)+ `fallback_manager.py`(82 行),L1→L2→L3 三级降级 + 1000 并发压测 + asyncio.to_thread 防 L3 阻塞 (squash merge P2 commit chain) | - |
+| ~~G4~~ | ~~P2~~ | ~~`CircuitBreaker` 在 `infrastructure/circuit_breaker.py` 已实现,但 supervisor 模块**未引用**~~ | ✅ 已修复: `StrategyOrchestrator` 集成 `get_circuit_breaker` + `cb.call`;新增 `is_open()` helper 做执行前过滤;`graph.py` 模块级 `_orchestrator` 单例持有 P3-P5 10 个策略名 CB (squash merge P2 commit chain) | - |
 | **G5** | P3 | `_resolve_references` 是单策略 + 简单关键词匹配 | `query_rewriter.py:243` | 🟡 P1 |
 | **G6** | P4 | `_expand_query` 是单策略 + 简单意图感知 | `query_rewriter.py:282` | 🟡 P1 |
 | **G7** | P5 | `_decompose_query` 是单策略 + 4 步 JSON 解析兜底 | `query_rewriter.py:137` | 🟡 P1 |
@@ -2237,7 +2237,7 @@ async def _evaluate_rewrite_quality(
 | Phase | 子 spec | 涵盖缺陷 | 状态 | 依赖 | 预估工时 | 优先级 |
 |-------|---------|---------|------|------|---------|--------|
 | Phase 1 | [SPMA-design-11-phase1-synonym-map-activation.md](SPMA-design-11-phase1-synonym-map-activation.md) | G1 / G2 | 待开始 | - | 1 周 | 🔴 P0 |
-| Phase 2 | [SPMA-design-11-phase2-strategy-orchestration.md](SPMA-design-11-phase2-strategy-orchestration.md) | G3 / G4 | 待开始 | P1 | 1 周 | 🟡 P1 |
+| Phase 2 | [SPMA-design-11-phase2-strategy-orchestration.md](SPMA-design-11-phase2-strategy-orchestration.md) | G3 / G4 | ✅ 已修复 | P1 | 1 周 | - |
 | Phase 3 | [SPMA-design-11-phase3-multi-strategy-resolution.md](SPMA-design-11-phase3-multi-strategy-resolution.md) | G5 | 待开始 | P2 | 1 周 | 🟡 P1 |
 | Phase 4 | [SPMA-design-11-phase4-multi-strategy-expansion.md](SPMA-design-11-phase4-multi-strategy-expansion.md) | G6 | 待开始 | P1 + P2 | 1 周 | 🟡 P1 |
 | Phase 5 | [SPMA-design-11-phase5-multi-strategy-decomposition.md](SPMA-design-11-phase5-multi-strategy-decomposition.md) | G7 | 待开始 | P2 | 1 周 | 🟡 P1 |
