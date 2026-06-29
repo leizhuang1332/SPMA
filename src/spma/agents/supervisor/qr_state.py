@@ -20,21 +20,22 @@ def build_cache_key(
 ) -> str:
     """构造 32 字符 md5 hex 作为缓存 key。
 
-    公式: md5(query + history_fingerprint + sorted_json(entities)
-              + str(weights_version) + str(synonym_version))
+    公式: md5("\x1f".join([
+        query, history_fingerprint[-32:], entities_str,
+        str(weights_version), str(synonym_version),
+    ]))
 
-    history_fingerprint 由调用方计算(取最近 3 轮 sha256[:16] 等)。
+    history_fingerprint[-32:] 截断只看最近 3 轮(由调用方按 sha256[:16] × 3 = 48 字符提供)。
+    unit separator (\\x1f) 避免 (q="ab", fp="cd") 与 (q="abc", fp="d") 撞键。
     """
     entities_str = json.dumps(entities or {}, sort_keys=True, ensure_ascii=False)
-    # fingerprint 只看最近 3 轮(后缀):截取最后 32 字符,丢弃较早轮次
-    fp_norm = history_fingerprint[-32:]
-    raw = (
-        query
-        + fp_norm
-        + entities_str
-        + str(weights_version)
-        + str(synonym_version)
-    )
+    raw = "\x1f".join([
+        query,
+        history_fingerprint[-32:],
+        entities_str,
+        str(weights_version),
+        str(synonym_version),
+    ])
     return hashlib.md5(raw.encode("utf-8")).hexdigest()
 
 
@@ -45,6 +46,10 @@ async def get_versions(pool) -> tuple[int, int]:
             "SELECT weights_version, synonym_version FROM qr_state_meta WHERE state_id=1"
         )
         if row is None:
+            logger.warning(
+                "qr_state_meta row missing — using (1,1). "
+                "Run 002_qr_cache_and_state.sql migration."
+            )
             return (1, 1)
         return (int(row["weights_version"]), int(row["synonym_version"]))
 
