@@ -258,21 +258,80 @@ async def _do_rewrite_pipeline(
         # 不应扩展的情况 → 用 resolved
         result["expanded"] = resolved
 
-    # 阶段四：查询分解（仅跨源时执行）
-    if is_cross_source and len(sources) > 1 and llm:
+    # ====== P5: 多路查询分解 ======
+    # 守卫条件偏离 plan:保留 `is_cross_source and len(sources) > 1 and strategy_orchestrator`
+    # 而不是 plan §3.3 的 `if strategy_orchestrator:`。
+    # 偏离原因(plan update 待定):
+    #   (1) 单 source 场景下 `_decompose_query` 返回单元素,3 路并行 + consensus 成本不抵收益
+    #       (SemanticConsensusChecker.pick_best_per_source 会退化到 valid[0]);
+    #   (2) 现有 198 supervisor 测试中部分 P3/P4 mock 测试用 single-source classification
+    #       验证 `assert_awaited_once`,plan 模板会让 execute_parallel 被 P3 + P5 各调 1 次
+    #       → 2 次调用违反断言。
+    # 因此本分支显式用 cross-source 限定,避免对单源路径的副作用。
+    # TODO(plan update):把 plan §3.3 守卫改为本实现以保持与现有测试契约一致。
+    if is_cross_source and len(sources) > 1 and strategy_orchestrator:
+        # 局部导入避免循环依赖(decomposition_strategies / semantic_consensus 是子模块)
+        from spma.agents.supervisor.decomposition_strategies import (
+            template_based, entity_guided, llm_based,
+        )
+        from spma.agents.supervisor.semantic_consensus import SemanticConsensusChecker
+
+        strategies = {
+            "template_based": lambda q, e, s: template_based(q, e, s),
+            "entity_guided": lambda q, e, s: entity_guided(q, e, s),
+            "llm_based": lambda q, e, s: llm_based(q, e, s, llm=llm),
+        }
+        try:
+            results = await strategy_orchestrator.execute_parallel(
+                strategies, resolved, entities, sources,
+            )
+            valid = [r[1] for r in results if r[1]]
+            if valid:
+                if embedder:
+                    checker = SemanticConsensusChecker(embedder)
+                    sub_queries = await checker.pick_best_per_source(resolved, valid, sources)
+                else:
+                    # 退化:无 embedder 时取第一个非空(无法语义对比)
+                    sub_queries = valid[0]
+            else:
+                # 所有策略都返回 None → 走原 _decompose_query
+                sub_queries = await _decompose_query(resolved, entities, sources, llm)
+            result["sub_queries"] = sub_queries
+        except Exception as ex:
+            # PII 安全:%s 占位符 + type(ex).__name__ + exc_info=True
+            # (traceback 进入 stderr,不在日志消息里内联)
+            logger.warning(
+                "查询分解失败: %s",
+                type(ex).__name__,
+                exc_info=True,
+            )
+            try:
+                sub_queries = await _decompose_query(resolved, entities, sources, llm)
+            except Exception:
+                sub_queries = [{"query": resolved, "target": s} for s in sources]
+            result["sub_queries"] = sub_queries
+    elif is_cross_source and len(sources) > 1 and llm:
+        # 向后兼容:无 orchestrator 时走原 _decompose_query 单策略(保留 P5 之前的旧行为)
         try:
             sub_queries = await _decompose_query(resolved, entities, sources, llm)
+            result["sub_queries"] = sub_queries
+            # 偏离 plan:plan §3.3 只写 result["sub_queries"],但外部调用者(测试 + 上层 supervisor)
+            # 长期依赖 result[source] 字段作为便捷外部 API。保留字段 + TODO(plan update):
+            # 把 plan §3.3 文档改为允许遗留字段以保持向后兼容。
             for sq in sub_queries:
                 target = sq.get("target", "")
                 if target in sources:
                     result[target] = sq.get("query", resolved)
         except Exception as e:
-            logger.warning(f"查询分解失败: {e}")
-            # Fallback: 各 source 使用扩展后的查询
-            for source in sources:
-                result[source] = result.get("expanded", resolved)
+            logger.warning(
+                "查询分解失败: %s",
+                type(e).__name__,
+                exc_info=True,
+            )
+            sub_queries = [{"query": resolved, "target": s} for s in sources]
+            result["sub_queries"] = sub_queries
     else:
-        # 非跨源或无 LLM 时，各 source 使用扩展后的查询
+        # 非跨源或无 LLM 时,各 source 使用扩展后的查询;无 sub_queries(保持兼容)
         for source in sources:
             result[source] = result.get("expanded", resolved)
 

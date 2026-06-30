@@ -23,7 +23,7 @@
 | ~~G4~~ | ~~P2~~ | ~~`CircuitBreaker` 在 `infrastructure/circuit_breaker.py` 已实现,但 supervisor 模块**未引用**~~ | ✅ 已修复: `StrategyOrchestrator` 集成 `get_circuit_breaker` + `cb.call`;新增 `is_open()` helper 做执行前过滤;`graph.py` 模块级 `_orchestrator` 单例持有 P3-P5 10 个策略名 CB (squash merge P2 commit chain) | - |
 | ~~G5~~ | ~~P3~~ | ~~`_resolve_references` 是单策略 + 简单关键词匹配~~ | ✅ 已修复: 多路并行(rule/entity/llm)+ SemanticVoter 共识度投票(主文件 ADR-004),zero-LLM voter (squash merge P3 commit chain) | - |
 | ~~G6~~ | ~~P4~~ | ~~`_expand_query` 是单策略 + 简单意图感知~~ | ✅ 已修复: 4 路并行(intent/synonym/entity/context)+ quality_evaluator 三维评分(主文件 ADR-004,零 LLM) (squash merge P4 commit chain) | - |
-| **G7** | P5 | `_decompose_query` 是单策略 + 4 步 JSON 解析兜底 | `query_rewriter.py:137` | 🟡 P1 |
+| ~~G7~~ | ~~P5~~ | ~~`_decompose_query` 是单策略 + 4 步 JSON 解析兜底~~ | ✅ 已修复: 3 路并行(template/entity/llm)+ SemanticConsensusChecker per-source 共识度投票(主文件 ADR-004,零 LLM) (squash merge P5 commit chain) | - |
 | **G8** | P6 | 离线评估 / EMA 权重进化未实现 | 无相关类 | 🟡 P1 |
 | **G9** | P6 | 分布漂移检测(MMD)未实现 | 无相关类 | 🟡 P2 |
 | **G10** | P6 | 人工审核闭环(HumanInTheLoop)未实现 | 无相关类 | 🟡 P2 |
