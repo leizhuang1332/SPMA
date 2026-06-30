@@ -11,7 +11,7 @@
 
 ## 一、问题回顾：当前实现的核心缺陷
 
-> **更新于 2026-06-29**：本文档为 v3.1 目标态设计;实际代码已经走在 P7 中段(15 个 commit 推进了缓存/审计/状态/指标,详见 §1.2)。下表 §1.1 为"实际未完成项"而非 v3.0 缺陷,§1.2 列出已实现项及改进空间。
+> **更新于 2026-06-29**：本文档为 v3.1 目标态设计;实际代码已完成 P1-P5 + P6(详见 §1.2)。下表 §1.1 为"实际未完成项"而非 v3.0 缺陷,§1.2 列出已实现项及改进空间。
 
 ### 1.1 实际未完成项(15 项,基于代码核查)
 
@@ -24,9 +24,9 @@
 | ~~G5~~ | ~~P3~~ | ~~`_resolve_references` 是单策略 + 简单关键词匹配~~ | ✅ 已修复: 多路并行(rule/entity/llm)+ SemanticVoter 共识度投票(主文件 ADR-004),zero-LLM voter (squash merge P3 commit chain) | - |
 | ~~G6~~ | ~~P4~~ | ~~`_expand_query` 是单策略 + 简单意图感知~~ | ✅ 已修复: 4 路并行(intent/synonym/entity/context)+ quality_evaluator 三维评分(主文件 ADR-004,零 LLM) (squash merge P4 commit chain) | - |
 | ~~G7~~ | ~~P5~~ | ~~`_decompose_query` 是单策略 + 4 步 JSON 解析兜底~~ | ✅ 已修复: 3 路并行(template/entity/llm)+ SemanticConsensusChecker per-source 共识度投票(主文件 ADR-004,零 LLM) (squash merge P5 commit chain) | - |
-| **G8** | P6 | 离线评估 / EMA 权重进化未实现 | 无相关类 | 🟡 P1 |
-| **G9** | P6 | 分布漂移检测(MMD)未实现 | 无相关类 | 🟡 P2 |
-| **G10** | P6 | 人工审核闭环(HumanInTheLoop)未实现 | 无相关类 | 🟡 P2 |
+| ~~G8~~ | ~~P6~~ | ~~离线评估 / EMA 权重进化未实现~~ | ✅ 已修复: StableStrategyEvaluator(EMA 0.1 + min_weight 0.1 + 归一化 + 写 qr_weights_history) + qr_metrics_bridge(CB 状态变更→指标) (squash merge P6 commit chain) | - |
+| ~~G9~~ | ~~P6~~ | ~~分布漂移检测(MMD)未实现~~ | ✅ 已修复: DistributionShiftDetector(MMD 高斯核 + 1m 滚动相似度分布双指标,零 LLM) (squash merge P6 commit chain) | - |
+| ~~G10~~ | ~~P6~~ | ~~人工审核闭环(HumanInTheLoop)未实现~~ | ✅ 已修复: HumanInTheLoopValidator(完整工单流程 + 24h 超时自动拒绝 + bump_weights_version 信号) (squash merge P6 commit chain) | - |
 | **G11** | P7 | `CostController`(分级模型 + 预算)未实现 | 无相关类 | 🟡 P1 |
 | **G12** | P7 | `QPSLimiter` 未实现 | 无相关类 | 🟡 P1 |
 | **G13** | P7 | `PIIDetector` 未实现 | 无相关类 | 🔴 P0(合规) |
