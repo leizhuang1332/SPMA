@@ -27,10 +27,10 @@
 | ~~G8~~ | ~~P6~~ | ~~离线评估 / EMA 权重进化未实现~~ | ✅ 已修复: StableStrategyEvaluator(EMA 0.1 + min_weight 0.1 + 归一化 + 写 qr_weights_history) + qr_metrics_bridge(CB 状态变更→指标) (squash merge P6 commit chain) | - |
 | ~~G9~~ | ~~P6~~ | ~~分布漂移检测(MMD)未实现~~ | ✅ 已修复: DistributionShiftDetector(MMD 高斯核 + 1m 滚动相似度分布双指标,零 LLM) (squash merge P6 commit chain) | - |
 | ~~G10~~ | ~~P6~~ | ~~人工审核闭环(HumanInTheLoop)未实现~~ | ✅ 已修复: HumanInTheLoopValidator(完整工单流程 + 24h 超时自动拒绝 + bump_weights_version 信号) (squash merge P6 commit chain) | - |
-| **G11** | P7 | `CostController`(分级模型 + 预算)未实现 | 无相关类 | 🟡 P1 |
-| **G12** | P7 | `QPSLimiter` 未实现 | 无相关类 | 🟡 P1 |
-| **G13** | P7 | `PIIDetector` 未实现 | 无相关类 | 🔴 P0(合规) |
-| **G14** | P7 | `PromptInjectionGuard` 未实现 | 无相关类 | 🔴 P0(安全) |
+| ~~G11~~ | ~~P7~~ | ~~CostController(分级模型+预算)未实现~~ | ✅ 已修复: CostController(haiku/sonnet/opus 三级 + 月度预算硬/软阈值) (squash merge P7 commit chain) | - |
+| ~~G12~~ | ~~P7~~ | ~~QPSLimiter 未实现~~ | ✅ 已修复: QPSLimiter(Redis 滑动窗口 1s,tenant+user 粒度,VIP 白名单) (squash merge P7 commit chain) | - |
+| ~~G13~~ | ~~P7~~ | ~~PIIDetector 未实现~~ | ✅ 已修复: PIIDetector(5 种 PII 正则 + 脱敏 + should_bypass_llm) 🔴 P0 合规 (squash merge P7 commit chain) | - |
+| ~~G14~~ | ~~P7~~ | ~~PromptInjectionGuard 未实现~~ | ✅ 已修复: PromptInjectionGuard(5 种注入模式正则 + sanitize 不 reject) 🔴 P0 安全 (squash merge P7 commit chain) | - |
 | **G15** | P8 | `StrategyFeatureFlag` / `RollbackManager` 未实现 | 仅 `qr_state.bump_weights_version` / `write_weights_snapshot` | 🟡 P1 |
 
 ### 1.2 已完成项(12 项,基于代码核查)

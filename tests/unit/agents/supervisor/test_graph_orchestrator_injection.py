@@ -172,3 +172,56 @@ def test_graph_module_has_no_embedder_singleton():
     # 不应该有 _embedder 模块级变量
     assert not hasattr(graph, "_embedder"), \
         "_embedder 应该是运行时注入,不应作为模块级单例存在"
+
+
+# === P7: 生产加固 5 个组件集成测试 ===
+
+def test_graph_module_has_p7_component_singletons():
+    """P7 模块级 3 个无依赖单例(PIIDetector / PromptInjectionGuard / QPSLimiter)。"""
+    from spma.agents.supervisor import graph
+    # 纯本地正则组件应已实例化
+    assert hasattr(graph, "_pii_detector")
+    assert hasattr(graph, "_prompt_guard")
+    assert hasattr(graph, "_qps_limiter")
+    # 类型断言
+    from spma.agents.supervisor.pii_detector import PIIDetector
+    from spma.agents.supervisor.prompt_guard import PromptInjectionGuard
+    from spma.agents.supervisor.qps_limiter import QPSLimiter
+    assert isinstance(graph._pii_detector, PIIDetector)
+    assert isinstance(graph._prompt_guard, PromptInjectionGuard)
+    assert isinstance(graph._qps_limiter, QPSLimiter)
+    # QPSLimiter 启动期 redis_client=None 占位
+    assert graph._qps_limiter._redis is None
+
+
+def test_graph_module_p7_external_dep_placeholders():
+    """P7 CostController / AuditLogger 模块级为 None 占位(运行时需注入外部依赖)。"""
+    from spma.agents.supervisor import graph
+    assert hasattr(graph, "_cost_controller")
+    assert hasattr(graph, "_audit_logger")
+    assert graph._cost_controller is None
+    assert graph._audit_logger is None
+
+
+def test_build_graph_accepts_p7_params():
+    """build_graph 接受 5 个 P7 关键字参数(keyword-only,默认 None)。
+
+    P7 参数:
+      - qps_limiter
+      - cost_controller
+      - pii_detector
+      - prompt_guard
+      - audit_logger
+    """
+    import inspect
+    from spma.agents.supervisor import graph
+    fn = graph.build_graph
+    sig = inspect.signature(fn)
+    for name in (
+        "qps_limiter", "cost_controller", "pii_detector", "prompt_guard", "audit_logger"
+    ):
+        assert name in sig.parameters, f"build_graph 应接受 {name} 参数"
+        assert sig.parameters[name].default is None, \
+            f"{name} 默认值应为 None"
+        assert sig.parameters[name].kind == inspect.Parameter.KEYWORD_ONLY, \
+            f"{name} 应为 keyword-only 参数"

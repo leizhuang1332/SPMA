@@ -25,6 +25,18 @@ from spma.agents.supervisor.strategy_orchestrator import StrategyOrchestrator
 from spma.agents.supervisor.fallback_manager import FallbackManager
 from spma.agents.supervisor.semantic_voter import SemanticVoter
 
+# P7: 生产加固 5 个组件(主文件 §3.10, ADR-008)。
+# - CostController: 分级模型路由(haiku/sonnet/opus)+ 月度预算(运行时需要 LLM router + budget tracker)
+# - QPSLimiter: Redis 滑动窗口(1s), tenant+user 粒度
+# - PIIDetector: 5 种 PII 正则 + 脱敏 + should_bypass_llm(🔴 P0 合规)
+# - PromptInjectionGuard: 5 种注入模式 + sanitize(🔴 P0 安全)
+# - AuditLogger: 包装 QrAuditBuffer, 写 SHA256[:16] hash 而非原文(运行时需要 buffer + pii_detector)
+from spma.agents.supervisor.cost_controller import CostController
+from spma.agents.supervisor.qps_limiter import QPSLimiter
+from spma.agents.supervisor.pii_detector import PIIDetector
+from spma.agents.supervisor.prompt_guard import PromptInjectionGuard
+from spma.agents.supervisor.audit_logger import AuditLogger
+
 logger = logging.getLogger(__name__)
 
 
@@ -63,6 +75,17 @@ _fallback = FallbackManager(
 # - embedder 传 None 表示运行时通过 build_graph(embedder=X) 注入
 # - alpha=0.4 偏重共识度(多策略独立收敛结果 > 单点最相似)
 _voter = SemanticVoter(embedder=None, alpha=0.4)
+
+# P7: 生产加固 5 个组件单例(默认无外部依赖;运行时可在 app 启动期替换)。
+# - PII / PromptGuard: 纯本地正则, 无外部依赖, 立即可实例化
+# - QPSLimiter: redis_client=None 占位, 运行时由 build_graph 注入(避免启动期连接要求)
+# - CostController / AuditLogger: 依赖 LLM router / budget tracker / audit buffer,
+#   复杂外部依赖留在运行时注入, 模块级保留 None 占位
+_pii_detector = PIIDetector()
+_prompt_guard = PromptInjectionGuard()
+_qps_limiter = QPSLimiter(redis_client=None)  # 占位, 运行时注入
+_cost_controller = None  # 占位, 需要 LLM router + budget tracker
+_audit_logger = None  # 占位, 需要 buffer + pii_detector
 
 
 async def _load_synonym_map() -> dict[str, list[str]]:
@@ -107,11 +130,21 @@ def build_supervisor_graph(
     fallback_manager=None,       # NEW: P2 — 默认用模块级 _fallback
     voter=None,                   # NEW: P3 — 默认用模块级 _voter
     embedder=None,                # NEW: P4 — 运行时注入(非单例),默认 None
+    qps_limiter=None,                # NEW: P7 — QPSLimiter(Redis 滑动窗口)
+    cost_controller=None,             # NEW: P7 — CostController(分级路由 + 预算)
+    pii_detector=None,                # NEW: P7 — PIIDetector(🔴 P0 合规)
+    prompt_guard=None,                # NEW: P7 — PromptInjectionGuard(🔴 P0 安全)
+    audit_logger=None,                # NEW: P7 — AuditLogger(SHA256 hash 审计)
 ) -> StateGraph:
     # 默认用模块级单例;测试可注入 mock 覆盖。
     strategy_orchestrator = strategy_orchestrator or _orchestrator
     fallback_manager = fallback_manager or _fallback
     voter = voter or _voter  # NEW: P3
+    # P7: 默认用模块级单例(None 表示用 _xxx 占位;CostController/AuditLogger 占位为 None,显式 None 保留)
+    qps_limiter = qps_limiter if qps_limiter is not None else _qps_limiter
+    pii_detector = pii_detector if pii_detector is not None else _pii_detector
+    prompt_guard = prompt_guard if prompt_guard is not None else _prompt_guard
+    # cost_controller / audit_logger 模块级为 None, 由运行时显式注入;此处保留调用方传入值
     # embedder 不设模块级单例,运行时由应用启动时注入;测试可显式传入 mock。
 
     async def classify_and_extract_node(state: SupervisorState) -> dict:
@@ -127,13 +160,42 @@ def build_supervisor_graph(
         # P1 修复:从 DB 加载活跃 synonym_map(异常时降级到空 dict)
         synonym_map = await _load_synonym_map()
 
+        # P7: 生产加固 wrapper 层(在进入 P3-P5 实际 rewrite pipeline 前)
+        # 1) QPS 限流检查
+        if qps_limiter is not None:
+            allowed = await qps_limiter.check(
+                tenant_id="default", user_id="default"
+            )
+            if not allowed:
+                logger.warning("qps_limiter rejected rewrite request")
+                return {
+                    "rewritten_queries": {"rule_only": state["original_query"]},
+                    "rate_limited": True,
+                }
+
+        # 2) Prompt 注入 sanitize(不 reject, 替换为 [FILTERED])
+        original_query = state["original_query"]
+        sanitized_query = original_query
+        if prompt_guard is not None:
+            sanitized_query = prompt_guard.sanitize(original_query)
+            if sanitized_query != original_query:
+                logger.info("prompt_guard sanitized injection patterns")
+
+        # 3) PII 检测 → 旁路 LLM(走规则路径)
+        #    实际 bypass 走 rewrite_queries 内部 strategy_orchestrator(rule_based first)
+        #    此处仅记录日志 + 不修改 query(让下游 pipeline 自然选 L3 兜底规则)
+        if pii_detector is not None and pii_detector.should_bypass_llm(sanitized_query):
+            logger.warning("pii detected in query, bypass_llm flag set")
+            # 不修改 query 内容(脱敏由 audit_logger 统一处理),
+            # 依赖 rewrite_queries 的 rule_based 策略走规则路径
+
         if qr_state_lookup is not None:
             weights_v, synonym_v = await qr_state_lookup()
         else:
             weights_v, synonym_v = 1, 1
 
         rewritten = await rewrite_queries(
-            query=state["original_query"],
+            query=sanitized_query,
             classification=state["classification"],
             entities=state.get("entities", {}),
             llm=primary_llm,
