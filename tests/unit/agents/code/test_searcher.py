@@ -167,3 +167,46 @@ async def test_glob_files_filters_sensitive_paths():
         assert not any(".git/" in p for p in paths)
         assert not any(".pem" in p for p in paths)
         assert not any(".key" in p for p in paths)
+
+
+@pytest.mark.asyncio
+async def test_read_files_returns_content():
+    """read_files 读取指定文件的内容。"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with open(os.path.join(tmpdir, "main.py"), "w") as f:
+            f.write("def hello():\n    pass\n")
+        with open(os.path.join(tmpdir, "util.py"), "w") as f:
+            f.write("def helper():\n    pass\n")
+
+        executor = RipgrepExecutor({"repo_test": tmpdir})
+        results = await executor.read_files([
+            {"repo": "repo_test", "file_path": "main.py"},
+            {"repo": "repo_test", "file_path": "util.py"},
+        ])
+        assert len(results) == 2
+        assert any("def hello" in r["content"] for r in results)
+        assert any("def helper" in r["content"] for r in results)
+
+
+@pytest.mark.asyncio
+async def test_read_files_silently_skips_io_errors():
+    """read_files 对不存在的文件用 errors='ignore' 静默跳过。"""
+    executor = RipgrepExecutor({"repo_test": "/nonexistent"})
+    results = await executor.read_files([
+        {"repo": "repo_test", "file_path": "nonexistent.py"},
+    ])
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_read_files_filters_sensitive_paths():
+    """read_files 对敏感路径直接返回空（不入结果）。"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with open(os.path.join(tmpdir, ".env"), "w") as f:
+            f.write("SECRET=xxx")
+
+        executor = RipgrepExecutor({"repo_test": tmpdir})
+        results = await executor.read_files([
+            {"repo": "repo_test", "file_path": ".env"},
+        ])
+        assert results == []

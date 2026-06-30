@@ -277,6 +277,37 @@ class RipgrepExecutor:
                 results.append({"repo": repo_name, "file_path": rel_path})
         return results
 
+    async def read_files(self, files: list[dict]) -> list[dict]:
+        """读取指定文件内容。
+
+        Args:
+            files: [{"repo": str, "file_path": str}, ...]
+
+        Returns:
+            [{"repo": str, "file_path": str, "content": str}, ...]
+            敏感路径被过滤；I/O 错误静默跳过。
+        """
+        results: list[dict] = []
+        for f in files:
+            if _is_sensitive_path(f["file_path"]):
+                continue
+            repo_path = self._repo_paths.get(f["repo"])
+            if not repo_path:
+                continue
+            full_path = os.path.join(repo_path, f["file_path"])
+            try:
+                with open(full_path, "r", encoding="utf-8", errors="ignore") as fp:
+                    content = fp.read()
+                results.append({
+                    "repo": f["repo"],
+                    "file_path": f["file_path"],
+                    "content": content,
+                })
+            except Exception as e:
+                logger.warning(f"read_files failed for {full_path}: {e}")
+                continue
+        return results
+
     @staticmethod
     def _stem_split(term: str) -> list[str]:
         """Split CamelCase and snake_case terms into stems."""
