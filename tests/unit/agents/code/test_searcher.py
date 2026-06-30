@@ -142,28 +142,28 @@ async def test_glob_files_finds_matching_files():
 
 @pytest.mark.asyncio
 async def test_glob_files_filters_sensitive_paths():
-        """敏感路径（.env / .git/ / secrets.* / *.pem / *.key）被过滤。"""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            os.makedirs(os.path.join(tmpdir, ".git"))
-            with open(os.path.join(tmpdir, ".git/config"), "w") as f:
-                f.write("git config")
-            with open(os.path.join(tmpdir, ".env"), "w") as f:
-                f.write("SECRET=xxx")
-            with open(os.path.join(tmpdir, "secrets.yaml"), "w") as f:
-                f.write("api_key: xxx")
-            with open(os.path.join(tmpdir, "server.pem"), "w") as f:
-                f.write("---")
-            with open(os.path.join(tmpdir, "main.py"), "w") as f:
-                f.write("# normal")
+    """敏感路径（.env / .git/ / secrets.* / *.pem / *.key）被过滤。"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        os.makedirs(os.path.join(tmpdir, ".git"))
+        with open(os.path.join(tmpdir, ".git/config"), "w") as f:
+            f.write("git config")
+        with open(os.path.join(tmpdir, ".env"), "w") as f:
+            f.write("SECRET=xxx")
+        with open(os.path.join(tmpdir, "secrets.yaml"), "w") as f:
+            f.write("api_key: xxx")
+        with open(os.path.join(tmpdir, "server.pem"), "w") as f:
+            f.write("---")
+        with open(os.path.join(tmpdir, "main.py"), "w") as f:
+            f.write("# normal")
 
-            executor = RipgrepExecutor({"repo_test": tmpdir})
-            results = await executor.glob_files("**/*", ["repo_test"])
-            paths = [r["file_path"] for r in results]
-            # 正常文件应被命中
-            assert any("main.py" in p for p in paths)
-            # 敏感文件应被过滤
-            assert not any(".env" in p for p in paths)
-            assert not any("secrets" in p for p in paths)
-            assert not any(".git/" in p for p in paths)
-            assert not any(".pem" in p for p in paths)
-            assert not any(".key" in p for p in paths)
+        executor = RipgrepExecutor({"repo_test": tmpdir})
+        results = await executor.glob_files("**/*", ["repo_test"])
+        paths = [r["file_path"] for r in results]
+        # 正常文件应被命中
+        assert any("main.py" in p for p in paths)
+        # 敏感文件应被过滤
+        assert not any(".env" in p for p in paths)
+        assert not any("secrets" in p for p in paths)
+        assert not any(".git/" in p for p in paths)
+        assert not any(".pem" in p for p in paths)
+        assert not any(".key" in p for p in paths)

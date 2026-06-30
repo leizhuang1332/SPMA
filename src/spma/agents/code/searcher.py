@@ -12,40 +12,36 @@ logger = logging.getLogger(__name__)
 RG_BASE_ARGS = ["rg", "--json", "--no-heading", "--color", "never", "--max-count", "50"]
 RG_MAX_DEPTH = ["--max-depth", "10"]
 
-# 敏感路径黑名单（design-13 §8 风险缓解）
-SENSITIVE_PATH_PATTERNS = [
-    "**/.env",
-    "**/secrets.*",
-    "**/.git/**",
-    "**/*.pem",
-    "**/*.key",
+# 敏感路径检查规则（design-13 §8 风险缓解）
+# 5 类模式：.env / secrets.* / .git/ / *.pem / *.key
+# 用结构化数据声明：(predicate_kind, value)
+SENSITIVE_PATH_RULES: list[tuple[str, str]] = [
+    ("filename_eq", ".env"),
+    ("filename_startswith", "secrets."),
+    ("path_contains", ".git"),
+    ("filename_endswith", ".pem"),
+    ("filename_endswith", ".key"),
 ]
 
 
 def _is_sensitive_path(file_path: str) -> bool:
     """检查路径是否匹配敏感路径黑名单。
 
-    规则：
-    - **/.env  → 文件名为 .env
-    - **/secrets.* → 文件名以 secrets. 开头
-    - **/.git/** → 路径中含 .git 段（匹配 .git/config 等）
-    - **/*.pem → 文件名以 .pem 结尾
-    - **/*.key → 文件名以 .key 结尾
+    5 条规则（数据驱动）：.env / secrets.* / .git / *.pem / *.key
+    自定义实现而非 fnmatch 因为 fnmatch 不支持 **，无法匹配根级 .env / .key
+    （fnmatch.fnmatch('.env', '**/.env') 返回 False）。
     """
     parts = file_path.split("/")
-    fname = parts[-1]
-    # .env
-    if fname == ".env":
-        return True
-    # secrets.*
-    if fname.startswith("secrets."):
-        return True
-    # .git/**  → 路径中含 .git 段
-    if ".git" in parts:
-        return True
-    # *.pem / *.key
-    if fname.endswith(".pem") or fname.endswith(".key"):
-        return True
+    filename = parts[-1]
+    for kind, value in SENSITIVE_PATH_RULES:
+        if kind == "filename_eq" and filename == value:
+            return True
+        if kind == "filename_startswith" and filename.startswith(value):
+            return True
+        if kind == "filename_endswith" and filename.endswith(value):
+            return True
+        if kind == "path_contains" and value in parts:
+            return True
     return False
 
 
@@ -241,7 +237,6 @@ class RipgrepExecutor:
             [{"repo": str, "file_path": str}, ...]
             敏感路径（.env / secrets.* / .git/ / *.pem / *.key）被过滤
         """
-        import os as _os
         results: list[dict] = []
         for repo_name in candidate_repos:
             repo_path = self._repo_paths.get(repo_name)
@@ -272,8 +267,11 @@ class RipgrepExecutor:
             for line in stdout.decode("utf-8", errors="replace").strip().split("\n"):
                 if not line:
                     continue
-                # 转为相对路径
-                rel_path = _os.path.relpath(line, repo_path)
+                # 转为相对路径（Windows 跨驱动器会抛 ValueError，try 内保护）
+                try:
+                    rel_path = os.path.relpath(line, repo_path)
+                except ValueError:
+                    rel_path = line  # 兜底：保留绝对路径（仅用于过滤判定）
                 if _is_sensitive_path(rel_path):
                     continue
                 results.append({"repo": repo_name, "file_path": rel_path})
