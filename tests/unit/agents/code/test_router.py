@@ -76,3 +76,25 @@ class TestRepoRouter:
         result = await route_repos(entities, cache)
         assert result["route_method"] == "broad_search"
         assert result["route_confidence"] == "low"
+
+
+@pytest.mark.anyio
+class TestRouteReposQueryParam:
+    async def test_query_param_is_optional_with_no_registry(self):
+        """repo_registry=None 时，传 query 也不破坏旧行为。"""
+        cache = MockFilePathCache({
+            "repo-a": ["README.md"],
+            "repo-b": ["setup.py"],
+        })
+        entities = {"code_refs": [], "module": ""}
+        # 旧实现签名：route_repos(entities, cache) 也应工作
+        result = await route_repos(
+            query="支付接口的认证逻辑",  # 新参数
+            entities=entities,
+            file_path_cache=cache,
+            repo_registry=None,  # 主路径禁用
+            llm=None,
+        )
+        # 没有 repo_registry 时，行为完全兼容旧实现 → broad_search
+        assert result["route_method"] == "broad_search"
+        assert result["route_confidence"] == "low"
