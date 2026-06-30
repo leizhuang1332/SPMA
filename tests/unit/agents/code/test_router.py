@@ -165,3 +165,79 @@ class TestRouteReposStage0Single:
         assert result["route_method"] == "db_registry_match_single"
         assert result["candidate_repos"] == ["repo_auth"]
         assert result["route_confidence"] == "high"
+
+
+@pytest.mark.anyio
+class TestRouteReposStage0TwoStage:
+    async def test_two_stage_when_repos_exceed_threshold(self):
+        """仓库数 > 5 走两阶段（pg_trgm 预筛 + LLM 精排）。"""
+        repos = [_make_repo(f"repo_{i}") for i in range(6)]
+        # Stage 1 keyword 预筛：模拟返回 3 个候选
+        prefiltered = [_make_repo("repo_0"), _make_repo("repo_1"), _make_repo("repo_2")]
+        reg = MockRepoRegistry(repos, keyword_results=prefiltered)
+        llm = MockLLMResponse('{"repo_names": ["repo_0", "repo_1"], "reason": "ok"}')
+        result = await route_repos(
+            query="支付",
+            entities={"code_refs": [], "module": ""},
+            file_path_cache=MockFilePathCache({}),
+            repo_registry=reg,
+            llm=llm,
+            two_stage_threshold=5,  # 6 > 5 → 走两阶段
+        )
+        assert result["route_method"] == "db_registry_match_two_stage"
+        assert result["candidate_repos"] == ["repo_0", "repo_1"]
+
+
+@pytest.mark.anyio
+class TestRouteReposFallback:
+    async def test_llm_timeout_falls_to_module_lookup(self):
+        """LLM 超时 → module_lookup 兜底。"""
+        repos = [_make_repo("repo_auth")]
+        reg = MockRepoRegistry(repos)
+        cache = MockFilePathCache({"repo_auth": ["src/auth/oauth.py"]})
+
+        class TimeoutLLM:
+            async def ainvoke(self, prompt):
+                raise TimeoutError("LLM timeout")
+
+        result = await route_repos(
+            query="用户登录",
+            entities={"code_refs": [], "module": "auth"},
+            file_path_cache=cache,
+            repo_registry=reg,
+            llm=TimeoutLLM(),
+            two_stage_threshold=5,
+        )
+        assert result["route_method"] == "module_lookup"
+
+    async def test_llm_invalid_json_falls_to_module_lookup(self):
+        """LLM 返回非 JSON → module_lookup 兜底。"""
+        repos = [_make_repo("repo_auth")]
+        reg = MockRepoRegistry(repos)
+        cache = MockFilePathCache({"repo_auth": ["src/auth/oauth.py"]})
+        llm = MockLLMResponse("不是 JSON 格式的响应")
+        result = await route_repos(
+            query="用户登录",
+            entities={"code_refs": [], "module": "auth"},
+            file_path_cache=cache,
+            repo_registry=reg,
+            llm=llm,
+            two_stage_threshold=5,
+        )
+        assert result["route_method"] == "module_lookup"
+
+    async def test_llm_hallucinated_repo_falls_to_broad_search(self):
+        """LLM 返回仓库不在 candidates → 过滤后空 → broad_search 兜底。"""
+        repos = [_make_repo("repo_auth")]
+        reg = MockRepoRegistry(repos)
+        cache = MockFilePathCache({"repo-a": ["x.py"], "repo-b": ["y.py"]})
+        llm = MockLLMResponse('{"repo_names": ["repo_hallucinated"], "reason": "幻觉"}')
+        result = await route_repos(
+            query="用户登录",
+            entities={"code_refs": [], "module": ""},
+            file_path_cache=cache,
+            repo_registry=reg,
+            llm=llm,
+            two_stage_threshold=5,
+        )
+        assert result["route_method"] == "broad_search"
