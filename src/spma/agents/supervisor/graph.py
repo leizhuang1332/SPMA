@@ -23,6 +23,7 @@ from spma.api.dependencies import get_db_pool
 from spma.ingestion.synonym_map import SynonymMap
 from spma.agents.supervisor.strategy_orchestrator import StrategyOrchestrator
 from spma.agents.supervisor.fallback_manager import FallbackManager
+from spma.agents.supervisor.semantic_voter import SemanticVoter
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,11 @@ _fallback = FallbackManager(
     primary_backup_fn=_default_primary_backup,
     rule_only_fn=lambda q, *a, **kw: q,
 )
+
+# P3: SemanticVoter 单例(零 LLM,主文件 ADR-004)
+# - embedder 传 None 表示运行时通过 build_graph(embedder=X) 注入
+# - alpha=0.4 偏重共识度(多策略独立收敛结果 > 单点最相似)
+_voter = SemanticVoter(embedder=None, alpha=0.4)
 
 
 async def _load_synonym_map() -> dict[str, list[str]]:
@@ -99,10 +105,12 @@ def build_supervisor_graph(
     qr_state_lookup=None,    # 新增:async () -> (weights_v, synonym_v)
     strategy_orchestrator=None,  # NEW: P2 — 默认用模块级 _orchestrator
     fallback_manager=None,       # NEW: P2 — 默认用模块级 _fallback
+    voter=None,                   # NEW: P3 — 默认用模块级 _voter
 ) -> StateGraph:
     # 默认用模块级单例;测试可注入 mock 覆盖。
     strategy_orchestrator = strategy_orchestrator or _orchestrator
     fallback_manager = fallback_manager or _fallback
+    voter = voter or _voter  # NEW: P3
 
     async def classify_and_extract_node(state: SupervisorState) -> dict:
         result = await classify_with_fallback(
@@ -135,6 +143,7 @@ def build_supervisor_graph(
             synonym_version=synonym_v,
             strategy_orchestrator=strategy_orchestrator,
             fallback_manager=fallback_manager,
+            voter=voter,  # NEW: P3
         )
         return {"rewritten_queries": rewritten}
 

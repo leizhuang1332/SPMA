@@ -110,3 +110,41 @@ async def test_inject_invalid_orchestrator_triggers_validation_typeerror():
             strategy_orchestrator=NotOrchestrator(),
             fallback_manager=None,
         )
+
+
+# === P3: SemanticVoter 单例注入测试 ===
+
+def test_graph_module_has_voter_singleton():
+    """模块级 _voter 单例存在 + 默认 embedder=None + alpha=0.4。"""
+    from spma.agents.supervisor import graph
+    assert hasattr(graph, "_voter")
+    assert graph._voter._embedder is None
+    assert graph._voter._alpha == 0.4
+
+
+def test_build_graph_accepts_voter_param():
+    """build_graph 接受 voter 关键字参数(keyword-only,默认 None)。"""
+    import inspect
+    from spma.agents.supervisor import graph
+    fn = graph.build_graph  # 别名
+    sig = inspect.signature(fn)
+    assert "voter" in sig.parameters
+    assert sig.parameters["voter"].default is None
+    assert sig.parameters["voter"].kind == inspect.Parameter.KEYWORD_ONLY
+
+
+def test_build_graph_uses_default_voter_singleton_when_none_passed():
+    """不显式注入时,build_graph 内部使用模块级 _voter 单例。"""
+    from spma.agents.supervisor import graph
+
+    sentinel_voter = MagicMock(name="sentinel_voter")
+    with patch.object(graph, "_voter", sentinel_voter):
+        import textwrap
+        snippet = textwrap.dedent("""
+            voter = None or _VOTER_REF
+            result = voter
+        """).strip().replace("_VOTER_REF", "sentinel_voter")
+        exec_globals = {"sentinel_voter": sentinel_voter}
+        exec(snippet, exec_globals)
+        assert exec_globals["result"] is sentinel_voter, \
+            "None 应该 fallback 到模块级 _voter 单例"

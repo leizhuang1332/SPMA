@@ -29,6 +29,7 @@ async def rewrite_queries(
     synonym_version: int = 1,
     strategy_orchestrator=None,
     fallback_manager=None,
+    voter=None,           # P3: 透传到 _do_rewrite_pipeline(仅影响 cache miss 路径)
 ) -> dict[str, str]:
     """
     查询重写主函数 - 五阶段管道 + 可选缓存
@@ -40,6 +41,8 @@ async def rewrite_queries(
         synonym_version: 当前 synonym 版本号(参与 cache key)
         strategy_orchestrator: P2 — 转发到 _do_rewrite_pipeline,P3-5 启用
         fallback_manager: P2 — 转发到 _do_rewrite_pipeline,P3-5 启用
+        voter: P3 — 转发到 _do_rewrite_pipeline(voter 内部已绑定 embedder)
+               不参与 cache key(避免 cache 失效),仅影响 cache miss 路径
     """
     if cache is not None:
         async def _compute(query: str, entities: dict) -> dict:
@@ -47,6 +50,7 @@ async def rewrite_queries(
                 query, classification, entities, llm, synonym_map, conversation_history,
                 strategy_orchestrator=strategy_orchestrator,
                 fallback_manager=fallback_manager,
+                voter=voter,
             )
 
         history_fp = _history_fingerprint(conversation_history)
@@ -86,6 +90,7 @@ async def rewrite_queries(
         query, classification, entities, llm, synonym_map, conversation_history,
         strategy_orchestrator=strategy_orchestrator,
         fallback_manager=fallback_manager,
+        voter=voter,
     )
 
 
@@ -119,16 +124,19 @@ async def _do_rewrite_pipeline(
     *,
     strategy_orchestrator=None,
     fallback_manager=None,
+    voter=None,           # P3: voter 内部已绑定 embedder,不再单独传
 ) -> dict:
     """原 rewrite_queries 主体(去掉外层 cache wrap)。
 
     P2 扩展:接受可选 strategy_orchestrator / fallback_manager。
+    P3 扩展:接受可选 voter,用于指代消解多路化(voter 内部已绑定 embedder)。
     - 关键字参数(避免未来参数膨胀时 positional 顺序歧义)
     - None 时:走原串行(向后兼容)
     - 注入时:P3-5 多路策略将用编排器替换对应阶段
     - 不匹配契约:TypeError(防 P3-5 集成时静默失效)
 
     since: P2 Task 3, see plans/2026-06-30-qr-phase2-strategy-orchestration-plan.md
+    since: P3 Task 3, see plans/2026-06-29-quality-scoring-spec-1-decoupling.md §3.3
     """
     # P2 占位:验证注入的组件 duck-type 契约,失败立刻抛错而非静默走原路径
     _validate_injected_components(strategy_orchestrator, fallback_manager)
@@ -138,8 +146,40 @@ async def _do_rewrite_pipeline(
     normalized = await _normalize_with_synonyms(query, synonym_map, entities)
     result["normalized"] = normalized
 
-    # 阶段二：指代消解
-    resolved = await _resolve_references(normalized, conversation_history, llm)
+    # ====== P3: 多路指代消解 ======
+    if strategy_orchestrator and voter:
+        # 局部导入避免循环依赖(reference_strategies 是子模块,导入安全)
+        from spma.agents.supervisor.reference_strategies import (
+            rule_based, entity_based, llm_semantic,
+        )
+        strategies = {
+            "rule_based": lambda q, h, e: rule_based(q, h, e),
+            "entity_based": lambda q, h, e: entity_based(q, h, e),
+            "llm_semantic": lambda q, h, e: llm_semantic(q, h, llm),
+        }
+        try:
+            results = await strategy_orchestrator.execute_parallel(
+                strategies, normalized, conversation_history, entities,
+            )
+            # 过滤:保留与 normalized 不同的非 None 候选
+            candidates = [r[1] for r in results if r[1] and r[1] != normalized]
+            if candidates:
+                # 用 voter 选最优(embedder 缺失时 voter 内部退化到 candidates[0])
+                resolved = await voter.vote_best(normalized, candidates)
+            else:
+                # 所有策略都返回 None 或与 normalized 相同 → 用 normalized
+                resolved = normalized
+        except Exception as ex:
+            logger.warning(
+                "multi-strategy resolution failed, fallback (%s): %s",
+                type(ex).__name__,
+                str(ex)[:200],  # 截断防 PII/堆栈/URL 泄露
+            )
+            resolved = await _resolve_references(normalized, conversation_history, llm)
+    else:
+        # 向后兼容:无编排器时走原单策略
+        resolved = await _resolve_references(normalized, conversation_history, llm)
+
     result["resolved"] = resolved
 
     # 阶段三：查询扩展（触发条件：查询长度 <= 50 或 query_type == "search"）
