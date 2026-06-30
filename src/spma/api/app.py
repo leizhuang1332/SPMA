@@ -21,6 +21,25 @@ from spma.api.routes.llm_admin import router as llm_admin_router
 logger = logging.getLogger(__name__)
 
 
+# --- RepoRegistry 全局单例（启动期注入）---
+
+_repo_registry_singleton = None
+
+
+def get_repo_registry():
+    """全局 RepoRegistry 单例访问器。"""
+    global _repo_registry_singleton
+    if _repo_registry_singleton is None:
+        raise RuntimeError("RepoRegistry 未初始化；请先调用 set_repo_registry()")
+    return _repo_registry_singleton
+
+
+def set_repo_registry(reg):
+    """测试 / 重新初始化时设置 RepoRegistry 单例。"""
+    global _repo_registry_singleton
+    _repo_registry_singleton = reg
+
+
 def _resolve_config_path() -> str:
     """解析 spma 配置文件路径。优先级: 环境变量 > spma.local.yaml > spma.yaml"""
     yaml_path = os.environ.get("SPMA_CONFIG_PATH", "")
@@ -347,6 +366,15 @@ def create_app() -> FastAPI:
         except Exception as e:
             logger.warning("db_pool 创建失败，跳过 Code Agent 依赖初始化: %s", e)
             return
+
+        # 2.5 启动期注入 RepoRegistry 单例（design-13 §3.2 / Task 17）
+        try:
+            from spma.ingestion.code.repo_registry import RepoRegistry
+            repo_registry = RepoRegistry(db_pool)
+            set_repo_registry(repo_registry)
+            logger.info("RepoRegistry 单例已注入")
+        except Exception as e:
+            logger.warning("RepoRegistry 初始化失败（route_repos 将降级到 file_path_cache）: %s", e)
 
         # 3. 调用 init_code_agent_deps（内部已做全量或全无 + 失败清理）
         try:

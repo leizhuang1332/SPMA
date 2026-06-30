@@ -197,6 +197,7 @@ async def general_query(req: QueryRequest):
                         get_ripgrep_executor,
                         get_ast_parser,
                     )
+                    from spma.api.app import get_repo_registry
                     from spma.agents.code.graph import build_code_agent_graph
 
                     try:
@@ -215,11 +216,20 @@ async def general_query(req: QueryRequest):
                             "error": f"worker_not_ready:{str(e)[:100]}",
                         }
 
+                    # v2: RepoRegistry 主路径（如未注入则降级到 file_path_cache fallback）
+                    try:
+                        repo_registry = get_repo_registry()
+                    except RuntimeError as e:
+                        logger.info("RepoRegistry 未注入，route_repos 降级到 file_path_cache: %s", e)
+                        repo_registry = None
+
                     g = build_code_agent_graph(
                         file_path_cache=file_path_cache,
                         ripgrep_executor=ripgrep_executor,
                         ast_parser=ast_parser,
                         llm=llm,
+                        repo_registry=repo_registry,   # v2: RepoRegistry 注入
+                        two_stage_threshold=5,         # v2: Stage 0 阈值
                     )
                     result = await g.ainvoke({
                         "original_query": req.query,
