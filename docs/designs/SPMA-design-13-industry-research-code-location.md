@@ -160,26 +160,79 @@ repos:
 **加载机制**：
 
 ```python
+import logging
+import os
 import yaml
-from typing import list, dict
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_MANIFEST_PATH = "./config/module_manifest.yaml"
+
 
 class RepoRegistry:
-    """仓库元数据注册表——从 YAML 加载并提供查询接口。"""
-    
-    def __init__(self, manifest_path: str):
-        self._manifest_path = manifest_path
-        self._repos = self._load_manifest()
-    
+    """仓库元数据注册表——从 YAML 加载并提供查询接口。
+
+    加载策略：
+      - manifest_path 优先级：构造函数参数 > 环境变量 MODULE_MANIFEST_PATH > 默认路径
+      - fail-fast 默认开启（YAML 缺失/解析失败/字段缺失 → 启动失败）
+      - 可通过 MODULE_MANIFEST_OPTIONAL=true 降级到 file_path_cache（仅用 dir_module_map 兜底）
+    """
+
+    def __init__(
+        self,
+        manifest_path: str | None = None,
+        optional: bool | None = None,
+    ):
+        self._manifest_path = (
+            manifest_path
+            or os.environ.get("MODULE_MANIFEST_PATH")
+            or DEFAULT_MANIFEST_PATH
+        )
+        self._optional = (
+            optional
+            if optional is not None
+            else os.environ.get("MODULE_MANIFEST_OPTIONAL", "false").lower() == "true"
+        )
+        self._repos = self._load_manifest()  # 可能 raise 或 返回 []
+
     def _load_manifest(self) -> list[dict]:
-        """从 YAML 文件加载仓库元数据。"""
+        """从 YAML 文件加载仓库元数据。
+
+        失败处理：
+          - 文件不存在：self._optional=True 时 warn 并返回 []（降级）；否则 raise FileNotFoundError
+          - 解析失败 / 字段缺失：raise（无论 optional 与否，避免运行时静默错误）
+        """
+        if not os.path.exists(self._manifest_path):
+            msg = f"module_manifest.yaml not found: {self._manifest_path}"
+            if self._optional:
+                logger.warning(f"{msg}（MODULE_MANIFEST_OPTIONAL=true，降级到 file_path_cache）")
+                return []
+            raise FileNotFoundError(msg)
         with open(self._manifest_path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
-        return data.get("repos", [])
-    
+        repos = data.get("repos", []) if data else []
+        # 启动期严格校验（fail-fast）
+        self._validate(repos)
+        return repos
+
+    @staticmethod
+    def _validate(repos: list[dict]) -> None:
+        """启动期校验：必填字段、name 唯一、description 长度。"""
+        seen_names = set()
+        for i, r in enumerate(repos):
+            for field in ("name", "description", "keywords"):
+                if not r.get(field):
+                    raise ValueError(f"repos[{i}] 缺少必填字段 {field}")
+            if r["name"] in seen_names:
+                raise ValueError(f"repos[{i}].name={r['name']} 重复")
+            seen_names.add(r["name"])
+            if not (5 <= len(r["description"]) <= 200):
+                raise ValueError(f"repos[{i}].description 长度需在 5-200 字符之间")
+
     def get_all_repos(self) -> list[dict]:
         """获取所有仓库的元数据。"""
         return self._repos
-    
+
     def get_repo_by_name(self, name: str) -> dict | None:
         """根据仓库名获取元数据。"""
         for repo in self._repos:
@@ -187,6 +240,23 @@ class RepoRegistry:
                 return repo
         return None
 ```
+
+**YAML 路径配置矩阵**：
+
+| 配置来源                    | 优先级 | 适用场景          |
+| ----------------------- | --- | ------------- |
+| `RepoRegistry(manifest_path=...)` 构造参数 | 最高  | 测试 / 单仓库部署    |
+| `MODULE_MANIFEST_PATH` 环境变量       | 中   | 不同环境（dev/staging/prod）切换 |
+| 默认 `./config/module_manifest.yaml` | 最低  | 单环境默认部署       |
+
+**fail-fast 与降级矩阵**：
+
+| 触发条件               | 默认行为 (optional=false) | 显式降级 (optional=true)      |
+| ------------------ | -------------------- | ------------------------- |
+| YAML 文件不存在         | `FileNotFoundError` 启动失败 | warn 日志，返回 `[]`，主路径走 module_lookup |
+| YAML 解析失败          | `yaml.YAMLError` 启动失败  | 同样 raise（避免运行时静默错误）       |
+| 字段缺失 / name 重复     | `ValueError` 启动失败    | 同样 raise                   |
+| `get_repo_by_name` 未命中 | 返回 `None`，路由主路径过滤后降级到 broad_search | 行为一致                    |
 
 **优势**：
 
@@ -303,33 +373,40 @@ LLM 返回：
    收敛条件满足 → 返回结果
 ```
 
-**收敛条件**（参考 Claude Code 固定点迭代机制，5 种确定性 + 1 种 LLM 兜底，详见 v2 升级后的 [completeness.py](src/spma/agents/code/completeness.py)）：
+**收敛条件**（参考 Claude Code 固定点迭代机制，**5 种确定性 + 2 种 LLM 路径（共 7 种 level 枚举）**，详见 v2 升级后的 [completeness.py](src/spma/agents/code/completeness.py)）：
 
-| 模式                       | 触发条件                                                            | 说明                          |
-| ------------------------ | --------------------------------------------------------------- | --------------------------- |
-| **goal\_verified**       | `code_refs` 非空 + `total_results ≥ 3` + `fallback_layer = 0`     | 目标已验证，确定性收敛（最高优先级）          |
-| **stuck**                | `new_files_this_round = 0` 且 `previous_new_files = 0`（连续两轮无新文件） | 搜索陷入停滞                      |
-| **regression**           | `round_over_round_ratio < 0.5` 且本轮 `total_results` 减少           | 质量下降，搜索发散                   |
-| **diminishing\_returns** | 连续两轮 `new_files_rate < 0.10`                                    | 收益递减                        |
-| **cap\_reached**         | `call_depth ≥ 6`（max\_rounds）或 `total_files ≥ 50`（max\_files）   | 硬上限触发                       |
-| **llm\_judged**          | 以上均不命中，调用 `_llm_code_completeness_check` 让 LLM 判定 sufficient    | 兜底路径（成本最高，仅在 `llm` 参数非空时启用） |
+| 模式                       | 触发条件                                                            | 类别       | 说明                                            |
+| ------------------------ | --------------------------------------------------------------- | -------- | --------------------------------------------- |
+| **goal\_verified**       | `code_refs` 非空 + `total_results ≥ 3` + `fallback_layer = 0`     | 确定性      | 目标已验证，最高优先级                                    |
+| **stuck**                | `round ≥ 2` 且 `new_files_this_round = 0` 且 `previous_new_files = 0` | 确定性 | 搜索陷入停滞（连续两轮无新文件，首轮不触发以避免假收敛）              |
+| **regression**           | `round_over_round_ratio < 0.5` 且本轮 `total_results` 减少           | 确定性      | 质量下降，搜索发散                                     |
+| **diminishing\_returns** | 连续两轮 `new_files_rate < 0.10`                                    | 确定性      | 收益递减                                          |
+| **cap\_reached**         | `call_depth ≥ max_rounds` 或 `total_files ≥ max_files`           | 确定性      | 硬上限触发                                         |
+| **llm\_judged**          | 5 种确定性模式全不命中 + LLM 判定 `sufficient`                       | LLM 路径   | sufficient → 收敛（成本较高，仅 `llm` 参数非空时启用）        |
+| **expand**               | 5 种确定性模式全不命中 + LLM 判定 `insufficient`（或 LLM 调用失败兜底）     | LLM 路径   | insufficient → 继续下一轮                            |
+
+> **轮次索引约定**：`state.round` 为 **1-indexed**，第 1 轮 round=1（首轮 `previous_new_files=0` 是初始化值而非"上一轮为 0"，因此 `stuck` 在 round=1 不触发）。
+>
+> **LLM 路径分工**：`llm_judged` 与 `expand` 都是 LLM 路径产生的收敛模式，区别是 LLM 判定 `sufficient`（收敛）还是 `insufficient`（继续）；LLM 调用本身失败时也兜底为 `expand`。
 
 **轮次 → fallback\_layer 映射**（与 `searcher.search()` 的 4 层降级 [searcher.py:22-83](src/spma/agents/code/searcher.py#L22-L83) 对齐）：
 
 | 轮次 (round) | fallback\_layer | search 模式       | 适用场景            |
 | ---------- | --------------- | --------------- | --------------- |
-| 0          | 0               | exact (L0)      | 精确词命中，最高信度      |
-| 1          | 1               | stem (L1)       | 精确词无果，按词干拆分     |
-| 2          | 2               | fuzzy (L2)      | 词干无果，模糊匹配       |
-| ≥ 3        | 3               | llm\_retry (L3) | 兜底，调用 LLM 重组关键词 |
+| 1          | 0               | exact (L0)      | 精确词命中，最高信度      |
+| 2          | 1               | stem (L1)       | 精确词无果，按词干拆分     |
+| 3          | 2               | fuzzy (L2)      | 词干无果，模糊匹配       |
+| ≥ 4        | 3               | llm\_retry (L3) | 兜底，调用 LLM 重组关键词 |
+
+> **注意**：轮次从 1 起算（与 `state.round` 一致），对应 fallback\_layer 0/1/2/3 起步；不再是 round=0 起步的旧设计。
 
 **核心指标定义**：
 
 | 指标                       | 计算公式                                           | 说明            |
 | ------------------------ | ---------------------------------------------- | ------------- |
 | `new_files_this_round`   | 本轮新增文件数                                        | 用于判断是否有新发现    |
-| `new_files_rate`         | new\_files\_this\_round / total\_files         | 新文件占比，反映探索效率  |
-| `round_over_round_ratio` | new\_files\_this\_round / previous\_new\_files | 轮间新文件数比率，反映趋势 |
+| `new_files_rate`         | new\_files\_this\_round / total\_files（除零时定义为 0） | 新文件占比，反映探索效率 |
+| `round_over_round_ratio` | new\_files\_this\_round / previous\_new\_files（previous=0 时定义为 1） | 轮间新文件数比率，反映趋势 |
 
 **最大搜索限制**（v2 目标）：
 
@@ -337,7 +414,7 @@ LLM 返回：
 - 最大文件数：50 个
 - 每轮最大搜索词：10 个
 
-> **注**：当前 `graph.py` 默认 `max_rounds: int = 3`（[graph.py:17](src/spma/agents/code/graph.py#L17)）；v2 实施时由 `CodeExplorer` 构造函数默认 `max_rounds=6` 接管。
+> **注**：当前 `graph.py` 默认 `max_rounds: int = 3`（[graph.py:17](src/spma/agents/code/graph.py#L17)）；v2 实施时由 `CodeExplorer` 构造函数默认 `max_rounds=6` 接管（round 1-indexed，第 7 轮时 `call_depth=7 ≥ max_rounds=6` 触发 `cap_reached`）。
 
 **与现有代码的接口衔接**：
 
@@ -400,7 +477,7 @@ async def read_files(self, files: list[dict]) -> list[dict]:
 
 **3. 多轮探索引擎**
 
-详见 [§3.5 实现：CodeExplorer 与 graph.py 薄包装](#35-实现codeexplorer-与-graphpy-薄包装)。本节定义的设计意图（`Glob → Grep → Read` 循环、6 种收敛判定、轮次→fallback\_layer 映射、核心指标）在 §3.5 实现中**完整沿用**。
+详见 [§3.5 实现：CodeExplorer 与 graph.py 薄包装](#35-实现codeexplorer-与-graphpy-薄包装)。本节定义的设计意图（`Glob → Grep → Read` 循环、7 种收敛判定、轮次→fallback\_layer 映射、核心指标）在 §3.5 实现中**完整沿用**。
 
 **优势**：
 
@@ -422,9 +499,9 @@ async def read_files(self, files: list[dict]) -> list[dict]:
 
 | ID  | 问题                                                                                | 设计对策                                                                |
 | --- | --------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| P1  | 若 `assess` 跑在 `expand` 之前，第 1 轮 `new_files_this_round=0, previous_new_files=0` 立即触发 `stuck` 假收敛 | 把 `assess` 移到 `expand` 之后（顺序：refine → glob → grep → read → expand → assess） |
+| P1  | 若 `assess` 跑在 `expand` 之前，第 1 轮 `new_files_this_round=0, previous_new_files=0` 立即触发 `stuck` 假收敛 | 把 `assess` 移到 `expand` 之后（顺序：refine → glob → grep → read → expand → assess）；并在 `stuck` 模式判定条件加 `round ≥ 2` 守卫，首轮豁免 |
 | P2  | `RipgrepExecutor` 若不显式实现 `glob_files()` / `read_files()`，多轮循环会缺 Glob 和 Read 步骤           | `CodeExplorer` 显式串联 6 个阶段方法（见 §3.5.4），不依赖状态机的隐式调度；任务 #5 前置补齐负责实现这 2 个方法 |
-| P3  | `build_search_terms(entities)` 只读 entities，不读 `expanded_context`——违背"每轮精化关键词"的 Claude Code 核心机制 | 新增 `_refine_terms()` 阶段：基于上轮 `expanded_context` 调用 LLM 重组关键词            |
+| P3  | `build_search_terms(entities)` 只读 entities，不读 `expanded_context`——违背"每轮精化关键词"的 Claude Code 核心机制 | 新增 `_refine_terms()` 阶段：基于上轮 `expanded_context` 调用 LLM 重组关键词；首轮 `expanded_context` 为空时退化用 `query + entities` 作为精化输入 |
 
 #### 3.5.2 架构总览
 
@@ -486,7 +563,7 @@ class ExplorerState:
 ```python
 class CodeExplorer:
     """多轮探索引擎——封装 Glob→Grep→Read→Refine→Assess 循环。
-    
+
     独立于 LangGraph：可通过 explore() 一次性调用，也可注入 mock 状态做单测。
     """
 
@@ -507,33 +584,60 @@ class CodeExplorer:
         self._max_files = max_files
 
     async def explore(self, graph_state: CodeAgentState) -> CodeAgentState:
-        """一次性跑完多轮探索，返回写回的 graph_state。"""
+        """一次性跑完多轮探索，返回写回的 graph_state。
+
+        轮次索引约定：state.round 为 1-indexed（首轮 round=1）。
+        触发条件：not self._is_converged()（含 cap_reached / goal_verified / stuck / regression / diminishing_returns / llm_judged）。
+        """
         state = self._init_from_graph_state(graph_state)
         while not self._is_converged():
             await self._run_one_round(state)
             if self._on_round_complete:
+                # fire-after-each-round：每轮都触发，不做去重
                 await self._on_round_complete(state)
         return self._write_back_to_graph_state(graph_state, state)
 
     # ---- 单步 API（单测用，常规 explore() 不会调用）----
     async def _run_one_round(self, state: ExplorerState) -> None:
-        state.round += 1
-        state.call_depth = state.round
-        await self._refine_terms(state)            # P3 对策
+        state.round += 1                                # 1-indexed：第 1 轮后 round=1
+        state.call_depth = state.round                  # call_depth 与 round 同步
+        await self._refine_terms(state)                 # P3 对策（首轮退化见下方）
         glob_hits = await self._glob(state)
         grep_hits = await self._grep(state)
         read_hits = await self._read(state, glob_hits + grep_hits)  # P2 对策
         await self._expand_via_ast(state)
-        await self._assess(state)                  # P1 对策：assess 移到 expand 之后
+        await self._assess(state)                       # P1 对策：assess 移到 expand 之后
 
     # ---- 6 个阶段方法（每阶段一个职责）----
-    async def _refine_terms(self, state): ...      # 基于 expanded_context 精化（P3）
+    async def _refine_terms(self, state):
+        """基于上轮 expanded_context 调用 LLM 重组关键词（P3 对策）。
+        首轮（state.round == 1 且 state.expanded_context 为空）退化：
+            用 state.query + state.entities 作为精化输入，不再调 LLM。
+        """
+        ...
+
     async def _glob(self, state): ...             # 调 ripgrep_executor.glob_files（P2）
     async def _grep(self, state): ...             # 调 ripgrep_executor.search
     async def _read(self, state, candidates): ... # 调 ripgrep_executor.read_files（P2）
-    async def _expand_via_ast(self, state): ...   # AST 辅助
-    async def _assess(self, state): ...           # 调 assess_code_completeness（P1）
+    async def _expand_via_ast(self, state): ...   # AST 辅助（直接调用现有 expand_via_ast + 增量追加）
+    async def _assess(self, state): ...           # 调 assess_code_completeness（P1），level 枚举升级为 7 种
 ```
+
+**`_assess` 返回 level 枚举（v2 升级后，共 7 种）**：
+
+```python
+# v2 assess_code_completeness 返回值
+class CodeCompletenessResult:
+    verdict: str          # "converge" | "expand"（与 LangGraph 节点契约兼容）
+    level: str            # 7 种之一：goal_verified / stuck / regression / diminishing_returns
+                          #         / cap_reached / llm_judged / expand
+    reason: str
+```
+
+> **7 种 level 分类**：
+>
+> - **5 种确定性**：`goal_verified` / `stuck` / `regression` / `diminishing_returns` / `cap_reached`
+> - **2 种 LLM 路径**：`llm_judged`（sufficient→converge）、`expand`（insufficient→继续；LLM 调用失败时也兜底为此）
 
 #### 3.5.5 graph.py 薄包装
 
@@ -614,10 +718,11 @@ def build_code_agent_graph(
 | ----------------------------- | -------------------------------------------------- |
 | `test_init_from_graph_state` | 从 LangGraph state 正确转换字段                            |
 | `test_refine_terms_llm_fail`  | LLM 超时时 search\_terms 保持上轮值                        |
+| `test_refine_terms_round1_degraded` | 第 1 轮 expanded\_context 为空时退化用 query+entities，不再调 LLM |
 | `test_glob_grep_read_integration` | 3 个阶段串联，验证 P2 对策（glob/read 显式调用）              |
 | `test_assess_after_expand`    | 验证 P1 对策：round 1 assess 看到真实 new\_files\_this\_round |
-| `test_converge_stuck`         | 连续两轮 0 新文件 → `stuck`（boundary case：第 1 轮 vs 第 2 轮） |
-| `test_max_rounds_cap`         | 达到 max\_rounds 仍不收敛 → 返回 `cap_reached`             |
+| `test_converge_stuck`         | round=2 起连续两轮 0 新文件 → `stuck`（boundary case：round=1 不触发） |
+| `test_max_rounds_cap`         | round=7（call\_depth=7 ≥ max\_rounds=6）触发 `cap_reached` |
 | `test_callback_invoked`       | 每轮结束触发 `on_round_complete` 回调                       |
 
 **集成测试**：
@@ -625,6 +730,7 @@ def build_code_agent_graph(
 - 端到端 fixture（参考最近 commit `9f8c3f1`）：Testcontainers PG + 模拟 ripgrep executor
 - 验证 graph 编译成功 + 跑通完整流程
 - 验证 `on_round_complete` 回调每轮触发
+- 7 种收敛 level 各跑通一个 fixture（与 §7.2 `assess_code_completeness` 测试矩阵对齐）
 
 #### 3.5.8 流程图
 
@@ -638,7 +744,7 @@ flowchart TD
     F --> G[_grep: ripgrep 搜索]
     G --> H[_read: 读取文件]
     H --> I[_expand_via_ast: AST 辅助]
-    I --> J[_assess: 6 种收敛判定]
+    I --> J[_assess: 7 种收敛判定<br/>5 确定性 + 2 LLM 路径]
     J --> K{收敛?}
     K -->|否| L[round++, callback]
     L --> D
@@ -724,9 +830,9 @@ class VectorPreFilter:
 | 1 | 创建 `module_manifest.yaml` | P0  | 声明式配置仓库元数据（新增主路径数据源）                                          | 所有现存仓库均填齐 `name` / `description` / `keywords` / `tech_stack`；通过 `yaml.safe_load` 校验通过 |
 | 2 | 实现 `RepoRegistry` 类       | P0  | 从 YAML 加载仓库元数据，提供 `get_all_repos` / `get_repo_by_name`        | 单元测试覆盖空文件 / 缺字段 / 重复 `name` 三种异常路径                                                    |
 | 3 | 修改 `route_repos`          | P0  | 添加 `query` 与 `repo_registry` 参数                               | 保留旧路径作为兜底；`route_method` 新增 `llm_yaml_match` 枚举值                                      |
-| 4 | 实现单阶段路由（LLM 选仓库）          | P0  | LLM 直接从仓库列表中选择候选仓库                                            | 离线 replay 测试集 ≥ 30 条，路由准确率 ≥ 75%                                                      |
+| 4 | 实现单阶段路由（LLM 选仓库）          | P0  | LLM 直接从仓库列表中选择候选仓库                                            | 离线 replay 测试集 ≥ 30 条，路由准确率 ≥ **80%**（与 §10.2 阶段 1 切换条件、§7.2 集成测试门槛保持一致）                                                      |
 | 5 | **多轮探索前置补齐**                | P0  | 在 v2 主任务前先把 3 个底层能力补齐：① `searcher.py` 新增 `glob_files` / `read_files` 方法；② `completeness.py` 从 3 级（`L1/L2/L3`）升级为 5+2 模式 + 新增 3 个参数；③ `graph.py` 默认 `max_rounds` 由 3 提到 6 | ① `RipgrepExecutor` 暴露 2 个新方法且单元测试通过；② 7 种 level 枚举各跑通一个 fixture；③ `build_code_agent_graph` 默认 `max_rounds=6` 且保留向后兼容；三个改动**全部独立 commit** |
-| 6 | 多轮探索：`CodeExplorer` 抽离 + graph.py 薄包装（见 §3.5） | P0 | 新增 `src/spma/agents/code/explorer.py`（~250 行），实现 6 阶段方法（refine/glob/grep/read/expand/assess）；改造 `graph.py` 为 3 节点薄包装；解决 P1（assess reorder）/P2（接 glob+read）/P3（每轮精化关键词）三类问题 | Explorer 单元测试 7 项全过；6 种收敛模式各跑通一个 fixture；`on_round_complete` 回调在每轮触发；`previous_new_files` 跨轮正确传递；依赖任务 #5 全部完成 |
+| 6 | 多轮探索：`CodeExplorer` 抽离 + graph.py 薄包装（见 §3.5） | P0 | 新增 `src/spma/agents/code/explorer.py`（~250 行），实现 6 阶段方法（refine/glob/grep/read/expand/assess）；改造 `graph.py` 为 3 节点薄包装；解决 P1（assess reorder）/P2（接 glob+read）/P3（每轮精化关键词）三类问题 | Explorer 单元测试 8 项全过（含新增 `test_refine_terms_round1_degraded`）；7 种收敛模式各跑通一个 fixture（5 确定性 + 2 LLM 路径）；`on_round_complete` 回调在每轮触发；`previous_new_files` 跨轮正确传递；依赖任务 #5 全部完成 |
 
 ### 5.2 第二阶段：优化与验证（1-2 周）
 
@@ -751,11 +857,11 @@ class VectorPreFilter:
 
 ***
 
-## 六.五、可观测性与测试策略
+## 七、可观测性与测试策略
 
-> 本节为评审补强章节，明确"路由准确率如何度量"与"上线前如何验证"，对应 §9.4 灰度策略与切换条件所需的量化支撑。
+> 本章明确"路由准确率如何度量"与"上线前如何验证"，对应 §10.4 灰度策略与切换条件所需的量化支撑。
 
-### 6.5.1 可观测性指标（Prometheus）
+### 7.1 可观测性指标（Prometheus）
 
 参考项目已有的 `qr_*` 指标命名（见最近 commit `d79762b feat(obs): add qr_cache_hit_ratio gauge`），新增以下 `code_*` 指标：
 
@@ -764,19 +870,24 @@ class VectorPreFilter:
 | `code_route_total`                | counter   | `route_method`         | 各路由路径命中次数（`llm_yaml_match` / `exact_file_match` / `module_lookup` / `broad_search`） |
 | `code_route_confidence`           | counter   | `confidence`           | 各置信度档位命中次数                                                                          |
 | `code_route_llm_latency_seconds`  | histogram | `route_method`         | LLM 路由调用延迟分布                                                                        |
+| `code_route_total_latency_seconds` | histogram | `route_method`         | `route_repos` 端到端延迟分布（含降级路径），P50/P95/P99 SLO 在此处埋点                                  |
 | `code_route_accuracy_sample`      | counter   | `verdict`              | 人工标注 / 在线 A/B 评估的样本数                                                                |
 | `code_explore_rounds`             | histogram | `converge_level`       | 探索收敛轮数分布（按 level 区分）                                                                |
+| `code_explorer_refine_errors_total` | counter | `op`                   | `_refine_terms` / `_assess` LLM 路径异常次数                                                   |
 | `code_searcher_timeout_total`     | counter   | `op`（search/glob/read） | ripgrep subprocess 超时次数                                                             |
 | `code_searcher_fail_total`        | counter   | `op`                   | ripgrep 失败次数（非 0/1 退出码 / 文件 I/O 失败）                                                 |
 | `code_repo_registry_load_seconds` | histogram | `status`               | `RepoRegistry` YAML 加载耗时与成败                                                         |
+| `code_route_fallback_total`       | counter   | `from_method`, `to_method` | 路由降级次数（from=主路径失败，to=降级到的路径），用于统计 LLM 不可用时的兜底率                              |
 
-**告警规则**（与 §9.4 自动回滚触发器对齐）：
+**告警规则**（与 §10.4 自动回滚触发器对齐）：
 
 - `code_route_llm_latency_seconds:p99 > 3s`（5 分钟窗口）
+- `code_route_total_latency_seconds:p99 > 5s`（5 分钟窗口，端到端兜底）
 - `rate(code_searcher_timeout_total[5m]) > 10`（按 op 拆分）
+- `rate(code_route_fallback_total{from_method="llm_yaml_match"}[5m]) > 50`（LLM 不可用兜底率超过 10%）
 - `code_repo_registry_load_seconds:status="fail" increase > 0`（启动失败即时告警）
 
-### 6.5.2 测试策略
+### 7.2 测试策略
 
 **单元测试**（覆盖率目标 ≥ 85%）：
 
@@ -784,56 +895,85 @@ class VectorPreFilter:
 | -------------------------- | --------------------------------------------------------------------------------------------------------------- |
 | `RepoRegistry`             | ① 空文件 / 缺字段 / 重复 `name` 异常；② 正常加载后 `get_repo_by_name` 命中率 100%                                                  |
 | `RipgrepExecutor`          | ① `glob_files` / `read_files` 各 1 case；② `search` 4 层降级各 1 case；③ timeout 触发 kill 路径                            |
-| `assess_code_completeness` | 6 种收敛模式各 1 case：`goal_verified` / `stuck` / `regression` / `diminishing_returns` / `cap_reached` / `llm_judged` |
+| `assess_code_completeness` | 7 种收敛模式各 1 case：`goal_verified` / `stuck` / `regression` / `diminishing_returns` / `cap_reached` / `llm_judged` / `expand` |
 | `route_repos`              | ① LLM YAML 主路径；② LLM 失败降级到 `module_lookup`；③ YAML 返回空 → `broad_search` 兜底                                       |
+| `CodeExplorer`             | 见 §3.5.7 单测矩阵（7 项 case）                                                                                    |
+
+**路由降级覆盖率测试**（独立单元测试，保证 4 条降级路径都被覆盖）：
+
+| 场景                                  | 触发方式                                | 期望 route_method           | 期望告警                        |
+| ----------------------------------- | ----------------------------------- | ------------------------- | --------------------------- |
+| LLM 主路径成功                          | mock LLM 返回合法 JSON                  | `llm_yaml_match`          | 无                           |
+| LLM 主路径超时                            | mock LLM `asyncio.TimeoutError`     | `module_lookup`           | `code_route_fallback_total`  |
+| LLM 主路径返回 JSON 解析错误                  | mock LLM 返回 malformed JSON          | `module_lookup`           | `code_route_fallback_total`  |
+| LLM 主路径返回仓库不在 RepoRegistry 中        | mock LLM 返回未注册的 repo_name        | `broad_search`            | `code_route_fallback_total`  |
+| `module_manifest.yaml` 文件不存在（fail-safe 模式） | 删文件 + `MODULE_MANIFEST_OPTIONAL=true` | `module_lookup`           | 启动 warn 日志                   |
 
 **集成测试**（基于 Testcontainers，参考最近 commit `9f8c3f1 test(qr): end-to-end integration`）：
 
 - 端到端 fixture：用户查询 → `route_repos` → 多轮探索 → 收敛 → 返回结果
 - 离线 replay 测试集：≥ 30 条标注样本（覆盖中英文混合查询、单仓库 / 多仓库命中、模糊查询场景）
-- 准确率门槛：路由准确率 ≥ 80%（§9.2 阶段 1 切换条件）
+- 准确率门槛：路由准确率 ≥ **80%**（与 §10.2 阶段 1 切换条件保持一致）
 
-**回滚演练**（§9.3 滚出策略的可执行验证）：
+**回滚演练**（§10.3 滚出策略的可执行验证）：
 
 - 注入 `code_route_llm_latency_seconds` 异常（mock LLM 慢响应）→ 验证 5 分钟内自动触发回滚
 - 注入 `module_manifest.yaml` 损坏 → 验证 `RepoRegistry` 启动 fail-fast 行为
 - 演练频次：每次发版前必须跑通，记录到 release checklist
 
-## 七、风险与权衡
+### 7.3 YAML Schema 校验（CI 检查）
+
+`module_manifest.yaml` 在 CI 流水线（PR 检查阶段）必须通过 schema 校验，避免运行时才发现问题：
+
+| 检查项                  | 校验规则                                                   | 失败行为          |
+| -------------------- | ------------------------------------------------------ | ------------- |
+| 必填字段存在              | `name` / `description` / `keywords` 三个字段全部存在           | PR 检查 fail    |
+| `name` 唯一性          | `repos[].name` 全集合无重复                                    | PR 检查 fail    |
+| `description` 长度     | ≥ 5 字符（避免空描述），≤ 200 字符（避免超长 prompt）                    | PR 检查 fail    |
+| `keywords` 非空       | 至少 1 个关键词，逗号分隔后去空                                       | PR 检查 fail    |
+| `tech_stack` 可选     | 缺失合法，填了则 ≤ 100 字符                                       | warning       |
+| 双数据源不变量             | `file_path_cache.repo_name` 集合 ⊇ `module_manifest.yaml` 的 `repos[].name` | PR 检查 fail    |
+| 与 DB `repo_registry` 一致 | 提示新增 / 删除 / 改名的仓库清单（informational）                       | warning       |
+
+校验脚本可放在 `scripts/check_module_manifest.py`，通过 `pre-commit` 钩子或 GitHub Actions 触发。
+
+## 八、风险与权衡
 
 | 风险                    | 影响                                            | 缓解措施                                                                                                                             |
 | --------------------- | --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
 | 路由准确性                 | 仓库描述不准确导致路由错误                                 | 提供模板化元数据填写指南；定期审核；离线 replay 测试集持续回归                                                                                              |
-| LLM 调用成本              | 每查询一次 LLM（含探索收敛判定）                            | 设置 LLM 响应缓存（关键词级别）；`llm_judged` 路径只在确定性模式全失败时启用；限制每查询 LLM 调用 ≤ 2 次（1 次路由 + 1 次收敛）                                                |
-| 响应时间                  | 多轮探索增加延迟                                      | 限制每轮搜索范围，优先精确匹配；`RipgrepExecutor` 单次 timeout 5s（[searcher.py:19](src/spma/agents/code/searcher.py#L19)），subprocess 终止后强制 kill 兜底 |
+| LLM 调用成本              | 多轮探索每轮调 LLM 精化关键词                                | **LLM 调用上限 = 1（路由）+ 6（每轮 \_refine\_terms）+ 1（\_assess 兜底）= 8 次/查询**；典型场景 2-4 次（路由 1 + 1-3 轮 refine + 0-1 次 assess）<br>优化策略：① `_refine_terms` 仅在 `_assess` 判定 `expand` 后触发（节省 30% 调用）；② `_refine_terms` 与 `_assess` 共享 LLM client 连接池；③ 设置 LLM 响应缓存（query+context 哈希 → refined_terms）                                              |
+| 响应时间                  | 多轮探索增加延迟                                      | 限制每轮搜索范围，优先精确匹配；`RipgrepExecutor` 单次 timeout 5s（[searcher.py:19](src/spma/agents/code/searcher.py#L19)），subprocess 终止后强制 kill 兜底；端到端 P99 SLO 5s（`code_route_total_latency_seconds`）                                                  |
 | 仓库数量增长                | 超过 100 个仓库时提示词超限                              | 预留向量预筛选作为扩展路径（见 §4）                                                                                                              |
 | ripgrep subprocess 失败 | `_rg_search` 进程崩溃、仓库无文件、权限不足                  | 单仓库失败仅跳过该仓库（不中断整轮）；返回非 0 / 1 退出码时记录 stderr 前 200 字符告警                                                                            |
 | ripgrep timeout       | 大仓库搜索超过 5s 阈值                                 | terminate → 2s grace → kill 三级兜底；超时计入 `searcher_timeout_total` 指标                                                                |
-| 文件 I/O 失败             | `read_files` 读不到文件（权限/不存在/编码错误）               | `errors="ignore"` 静默跳过；记录 `read_files_fail_total` 指标                                                                             |
-| YAML 配置漂移             | `module_manifest.yaml` 与实际仓库不一致（新增仓库未注册、字段缺失） | `RepoRegistry` 加载时严格校验（启动 fail-fast）；CI 增加 YAML 字段完整性检查                                                                          |
-| 探索发散                  | 多轮探索陷入无效搜索（>6 轮）                              | `cap_reached` 硬截断；`previous_new_files` 状态维护使 `stuck` / `regression` 模式尽早触发                                                       |
+| 文件 I/O 失败             | `read_files` 读不到文件（权限/不存在/编码错误）               | `errors="ignore"` 静默跳过；记录 `code_searcher_fail_total{op="read"}` 指标；额外黑名单过滤 `.env` / `secrets.*` / `.git/` 等敏感/无关路径（见 §9 适配表）                                                       |
+| YAML 配置漂移             | `module_manifest.yaml` 与实际仓库不一致（新增仓库未注册、字段缺失） | `RepoRegistry` 加载时严格校验（启动 fail-fast）；CI 增加 YAML schema 校验（见 §7.3）；可选 `MODULE_MANIFEST_OPTIONAL=true` 环境变量降级到 `file_path_cache`                                                                          |
+| 探索发散                  | 多轮探索陷入无效搜索（>6 轮）                              | `cap_reached` 硬截断（call\_depth ≥ max\_rounds）；`previous_new_files` 状态维护使 `stuck` / `regression` 模式尽早触发                                                       |
+| 敏感文件泄露                | `read_files` 可能读取 `.env` / `credentials` 等敏感文件         | 读取前过滤路径黑名单（`**/.env` / `**/secrets.*` / `**/.git/` / `**/*.pem` / `**/*.key`）；日志脱敏（`code_searcher_fail_total` 不记录文件内容）                                                       |
 
 ***
 
-## 八、与现有代码的适配
+## 九、与现有代码的适配
 
 | 现有代码                  | 方案需求              | 适配方式                                                                                                                                                                         |
 | --------------------- | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `router.py`           | route\_repos 透传查询 | 修改函数签名，新增 `query` + `repo_registry` 参数；`route_method` 增加 `llm_yaml_match` 枚举                                                                                                 |
 | `entity_extractor.py` | LLM 意图分析          | 复用现有实体抽取能力，作为路由辅助（当前 `code_refs` / `module` 仍可能为空）                                                                                                                           |
-| `searcher.py`         | Glob→Grep→Read    | 当前仅有 `search()`（[searcher.py:22-83](src/spma/agents/code/searcher.py#L22-L83)）4 层降级；v2 实施时**新增** `glob_files` / `read_files` 方法以供 `CodeExplorer` 调用 |
+| `searcher.py`         | Glob→Grep→Read    | 当前仅有 `search()`（[searcher.py:22-83](src/spma/agents/code/searcher.py#L22-L83)）4 层降级；v2 实施时**新增** `glob_files` / `read_files` 方法以供 `CodeExplorer` 调用；`glob_files` / `read_files` 内部对敏感路径做黑名单过滤（`**/.env` / `**/secrets.*` / `**/.git/` / `**/*.pem` / `**/*.key`），避免泄露机密 |
 | `completeness.py`     | 收敛判断              | 当前仅 3 级（`L1` / `L2` / `L3`）；v2 实施时**升级**为 5+2 模式（`goal_verified` / `stuck` / `regression` / `diminishing_returns` / `cap_reached` / `expand` / `llm_judged`），新增 `previous_new_files` / `max_files` / `max_rounds` 三个参数 |
 | `graph.py`（状态机）       | 多轮探索循环            | 当前 4 节点内联状态机（route / search / assess / expand）；v2 实施时**改造**为 3 节点薄包装（route / explore / finalize），多轮循环移至 `CodeExplorer`（见 §3.5） |
 | `explorer.py`（新增）       | 多轮探索引擎（独立类）       | v2 实施时新增；拥有 `ExplorerState`，暴露 `explore(state)` 一次性 API；通过 `on_round_complete` callback 暴露可观测事件；解决 P1/P2/P3 三类问题（见 §3.5.1） |
-| `repo_registry`（DB 表） | 仓库元数据             | **保留为兜底数据源**（`module_lookup` / `exact_file_match` 仍依赖 `file_path_cache`）；新增 `RepoRegistry` 从 YAML 加载作为主路径                                                                    |
-| `ASTParser`           | 结构提取              | 复用现有 TreeSitter 解析能力                                                                                                                                                         |
+| `repo_registry`（DB 表） | 仓库元数据             | **保留为兜底数据源**（`module_lookup` / `exact_file_match` 仍依赖 `file_path_cache`）；新增 `RepoRegistry` 从 YAML 加载作为主路径；双数据源不变量：`file_path_cache.repo_name ⊇ module_manifest.yaml.repos[].name`（CI 检查，§7.3） |
+| `ASTParser`           | 结构提取              | 复用现有 TreeSitter 解析能力；`_expand_via_ast` 直接调用现有 `expand_via_ast()` 函数 + 增量追加到 `seen_files`                                                                    |
 | `GitManager`          | 变更检测              | 复用 `handle_webhook()` 的 changed\_files 提取                                                                                                                                    |
+| 路由层 feature flag       | 灰度比例实现            | 路由层读取 `code_route_strategy` feature flag（llm_yaml_match / fallback）；可按用户 ID 哈希分流，与 qr 系统的 `qr_weights_history` 思路一致（见 §10.4）                                                                                                            |
 
 ***
 
-## 九、迁移与滚出策略
+## 十、迁移与滚出策略
 
-### 9.1 当前状态分析
+### 10.1 当前状态分析
 
 | 当前问题                                           | 影响                 | 迁移目标                                                     |
 | ---------------------------------------------- | ------------------ | -------------------------------------------------------- |
@@ -841,7 +981,7 @@ class VectorPreFilter:
 | `route_repos` 使用中文模块名进行路径匹配                    | 用户说"用户登录"但代码文件名为英文 | 通过中文 `description` 字段匹配                                  |
 | `repo_registry` 缺少业务域标签                        | 无法根据业务域进行精准路由      | 创建 `module_manifest.yaml`，补充 `description`、`keywords` 字段 |
 
-### 9.2 迁移路线图
+### 10.2 迁移路线图
 
 #### 阶段0：准备阶段（第 0-1 周）
 
@@ -867,7 +1007,7 @@ class VectorPreFilter:
 | 实现多轮探索 | 基于现有代码扩展 | 低  | 保留单轮搜索作为 fallback |
 | 性能优化   | 并行化处理    | 中  | 关闭并行，恢复串行         |
 
-### 9.3 滚出策略
+### 10.3 滚出策略
 
 #### 快速滚出（10 分钟内）
 
@@ -883,7 +1023,7 @@ class VectorPreFilter:
 | 代码回滚 | 回滚 `router.py` 和 `RepoRegistry` 类修改 |
 | 配置回滚 | 删除 `module_manifest.yaml`           |
 
-### 9.4 灰度发布策略
+### 10.4 灰度发布策略
 
 > **比例必须单调递增**：内部测试 0% 用户（只覆盖内部账号）→ 小流量 1% → 中流量 10% → 大流量 50% → 全量 100%。
 > 每个阶段最短持续 24 小时，且该阶段 SLO 全部达标才能进入下一阶段。
@@ -903,11 +1043,49 @@ class VectorPreFilter:
 - LLM 5xx 比例 > 1%（5 分钟窗口）
 - YAML 加载失败或字段缺失导致 `RepoRegistry` 初始化失败
 
+**灰度比例实现机制**（feature flag + 用户哈希分流）：
+
+```python
+# 伪代码：路由层入口根据 feature flag 决定使用哪种路由策略
+async def dispatch_route(user_id: str, query: str, ...) -> dict:
+    """路由层根据 code_route_strategy 决定 LLM 主路径还是 fallback。"""
+    strategy = await feature_flag.get("code_route_strategy", default="llm_yaml_match")
+    # 按阶段比例（§10.4 表格）执行强制分流：内部测试=0% 用户；小流量=1%；...
+    if not _in_rollout_bucket(user_id, rollout_percentage=_current_stage_percentage()):
+        strategy = "fallback"  # 走 file_path_cache 的旧路径
+    if strategy == "llm_yaml_match":
+        return await route_repos(query=query, entities=..., repo_registry=...)
+    else:
+        return await route_repos_legacy(entities=..., file_path_cache=...)
+
+
+def _in_rollout_bucket(user_id: str, rollout_percentage: int) -> bool:
+    """用户 ID 哈希 → 0-99 整数；小于 rollout_percentage 即命中灰度。"""
+    return (int(hashlib.md5(user_id.encode()).hexdigest(), 16) % 100) < rollout_percentage
+```
+
+> **关键点**：
+> - feature flag 值由部署系统写入（环境变量 / 配置中心），无需代码变更即可调整比例
+> - 用户 ID 哈希保证同一用户在不同阶段始终命中或始终不命中，**避免抖动**
+> - 各阶段的 `rollout_percentage`（0/1/10/50/100）按 §10.4 表格单调递增配置
+> - 与 qr 系统已有的 `qr_weights_history` 思路一致：版本 + 权重快照 + 历史可追溯
+
+**与 `code_route_strategy` feature flag 对齐的回滚操作**（§10.3 快速滚出）：
+
+| 场景              | feature flag 操作                                  | 生效时间      |
+| --------------- | ----------------------------------------------- | --------- |
+| LLM 服务不可用       | `code_route_strategy = fallback`                | 立即（下次请求） |
+| 新路由导致严重错误      | `code_route_strategy = fallback`                | 立即        |
+| 临时回滚到上一阶段（10%） | `code_route_strategy = llm_yaml_match` + rollout=10% | 立即        |
+| 全量回滚（1 小时内）    | 关闭 feature flag（强制 fallback）+ 回滚 `router.py` 与 `RepoRegistry` | 5-10 分钟   |
+
 ***
 
-## 十、架构图与流程图
+## 十一、架构图与流程图
 
-### 10.1 端到端流程图
+> **说明**：多轮探索内部循环流程图（CodeExplorer refine→glob→grep→read→expand→assess 状态机）见 §3.5.8；本节聚焦端到端、路由决策、路由降级三类图，避免重复。
+
+### 11.1 端到端流程图
 
 ```mermaid
 flowchart TD
@@ -925,7 +1103,7 @@ flowchart TD
     I --> J[Round 1: Grep 定位关键词]
     J --> K[Round 1: Read 读取关键文件]
 
-    K --> L{6 种收敛判定}
+    K --> L{7 种收敛判定<br/>(5 确定性 + 2 LLM 路径，见 §3.5.8)}
     L -->|不够| M[Round N: 扩展搜索词继续探索]
     M --> H
     L -->|足够| N[收敛条件满足]
@@ -936,7 +1114,7 @@ flowchart TD
     style O fill:#9f9,stroke:#333,stroke-width:2px
 ```
 
-### 10.2 路由决策流程图
+### 11.2 路由决策流程图
 
 ```mermaid
 flowchart TD
@@ -959,52 +1137,31 @@ flowchart TD
     style K fill:#9f9,stroke:#333,stroke-width:2px
 ```
 
-### 10.3 多轮探索流程图
+### 11.3 路由降级流程图（新增）
 
 ```mermaid
 flowchart TD
-    A[开始探索] --> B[Glob: 发现目录结构]
-    B --> C[Grep: 定位关键词]
-    C --> D[Read: 读取关键文件]
-    D --> E[计算轮间增量指标]
+    A[route_repos 入口] --> B{主路径 llm_yaml_match}
+    B -->|尝试| C[LLM 调用]
 
-    E --> F{目标已验证?}
-    F -->|是 goal_verified| G[确定性收敛]
-    G --> M[返回结果]
+    C --> D{LLM 调用结果?}
+    D -->|成功 + 仓库名命中 Registry| E[route_method=llm_yaml_match<br/>confidence=high/medium]
+    D -->|超时| F[降级: module_lookup]
+    D -->|JSON 解析错误| F
+    D -->|返回仓库不在 Registry| G[降级: broad_search]
 
-    F -->|否| H{搜索停滞?}
-    H -->|是 stuck| I[连续两轮无新文件]
-    I --> M
+    E --> H[输出候选仓库]
+    F --> H
+    G --> H
 
-    H -->|否| J{质量下降?}
-    J -->|是 regression| K[轮间比率 < 50%]
-    K --> M
-
-    J -->|否| L{收益递减?}
-    L -->|是 diminishing_returns| N[新文件率 < 10%]
-    N --> M
-
-    L -->|否| O{达到上限?}
-    O -->|是 cap_reached| P[最大轮数/文件数]
-    P --> M
-
-    L -->|否| Q[LLM 兜底: llm_judged]
-    Q --> M
-
-    O -->|否| R[扩展搜索词]
-    R --> B
+    H --> I[记录 code_route_fallback_total<br/>from→to 降级次数]
 
     style A fill:#f9f,stroke:#333,stroke-width:2px
-    style M fill:#9f9,stroke:#333,stroke-width:2px
-
-    subgraph 轮间指标计算
-        X[new_files_this_round]
-        Y[previous_new_files]
-        Z[round_over_round_ratio]
-    end
-
-    E -.-> X
-    E -.-> Y
-    E -.-> Z
+    style H fill:#9f9,stroke:#333,stroke-width:2px
+    style F fill:#ff9,stroke:#333
+    style G fill:#ff9,stroke:#333
 ```
+
+> **降级路径优先级**：`llm_yaml_match` → `module_lookup`（`file_path_cache.dir_module_map`）→ `broad_search`（返回所有仓库）。
+> **降级指标**：`code_route_fallback_total{from_method, to_method}` 用于统计 LLM 不可用率（告警阈值见 §7.1）。
 
