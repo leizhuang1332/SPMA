@@ -95,13 +95,14 @@ async def rewrite_queries(
 
 
 def _validate_injected_components(
-    strategy_orchestrator, fallback_manager,
+    strategy_orchestrator, fallback_manager, embedder=None,
 ):
     """轻量运行时校验:防止 P3-5 集成时传错实例类型 → 静默失效。
 
     使用 duck typing (`hasattr`) 而非 isinstance 检查,以避免循环依赖。
     P3-5 真正使用编排器时,如果传入了错误类型的实例(例如传了 None 但签名允许、
     或者传了 mock 但缺少必需方法),会立即抛 TypeError,而不是静默走原路径。
+    P4 扩展:新增 embedder 校验——P4 阶段需要 embedder.embed_query / embed_documents。
     """
     if strategy_orchestrator is not None:
         # duck typing:必须实现 execute_parallel 方法
@@ -117,6 +118,13 @@ def _validate_injected_components(
                 "fallback_manager must implement 'execute_with_fallback' "
                 f"(got {type(fallback_manager).__name__})"
             )
+    if embedder is not None:
+        # P4:duck typing 校验 embedder 是否实现所需两个方法
+        if not (hasattr(embedder, "embed_documents") and hasattr(embedder, "embed_query")):
+            raise TypeError(
+                "embedder must implement 'embed_documents' and 'embed_query' "
+                f"(got {type(embedder).__name__})"
+            )
 
 
 async def _do_rewrite_pipeline(
@@ -125,11 +133,13 @@ async def _do_rewrite_pipeline(
     strategy_orchestrator=None,
     fallback_manager=None,
     voter=None,           # P3: voter 内部已绑定 embedder,不再单独传
+    embedder=None,         # P4: 扩展阶段评分用(voter 已绑定 embedder 时可省略)
 ) -> dict:
     """原 rewrite_queries 主体(去掉外层 cache wrap)。
 
     P2 扩展:接受可选 strategy_orchestrator / fallback_manager。
     P3 扩展:接受可选 voter,用于指代消解多路化(voter 内部已绑定 embedder)。
+    P4 扩展:接受可选 embedder,用于扩展阶段多路化评分(voter 与 embedder 解耦)。
     - 关键字参数(避免未来参数膨胀时 positional 顺序歧义)
     - None 时:走原串行(向后兼容)
     - 注入时:P3-5 多路策略将用编排器替换对应阶段
@@ -137,9 +147,10 @@ async def _do_rewrite_pipeline(
 
     since: P2 Task 3, see plans/2026-06-30-qr-phase2-strategy-orchestration-plan.md
     since: P3 Task 3, see plans/2026-06-29-quality-scoring-spec-1-decoupling.md §3.3
+    since: P4 Task 3, see plans/2026-06-29-quality-scoring-spec-1-decoupling.md §3.3
     """
     # P2 占位:验证注入的组件 duck-type 契约,失败立刻抛错而非静默走原路径
-    _validate_injected_components(strategy_orchestrator, fallback_manager)
+    _validate_injected_components(strategy_orchestrator, fallback_manager, embedder)
     result: dict[str, str] = {"original": query}
 
     # 阶段一：同义词标准化
@@ -189,10 +200,62 @@ async def _do_rewrite_pipeline(
     is_cross_source = classification.get("is_cross_source", False)
 
     should_expand = len(query) <= 50 or query_type == "search"
-    if should_expand and llm:
-        expanded = await _expand_query(resolved, classification, entities, llm)
-        result["expanded"] = expanded
+
+    # ====== P4: 多路查询扩展(分支对称:每个分支完整写 result) =====
+    if should_expand and strategy_orchestrator and embedder:
+        # 局部导入避免循环依赖(expansion_strategies / quality_evaluator 是子模块)
+        from spma.agents.supervisor.expansion_strategies import (
+            intent_aware, synonym_based, entity_injection, context_aware,
+        )
+        from spma.agents.supervisor.quality_evaluator import evaluate_quality
+
+        strategies = {
+            "intent_aware": lambda q, c, e: intent_aware(q, c, e),
+            "synonym_based": lambda q, c, e: synonym_based(q, c, e, synonym_map=synonym_map),
+            "entity_injection": lambda q, c, e: entity_injection(q, c, e),
+            "context_aware": lambda q, c, e: context_aware(q, c, e, llm=llm),
+        }
+        try:
+            results = await strategy_orchestrator.execute_parallel(
+                strategies, resolved, classification, entities,
+            )
+            # 过滤:保留与 resolved 不同的非 None 候选
+            candidates = [r[1] for r in results if r[1] and r[1] != resolved]
+            if candidates:
+                # 批量 embedding + 三维评分选最优
+                candidate_embs = await embedder.embed_documents(candidates)
+                # 防御性检查:某些 embedder 可能在异常时返回短列表——长度不一致时退化到首候选
+                if len(candidate_embs) == len(candidates):
+                    original_emb = await embedder.embed_query(resolved)
+                    scored = [
+                        (cand, evaluate_quality(original_emb, emb, cand, entities))
+                        for cand, emb in zip(candidates, candidate_embs)
+                    ]
+                    result["expanded"] = max(scored, key=lambda x: x[1])[0]
+                else:
+                    logger.warning(
+                        "candidate_embs length mismatch: got %d for %d candidates, falling back to first",
+                        len(candidate_embs), len(candidates),
+                    )
+                    result["expanded"] = candidates[0]
+            else:
+                # 所有策略返回 None 或与 resolved 相同 → 退化到原 resolved
+                result["expanded"] = resolved
+        except Exception as ex:
+            # PII 安全:%s 占位符 + type(ex).__name__ + exc_info=True
+            # (traceback 进入 stderr,不在日志消息里内联)
+            logger.warning(
+                "multi-strategy expansion failed, fallback (%s)",
+                type(ex).__name__,
+                exc_info=True,
+            )
+            # 多路扩展异常 → 走 fallback(单 LLM 扩展路径)
+            result["expanded"] = await _expand_query(resolved, classification, entities, llm)
+    elif should_expand and llm:
+        # 向后兼容:无 orchestrator+embedder 时走原单策略
+        result["expanded"] = await _expand_query(resolved, classification, entities, llm)
     else:
+        # 不应扩展的情况 → 用 resolved
         result["expanded"] = resolved
 
     # 阶段四：查询分解（仅跨源时执行）

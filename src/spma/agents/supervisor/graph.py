@@ -106,11 +106,13 @@ def build_supervisor_graph(
     strategy_orchestrator=None,  # NEW: P2 — 默认用模块级 _orchestrator
     fallback_manager=None,       # NEW: P2 — 默认用模块级 _fallback
     voter=None,                   # NEW: P3 — 默认用模块级 _voter
+    embedder=None,                # NEW: P4 — 运行时注入(非单例),默认 None
 ) -> StateGraph:
     # 默认用模块级单例;测试可注入 mock 覆盖。
     strategy_orchestrator = strategy_orchestrator or _orchestrator
     fallback_manager = fallback_manager or _fallback
     voter = voter or _voter  # NEW: P3
+    # embedder 不设模块级单例,运行时由应用启动时注入;测试可显式传入 mock。
 
     async def classify_and_extract_node(state: SupervisorState) -> dict:
         result = await classify_with_fallback(
@@ -144,6 +146,7 @@ def build_supervisor_graph(
             strategy_orchestrator=strategy_orchestrator,
             fallback_manager=fallback_manager,
             voter=voter,  # NEW: P3
+            embedder=embedder,  # NEW: P4
         )
         return {"rewritten_queries": rewritten}
 

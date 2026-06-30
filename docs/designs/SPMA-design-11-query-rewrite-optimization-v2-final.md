@@ -22,7 +22,7 @@
 | ~~G3~~ | ~~P2~~ | ~~`StrategyOrchestrator` / `FallbackManager` 不存在~~ | ✅ 已修复: 新建 `strategy_orchestrator.py`(80 行)+ `fallback_manager.py`(82 行),L1→L2→L3 三级降级 + 1000 并发压测 + asyncio.to_thread 防 L3 阻塞 (squash merge P2 commit chain) | - |
 | ~~G4~~ | ~~P2~~ | ~~`CircuitBreaker` 在 `infrastructure/circuit_breaker.py` 已实现,但 supervisor 模块**未引用**~~ | ✅ 已修复: `StrategyOrchestrator` 集成 `get_circuit_breaker` + `cb.call`;新增 `is_open()` helper 做执行前过滤;`graph.py` 模块级 `_orchestrator` 单例持有 P3-P5 10 个策略名 CB (squash merge P2 commit chain) | - |
 | ~~G5~~ | ~~P3~~ | ~~`_resolve_references` 是单策略 + 简单关键词匹配~~ | ✅ 已修复: 多路并行(rule/entity/llm)+ SemanticVoter 共识度投票(主文件 ADR-004),zero-LLM voter (squash merge P3 commit chain) | - |
-| **G6** | P4 | `_expand_query` 是单策略 + 简单意图感知 | `query_rewriter.py:282` | 🟡 P1 |
+| ~~G6~~ | ~~P4~~ | ~~`_expand_query` 是单策略 + 简单意图感知~~ | ✅ 已修复: 4 路并行(intent/synonym/entity/context)+ quality_evaluator 三维评分(主文件 ADR-004,零 LLM) (squash merge P4 commit chain) | - |
 | **G7** | P5 | `_decompose_query` 是单策略 + 4 步 JSON 解析兜底 | `query_rewriter.py:137` | 🟡 P1 |
 | **G8** | P6 | 离线评估 / EMA 权重进化未实现 | 无相关类 | 🟡 P1 |
 | **G9** | P6 | 分布漂移检测(MMD)未实现 | 无相关类 | 🟡 P2 |

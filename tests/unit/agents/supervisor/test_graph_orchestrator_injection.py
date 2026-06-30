@@ -148,3 +148,27 @@ def test_build_graph_uses_default_voter_singleton_when_none_passed():
         exec(snippet, exec_globals)
         assert exec_globals["result"] is sentinel_voter, \
             "None 应该 fallback 到模块级 _voter 单例"
+
+
+# === P4: embedder 运行时注入测试 ===
+
+def test_build_graph_accepts_embedder_param():
+    """build_graph 接受 embedder 关键字参数(keyword-only,默认 None)。
+
+    embedder 是运行时注入(应用启动时传入),不是模块级单例。
+    """
+    import inspect
+    from spma.agents.supervisor import graph
+    fn = graph.build_graph
+    sig = inspect.signature(fn)
+    assert "embedder" in sig.parameters
+    assert sig.parameters["embedder"].default is None
+    assert sig.parameters["embedder"].kind == inspect.Parameter.KEYWORD_ONLY
+
+
+def test_graph_module_has_no_embedder_singleton():
+    """模块级无 _embedder 单例(embedder 运行时注入)。"""
+    from spma.agents.supervisor import graph
+    # 不应该有 _embedder 模块级变量
+    assert not hasattr(graph, "_embedder"), \
+        "_embedder 应该是运行时注入,不应作为模块级单例存在"
