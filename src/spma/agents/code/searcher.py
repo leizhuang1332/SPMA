@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import os
 import re
 from typing import Any
 
@@ -10,6 +11,42 @@ logger = logging.getLogger(__name__)
 
 RG_BASE_ARGS = ["rg", "--json", "--no-heading", "--color", "never", "--max-count", "50"]
 RG_MAX_DEPTH = ["--max-depth", "10"]
+
+# 敏感路径黑名单（design-13 §8 风险缓解）
+SENSITIVE_PATH_PATTERNS = [
+    "**/.env",
+    "**/secrets.*",
+    "**/.git/**",
+    "**/*.pem",
+    "**/*.key",
+]
+
+
+def _is_sensitive_path(file_path: str) -> bool:
+    """检查路径是否匹配敏感路径黑名单。
+
+    规则：
+    - **/.env  → 文件名为 .env
+    - **/secrets.* → 文件名以 secrets. 开头
+    - **/.git/** → 路径中含 .git 段（匹配 .git/config 等）
+    - **/*.pem → 文件名以 .pem 结尾
+    - **/*.key → 文件名以 .key 结尾
+    """
+    parts = file_path.split("/")
+    fname = parts[-1]
+    # .env
+    if fname == ".env":
+        return True
+    # secrets.*
+    if fname.startswith("secrets."):
+        return True
+    # .git/**  → 路径中含 .git 段
+    if ".git" in parts:
+        return True
+    # *.pem / *.key
+    if fname.endswith(".pem") or fname.endswith(".key"):
+        return True
+    return False
 
 
 class RipgrepExecutor:
@@ -191,6 +228,55 @@ class RipgrepExecutor:
             except Exception as e:
                 logger.error(f"rg error for {repo_name}: {e}")
 
+        return results
+
+    async def glob_files(self, pattern: str, candidate_repos: list[str]) -> list[dict]:
+        """Glob 模式匹配，发现目录结构。
+
+        Args:
+            pattern: glob 模式（如 "**/*.py"）
+            candidate_repos: 候选仓库名列表
+
+        Returns:
+            [{"repo": str, "file_path": str}, ...]
+            敏感路径（.env / secrets.* / .git/ / *.pem / *.key）被过滤
+        """
+        import os as _os
+        results: list[dict] = []
+        for repo_name in candidate_repos:
+            repo_path = self._repo_paths.get(repo_name)
+            if not repo_path:
+                continue
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "rg", "--files", "--glob", pattern, repo_path,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self._timeout)
+            except asyncio.TimeoutError:
+                proc.terminate()
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=2.0)
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    await proc.wait()
+                logger.warning(f"glob_files timeout for {repo_name} pattern={pattern}")
+                continue
+            except Exception as e:
+                logger.error(f"glob_files error for {repo_name}: {e}")
+                continue
+            if proc.returncode not in (0, 1):
+                logger.warning(f"rg --files exited {proc.returncode} for {repo_name}: {stderr.decode('utf-8', errors='replace')[:200]}")
+                continue
+            for line in stdout.decode("utf-8", errors="replace").strip().split("\n"):
+                if not line:
+                    continue
+                # 转为相对路径
+                rel_path = _os.path.relpath(line, repo_path)
+                if _is_sensitive_path(rel_path):
+                    continue
+                results.append({"repo": repo_name, "file_path": rel_path})
         return results
 
     @staticmethod
