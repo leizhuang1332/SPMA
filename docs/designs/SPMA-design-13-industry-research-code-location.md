@@ -86,10 +86,10 @@ async def route_repos(
 | 字段                 | 类型          | 说明                                                                               |
 | ------------------ | ----------- | -------------------------------------------------------------------------------- |
 | `candidate_repos`  | `list[str]` | 候选仓库列表                                                                           |
-| `route_method`     | `str`       | `llm_yaml_match`（主路径）/ `exact_file_match` / `module_lookup` / `broad_search`（兜底） |
+| `route_method`     | `str`       | `db_registry_match`（主路径）/ `exact_file_match` / `module_lookup` / `broad_search`（兜底） |
 | `route_confidence` | `str`       | `high` / `medium` / `low`                                                        |
 
-> **重要**：`route_method` 新增主路径枚举值 `llm_yaml_match`；旧的 `exact_file_match` / `module_lookup` / `broad_search` 仍保留为兜底路径。下游消费方（如 `graph.py`）需在 `switch(route_method)` 处扩展一个分支。
+> **重要**：`route_method` 新增主路径枚举值 `db_registry_match`；旧的 `exact_file_match` / `module_lookup` / `broad_search` 仍保留为兜底路径。下游消费方（如 `graph.py`）需在 `switch(route_method)` 处扩展一个分支。
 
 **优势**：
 
@@ -105,158 +105,199 @@ async def route_repos(
 
 ***
 
-### 3.2 设计点2：扩展仓库元数据配置
+### 3.2 设计点2：落地 `repo_registry` 表
 
-**设计意图**：通过补充仓库的中文描述和关键词，解决中英文映射问题，为 LLM 提供足够的语义信息进行路由决策。
+**设计意图**：通过 DB 表提供仓库的中文描述、关键词等元数据，解决中英文映射问题，为 LLM 路由决策提供语义信息。
 
-**数据源选择**：采用 `module_manifest.yaml` 作为**新增主路径**的数据源，启动时加载到内存。理由：
+**数据源选择**：**DB 表 `repo_registry` 作为唯一真相源**（不再使用 YAML）。理由：
 
-- 当前仓库数量较少（<50），内存加载足够高效
-- YAML 配置更易于人工编辑和版本控制
-- 避免数据库与配置文件的双重维护
+- design-03 §3.6 spec 中已有该表的 DDL 草案（`docs/superpowers/specs/2026-06-13-phase3-supervisor-code-agent-design.md:146-155`），从 2026-06-13 写到今天仍未落地——本次直接落 migration
+- 字段集合与原 YAML 提案 100% 对齐（`display_name` / `description` / `tags TEXT[]`），避免引入并行数据源
+- 单一真相源（single source of truth）：无需"双数据源不变量"校验
+- 仓库元数据进入 DB 后，未来可接入 design-03 §6.8 的"管道 P2 RepoMetadataMiner"自动从 `README.md` / `pyproject.toml` 反哺 `description` / `tags` 列
 
-**与现有** **`file_path_cache`** **的关系（迁移路径）**：
+**与 `file_path_cache` 的关系**：
 
-`file_path_cache` 表中的 `dir_module_map` 字段（用于 `module_lookup` 兜底路由）**保留不废弃**，原因：
+`file_path_cache` 表**继续保留**，承担"仓库文件清单"职责（webhook 驱动自动维护）。`repo_registry` 表承担"仓库元数据清单"职责（人工 + 后续自动反哺）。两者通过 `repo_name` 字段自然对齐——`route_repos` 主路径用 `repo_registry` 取元数据，`RipgrepExecutor` 用 `repo_paths`（由 `file_path_cache.list_repos()` + `repo_registry.local_path` 推导）定位仓库根目录。
 
-1. YAML 是新增主路径（LLM 路由），但 LLM 调用失败 / 超时时需要降级到模块映射兜底
-2. 旧版 `code_refs` 精确匹配路径（`exact_file_match`）仍依赖 `file_path_cache` 的 `query_files(ref)`，暂时无法用 YAML 替代
-3. 后续如果验证 YAML 路径长期稳定（> 1 个季度），再考虑把 `dir_module_map` 字段迁移到 YAML
+> **字段命名约定**：与 design-03 §3.6 spec 保持一致——`display_name`（中文名）/ `description`（中文描述）/ `tags TEXT[]`（关键词数组）。与原 YAML 方案的 `name`/`description`/`keywords` 命名差异是 spec 历史选择，本次落地统一为 spec 命名。
 
-> **双数据源期间的不变量**：`file_path_cache.repo_name` 集合 ⊇ `module_manifest.yaml` 的 `repos[].name` 集合（YAML 出现的仓库必须在 DB 注册过；DB 多出来的老仓库暂不在路由范围）。
+#### 3.2.1 DDL（`db/migrations/005_repo_registry.sql`）
 
-**配置方式**：通过 `module_manifest.yaml` 声明式配置：
+```sql
+-- 005_repo_registry.sql — 仓库元数据注册表（design-13 + design-03 §3.6 落地）
+CREATE TABLE repo_registry (
+    id              SERIAL PRIMARY KEY,
+    repo_name       VARCHAR(255) NOT NULL UNIQUE,
+    display_name    VARCHAR(255) NOT NULL,              -- 中文名（如 "用户认证服务"）
+    description     TEXT NOT NULL,                      -- 中文描述（1-2 句话覆盖核心职责）
+    tags            TEXT[] NOT NULL DEFAULT '{}',       -- 关键词数组（中英文，5-10 个）
+    repo_url        TEXT,                                -- 用于 clone（来源：config/ingestion.yaml 的 code.repo_urls）
+    local_path      TEXT,                                -- 本地路径（如 "/repos/repo_auth"）
+    languages       JSONB NOT NULL DEFAULT '[]',         -- 语言列表（如 ["Python", "SQL"]）
+    last_indexed_at TIMESTAMPTZ,                         -- 上次索引时间（RepoMetadataMiner 写入）
+    enabled         BOOLEAN NOT NULL DEFAULT true,       -- 是否参与路由（软删除标记）
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 
-```yaml
-# module_manifest.yaml — 仓库路由元数据（启动时加载到 RepoRegistry）
-#
-# 字段约定：
-#   name        — 必填，与 file_path_cache.repo_name 一致
-#   description — 必填，中文自然语言描述，建议 1-2 句话覆盖核心职责
-#   keywords    — 必填，中英文逗号分隔，5-10 个，覆盖用户常见问法
-#   tech_stack  — 可选，技术栈关键词，仅用于辅助 LLM 路由判断
-#
-# 维护规范：
-#   - 新增仓库必须在 file_path_cache 中先注册（双数据源不变量）
-#   - 字段缺失会导致 RepoRegistry 启动 fail-fast（CI 应检查）
+-- 加速 list_active_repos 查询
+CREATE INDEX idx_repo_registry_enabled ON repo_registry (enabled) WHERE enabled = true;
 
-repos:
-  - name: "repo_auth"
-    description: "用户认证服务，负责登录、注册、权限校验"
-    keywords: "用户登录, 认证, 权限, OAuth2, JWT"
-    tech_stack: "Python, FastAPI, PostgreSQL"
-
-  - name: "repo_billing"
-    description: "账单核心服务，负责账单生成、查询和状态管理"
-    keywords: "账单, 计费, 对账, 发票"
-    tech_stack: "Python, PostgreSQL, RabbitMQ"
-
-  - name: "repo_payment"
-    description: "支付接口服务，负责支付流程和银行对接"
-    keywords: "支付, 银行, 转账, 扣款"
-    tech_stack: "Java, Spring Boot, MySQL"
+-- 启动期烟雾测试用
+COMMENT ON TABLE repo_registry IS '仓库元数据唯一真相源（design-13 §3.2 + design-03 §3.6）';
 ```
 
-**加载机制**：
+#### 3.2.2 `RepoRegistry` 类（DB 查询版）
 
 ```python
 import logging
 import os
-import yaml
+from dataclasses import dataclass
+
+import asyncpg
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MANIFEST_PATH = "./config/module_manifest.yaml"
+
+@dataclass
+class RepoMeta:
+    """仓库元数据 dataclass——从 repo_registry 表行转换。"""
+    repo_name: str
+    display_name: str
+    description: str
+    tags: list[str]
+    repo_url: str | None = None
+    local_path: str | None = None
+    languages: list[str] | None = None
+    enabled: bool = True
 
 
 class RepoRegistry:
-    """仓库元数据注册表——从 YAML 加载并提供查询接口。
+    """仓库元数据注册表——从 DB 查询并提供 list_active_repos / get_repo_by_name 接口。
 
-    加载策略：
-      - manifest_path 优先级：构造函数参数 > 环境变量 MODULE_MANIFEST_PATH > 默认路径
-      - fail-fast 默认开启（YAML 缺失/解析失败/字段缺失 → 启动失败）
-      - 可通过 MODULE_MANIFEST_OPTIONAL=true 降级到 file_path_cache（仅用 dir_module_map 兜底）
+    与原 YAML 版的差异：
+      - 数据源：DB 表（不再读 YAML 文件）
+      - 启动策略：连接池复用（与 file_path_cache 共享 spma.db.connection.Pool）
+      - fail-fast：启动时 SELECT COUNT(*) 检查；可选 MODULE_REGISTRY_OPTIONAL=true 降级
+      - 降级路径：回退到 file_path_cache.list_repos()（仅 repo_name，无元数据）
     """
 
     def __init__(
         self,
-        manifest_path: str | None = None,
+        pool: asyncpg.Pool,
         optional: bool | None = None,
     ):
-        self._manifest_path = (
-            manifest_path
-            or os.environ.get("MODULE_MANIFEST_PATH")
-            or DEFAULT_MANIFEST_PATH
-        )
+        self._pool = pool
         self._optional = (
             optional
             if optional is not None
-            else os.environ.get("MODULE_MANIFEST_OPTIONAL", "false").lower() == "true"
+            else os.environ.get("MODULE_REGISTRY_OPTIONAL", "false").lower() == "true"
         )
-        self._repos = self._load_manifest()  # 可能 raise 或 返回 []
+        self._validate_startup()  # fail-fast 检查
 
-    def _load_manifest(self) -> list[dict]:
-        """从 YAML 文件加载仓库元数据。
-
-        失败处理：
-          - 文件不存在：self._optional=True 时 warn 并返回 []（降级）；否则 raise FileNotFoundError
-          - 解析失败 / 字段缺失：raise（无论 optional 与否，避免运行时静默错误）
-        """
-        if not os.path.exists(self._manifest_path):
-            msg = f"module_manifest.yaml not found: {self._manifest_path}"
+    async def _validate_startup(self) -> None:
+        """启动期校验：表存在 + 至少 1 条 enabled=true 行（optional 时豁免）。"""
+        try:
+            async with self._pool.acquire() as conn:
+                count = await conn.fetchval(
+                    "SELECT COUNT(*) FROM repo_registry WHERE enabled = true"
+                )
+        except asyncpg.UndefinedTableError as e:
             if self._optional:
-                logger.warning(f"{msg}（MODULE_MANIFEST_OPTIONAL=true，降级到 file_path_cache）")
-                return []
-            raise FileNotFoundError(msg)
-        with open(self._manifest_path, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f)
-        repos = data.get("repos", []) if data else []
-        # 启动期严格校验（fail-fast）
-        self._validate(repos)
-        return repos
+                logger.warning(f"repo_registry 表不存在，降级到 file_path_cache（{e}）")
+                return
+            raise RuntimeError(f"repo_registry 表不存在，请先执行 migration 005: {e}")
+        if count == 0 and not self._optional:
+            raise RuntimeError(
+                "repo_registry 表为空，请先执行 scripts/seed_repo_registry.py；"
+                "或显式设置 MODULE_REGISTRY_OPTIONAL=true 降级"
+            )
+
+    async def list_active_repos(self) -> list[RepoMeta]:
+        """查询所有 enabled=true 的仓库元数据（LLM 路由主路径）。"""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT repo_name, display_name, description, tags,
+                       repo_url, local_path, languages, enabled
+                FROM repo_registry
+                WHERE enabled = true
+                ORDER BY id
+                """
+            )
+        return [self._row_to_meta(r) for r in rows]
+
+    async def get_repo_by_name(self, name: str) -> RepoMeta | None:
+        """根据仓库名查询单条元数据。"""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT repo_name, display_name, description, tags,
+                       repo_url, local_path, languages, enabled
+                FROM repo_registry
+                WHERE repo_name = $1 AND enabled = true
+                """,
+                name,
+            )
+        return self._row_to_meta(row) if row else None
 
     @staticmethod
-    def _validate(repos: list[dict]) -> None:
-        """启动期校验：必填字段、name 唯一、description 长度。"""
-        seen_names = set()
-        for i, r in enumerate(repos):
-            for field in ("name", "description", "keywords"):
-                if not r.get(field):
-                    raise ValueError(f"repos[{i}] 缺少必填字段 {field}")
-            if r["name"] in seen_names:
-                raise ValueError(f"repos[{i}].name={r['name']} 重复")
-            seen_names.add(r["name"])
-            if not (5 <= len(r["description"]) <= 200):
-                raise ValueError(f"repos[{i}].description 长度需在 5-200 字符之间")
-
-    def get_all_repos(self) -> list[dict]:
-        """获取所有仓库的元数据。"""
-        return self._repos
-
-    def get_repo_by_name(self, name: str) -> dict | None:
-        """根据仓库名获取元数据。"""
-        for repo in self._repos:
-            if repo["name"] == name:
-                return repo
-        return None
+    def _row_to_meta(row) -> RepoMeta:
+        """DB 行 → RepoMeta dataclass 转换（tags 数组 + JSONB 解析）。"""
+        import json
+        languages = row["languages"]
+        if isinstance(languages, str):
+            languages = json.loads(languages)
+        return RepoMeta(
+            repo_name=row["repo_name"],
+            display_name=row["display_name"],
+            description=row["description"],
+            tags=list(row["tags"]),
+            repo_url=row["repo_url"],
+            local_path=row["local_path"],
+            languages=languages or [],
+            enabled=row["enabled"],
+        )
 ```
 
-**YAML 路径配置矩阵**：
+#### 3.2.3 管理入口双通道
 
-| 配置来源                    | 优先级 | 适用场景          |
-| ----------------------- | --- | ------------- |
-| `RepoRegistry(manifest_path=...)` 构造参数 | 最高  | 测试 / 单仓库部署    |
-| `MODULE_MANIFEST_PATH` 环境变量       | 中   | 不同环境（dev/staging/prod）切换 |
-| 默认 `./config/module_manifest.yaml` | 最低  | 单环境默认部署       |
+| 通道         | 文件 / 路径                                            | 适用场景                          |
+| ---------- | --------------------------------------------------- | ----------------------------- |
+| **seed 脚本** | `scripts/seed_repo_registry.py`                      | 一次性批量录入历史仓库（从 `config/ingestion.yaml` 的 `code.repo_urls` 读取 URL，逐条提示填写 description/tags） |
+| **admin API** | `src/spma/api/admin_router.py`（v1.1 再实现，本期仅预留接口契约） | 增量新增/修改仓库元数据（受 feature flag `code_repo_admin_enabled` 控制，仅内部账号可访问）            |
 
-**fail-fast 与降级矩阵**：
+**seed 脚本用法**：
 
-| 触发条件               | 默认行为 (optional=false) | 显式降级 (optional=true)      |
-| ------------------ | -------------------- | ------------------------- |
-| YAML 文件不存在         | `FileNotFoundError` 启动失败 | warn 日志，返回 `[]`，主路径走 module_lookup |
-| YAML 解析失败          | `yaml.YAMLError` 启动失败  | 同样 raise（避免运行时静默错误）       |
-| 字段缺失 / name 重复     | `ValueError` 启动失败    | 同样 raise                   |
-| `get_repo_by_name` 未命中 | 返回 `None`，路由主路径过滤后降级到 broad_search | 行为一致                    |
+```bash
+# 从 config/ingestion.yaml 读仓库 URL，交互式录入元数据
+python scripts/seed_repo_registry.py
+
+# 兼容模式：从已有 YAML 草稿一键迁移（v1 过渡期）
+python scripts/seed_repo_registry.py --from-yaml ./config/module_manifest.yaml
+
+# 干跑模式（仅打印 SQL，不执行）
+python scripts/seed_repo_registry.py --dry-run
+```
+
+**admin API 接口契约**（v1.1 实现，本期仅占位）：
+
+| Method   | Path                       | 作用                  | Feature Flag              |
+| -------- | -------------------------- | ------------------- | ------------------------- |
+| `POST`   | `/admin/repos`             | 创建仓库元数据             | `code_repo_admin_enabled` |
+| `PATCH`  | `/admin/repos/{repo_name}` | 更新 `description`/`tags`/`enabled` | `code_repo_admin_enabled` |
+| `DELETE` | `/admin/repos/{repo_name}` | 软删除（`enabled=false`） | `code_repo_admin_enabled` |
+
+#### 3.2.4 fail-fast 与降级矩阵
+
+| 触发条件                              | 默认行为 (optional=false)            | 显式降级 (optional=true)                |
+| --------------------------------- | ------------------------------- | ---------------------------------- |
+| `repo_registry` 表不存在             | `RuntimeError` 启动失败             | warn 日志，降级到 `file_path_cache.list_repos()` |
+| 表存在但 `enabled=true` 记录数为 0       | `RuntimeError` 启动失败             | 同样降级（路由准确率会显著下降）                |
+| 单条记录 `description` / `tags` 为空     | **不 fail-fast**（DB 已校验 NOT NULL） | 行为一致                               |
+| `get_repo_by_name` 未命中           | 返回 `None`，路由主路径过滤后降级到 broad_search | 行为一致                               |
+| DB 连接失败                           | `asyncpg.PostgresError` 抛出     | 同样 raise（避免静默错误）                  |
 
 **优势**：
 
@@ -278,9 +319,9 @@ class RepoRegistry:
         │
         ▼
 ┌──────────────────────────────────┐
-│ 加载 repo_registry 仓库列表       │
-│ 提取：repo_name + description    │
-│       + keywords                 │
+│ 查询 repo_registry 表             │
+│ 提取：repo_name + display_name    │
+│       + description + tags       │
 └──────────────────────────────────┘
         │
         ▼
@@ -297,12 +338,17 @@ class RepoRegistry:
 **LLM 提示词设计**：
 
 ```python
-async def route_repos(query: str, repos: list[dict], max_candidates: int = 5) -> dict:
+async def route_repos(
+    query: str,
+    repo_registry: RepoRegistry,           # 新增：从 DB 查询的元数据源
+    max_candidates: int = 5,
+) -> dict:
+    repos = await repo_registry.list_active_repos()
     repo_list = "\n".join([
-        f"- {r['repo_name']}: {r['description']} (关键词: {r['keywords']})"
+        f"- {r.repo_name}（{r.display_name}）：{r.description}（关键词：{', '.join(r.tags)}）"
         for r in repos
     ])
-    
+
     prompt = f"""根据用户查询，选择最相关的代码仓库：
 
 用户查询：{query}
@@ -311,7 +357,7 @@ async def route_repos(query: str, repos: list[dict], max_candidates: int = 5) ->
 {repo_list}
 
 请输出 JSON：{{"repo_names": ["仓库名1", "仓库名2", "仓库名3"], "reason": "选择理由"}}"""
-    
+
     resp = await self._llm.ainvoke(prompt)
     return parse_json(resp.content)
 ```
@@ -827,10 +873,10 @@ class VectorPreFilter:
 
 | # | 任务                        | 优先级 | 描述                                                            | 验收标准（DoD）                                                                             |
 | - | ------------------------- | --- | ------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| 1 | 创建 `module_manifest.yaml` | P0  | 声明式配置仓库元数据（新增主路径数据源）                                          | 所有现存仓库均填齐 `name` / `description` / `keywords` / `tech_stack`；通过 `yaml.safe_load` 校验通过 |
-| 2 | 实现 `RepoRegistry` 类       | P0  | 从 YAML 加载仓库元数据，提供 `get_all_repos` / `get_repo_by_name`        | 单元测试覆盖空文件 / 缺字段 / 重复 `name` 三种异常路径                                                    |
-| 3 | 修改 `route_repos`          | P0  | 添加 `query` 与 `repo_registry` 参数                               | 保留旧路径作为兜底；`route_method` 新增 `llm_yaml_match` 枚举值                                      |
-| 4 | 实现单阶段路由（LLM 选仓库）          | P0  | LLM 直接从仓库列表中选择候选仓库                                            | 离线 replay 测试集 ≥ 30 条，路由准确率 ≥ **80%**（与 §10.2 阶段 1 切换条件、§7.2 集成测试门槛保持一致）                                                      |
+| 1 | 提交 `db/migrations/005_repo_registry.sql` | P0  | 落地 `repo_registry` 表（与 design-03 §3.6 spec 字段对齐：`repo_name` / `display_name` / `description` / `tags TEXT[]` / `repo_url` / `local_path` / `languages JSONB` / `enabled`）                                          | migration 可重放；`alembic upgrade head` 成功；表 + 索引 + COMMENT 全部创建 |
+| 2 | 实现 `RepoRegistry` 类（DB 查询）+ `scripts/seed_repo_registry.py` | P0  | `RepoRegistry` 从 `asyncpg.Pool` 查询，暴露 `list_active_repos()` / `get_repo_by_name()`；seed 脚本从 `config/ingestion.yaml` 读仓库 URL 并交互式录入 description/tags，预留 `--from-yaml` 兼容模式 | 单元测试覆盖：DB 查询正常 / 表不存在 raise / enabled=true 0 行 raise / `MODULE_REGISTRY_OPTIONAL=true` 降级到 `file_path_cache.list_repos()` 四种路径；seed 脚本幂等（重复执行不报错） |
+| 3 | 修改 `route_repos`          | P0  | 添加 `query` 与 `repo_registry` 参数                               | 保留旧路径作为兜底；`route_method` 新增 `db_registry_match` 枚举值（替代原 YAML 方案的 `db_registry_match`）                                      |
+| 4 | 实现单阶段路由（LLM 选仓库）          | P0  | LLM 直接从 `repo_registry.list_active_repos()` 中选择候选仓库                                            | 离线 replay 测试集 ≥ 30 条，路由准确率 ≥ **80%**（与 §10.2 阶段 1 切换条件、§7.2 集成测试门槛保持一致）                                                      |
 | 5 | **多轮探索前置补齐**                | P0  | 在 v2 主任务前先把 3 个底层能力补齐：① `searcher.py` 新增 `glob_files` / `read_files` 方法；② `completeness.py` 从 3 级（`L1/L2/L3`）升级为 5+2 模式 + 新增 3 个参数；③ `graph.py` 默认 `max_rounds` 由 3 提到 6 | ① `RipgrepExecutor` 暴露 2 个新方法且单元测试通过；② 7 种 level 枚举各跑通一个 fixture；③ `build_code_agent_graph` 默认 `max_rounds=6` 且保留向后兼容；三个改动**全部独立 commit** |
 | 6 | 多轮探索：`CodeExplorer` 抽离 + graph.py 薄包装（见 §3.5） | P0 | 新增 `src/spma/agents/code/explorer.py`（~250 行），实现 6 阶段方法（refine/glob/grep/read/expand/assess）；改造 `graph.py` 为 3 节点薄包装；解决 P1（assess reorder）/P2（接 glob+read）/P3（每轮精化关键词）三类问题 | Explorer 单元测试 8 项全过（含新增 `test_refine_terms_round1_degraded`）；7 种收敛模式各跑通一个 fixture（5 确定性 + 2 LLM 路径）；`on_round_complete` 回调在每轮触发；`previous_new_files` 跨轮正确传递；依赖任务 #5 全部完成 |
 
@@ -849,10 +895,10 @@ class VectorPreFilter:
 | 决策点   | 选择                 | 理由                      |
 | ----- | ------------------ | ----------------------- |
 | 路由策略  | 单阶段（直接选仓库）         | 简单直接，避免中间层带来的复杂性        |
-| 仓库元数据 | 扩展 `repo_registry` | 仅需补充描述和关键词，成本极低         |
+| 仓库元数据 | **落地 `repo_registry` 表 + migration + seed/admin API** | spec 已存在但从未落地；DB 单一真相源，避免 YAML 与 DB 并行；详见 §3.2 |
 | 搜索方式  | 模型驱动实时探索           | Claude Code 实践证明效果优于预索引 |
-| 收敛判断  | 三层递进（L1→L2→L3）     | 平衡效率和准确性                |
-| 中英文映射 | LLM 自然处理           | 通过中文描述直接匹配用户中文查询        |
+| 收敛判断  | 7 种收敛模式（5 确定性 + 2 LLM 路径） | 平衡效率和准确性；详见 §3.4 / §3.5.4      |
+| 中英文映射 | LLM 自然处理           | 通过 `repo_registry.description` 字段匹配用户中文查询 |
 | 规模化扩展 | 渐进式设计              | 当前不需要的功能延迟到触发条件满足时实现    |
 
 ***
@@ -867,7 +913,7 @@ class VectorPreFilter:
 
 | 指标名                               | 类型        | 标签                     | 用途                                                                                  |
 | --------------------------------- | --------- | ---------------------- | ----------------------------------------------------------------------------------- |
-| `code_route_total`                | counter   | `route_method`         | 各路由路径命中次数（`llm_yaml_match` / `exact_file_match` / `module_lookup` / `broad_search`） |
+| `code_route_total`                | counter   | `route_method`         | 各路由路径命中次数（`db_registry_match` / `exact_file_match` / `module_lookup` / `broad_search`） |
 | `code_route_confidence`           | counter   | `confidence`           | 各置信度档位命中次数                                                                          |
 | `code_route_llm_latency_seconds`  | histogram | `route_method`         | LLM 路由调用延迟分布                                                                        |
 | `code_route_total_latency_seconds` | histogram | `route_method`         | `route_repos` 端到端延迟分布（含降级路径），P50/P95/P99 SLO 在此处埋点                                  |
@@ -876,7 +922,9 @@ class VectorPreFilter:
 | `code_explorer_refine_errors_total` | counter | `op`                   | `_refine_terms` / `_assess` LLM 路径异常次数                                                   |
 | `code_searcher_timeout_total`     | counter   | `op`（search/glob/read） | ripgrep subprocess 超时次数                                                             |
 | `code_searcher_fail_total`        | counter   | `op`                   | ripgrep 失败次数（非 0/1 退出码 / 文件 I/O 失败）                                                 |
-| `code_repo_registry_load_seconds` | histogram | `status`               | `RepoRegistry` YAML 加载耗时与成败                                                         |
+| `code_repo_registry_query_seconds` | histogram | `op`（list/get） | `RepoRegistry.list_active_repos()` / `get_repo_by_name()` DB 查询耗时与成败                           |
+| `code_repo_registry_admin_ops_total` | counter | `op`, `status`         | admin API 写入次数（`op=create/update/delete`，`status=ok/fail`）                                  |
+| `code_repo_registry_fallback_total` | counter | `reason`（table_missing/empty） | `MODULE_REGISTRY_OPTIONAL=true` 降级到 `file_path_cache.list_repos()` 的次数                |
 | `code_route_fallback_total`       | counter   | `from_method`, `to_method` | 路由降级次数（from=主路径失败，to=降级到的路径），用于统计 LLM 不可用时的兜底率                              |
 
 **告警规则**（与 §10.4 自动回滚触发器对齐）：
@@ -884,8 +932,9 @@ class VectorPreFilter:
 - `code_route_llm_latency_seconds:p99 > 3s`（5 分钟窗口）
 - `code_route_total_latency_seconds:p99 > 5s`（5 分钟窗口，端到端兜底）
 - `rate(code_searcher_timeout_total[5m]) > 10`（按 op 拆分）
-- `rate(code_route_fallback_total{from_method="llm_yaml_match"}[5m]) > 50`（LLM 不可用兜底率超过 10%）
-- `code_repo_registry_load_seconds:status="fail" increase > 0`（启动失败即时告警）
+- `rate(code_route_fallback_total{from_method="db_registry_match"}[5m]) > 50`（DB 路由兜底率超过 10%）
+- `rate(code_repo_registry_fallback_total[5m]) > 10`（registry 整体降级率过高，DB 链路异常）
+- `code_repo_registry_admin_ops_total{status="fail"} increase > 0`（admin 写入失败即时告警）
 
 ### 7.2 测试策略
 
@@ -903,11 +952,11 @@ class VectorPreFilter:
 
 | 场景                                  | 触发方式                                | 期望 route_method           | 期望告警                        |
 | ----------------------------------- | ----------------------------------- | ------------------------- | --------------------------- |
-| LLM 主路径成功                          | mock LLM 返回合法 JSON                  | `llm_yaml_match`          | 无                           |
+| LLM 主路径成功                          | mock LLM 返回合法 JSON                  | `db_registry_match`       | 无                           |
 | LLM 主路径超时                            | mock LLM `asyncio.TimeoutError`     | `module_lookup`           | `code_route_fallback_total`  |
 | LLM 主路径返回 JSON 解析错误                  | mock LLM 返回 malformed JSON          | `module_lookup`           | `code_route_fallback_total`  |
 | LLM 主路径返回仓库不在 RepoRegistry 中        | mock LLM 返回未注册的 repo_name        | `broad_search`            | `code_route_fallback_total`  |
-| `module_manifest.yaml` 文件不存在（fail-safe 模式） | 删文件 + `MODULE_MANIFEST_OPTIONAL=true` | `module_lookup`           | 启动 warn 日志                   |
+| **`repo_registry` 表为空 + `MODULE_REGISTRY_OPTIONAL=true`** | 不执行 seed + 启动降级开关 | `module_lookup`（元数据为空，仅 repo_name 列表） | 启动 warn 日志 + `code_repo_registry_fallback_total{reason="empty"}` |
 
 **集成测试**（基于 Testcontainers，参考最近 commit `9f8c3f1 test(qr): end-to-end integration`）：
 
@@ -918,24 +967,26 @@ class VectorPreFilter:
 **回滚演练**（§10.3 滚出策略的可执行验证）：
 
 - 注入 `code_route_llm_latency_seconds` 异常（mock LLM 慢响应）→ 验证 5 分钟内自动触发回滚
-- 注入 `module_manifest.yaml` 损坏 → 验证 `RepoRegistry` 启动 fail-fast 行为
+- 注入 `repo_registry` 表为空（不执行 seed）→ 验证 `RepoRegistry._validate_startup()` 启动 fail-fast 行为（默认）；或 `MODULE_REGISTRY_OPTIONAL=true` 降级 warn 日志
 - 演练频次：每次发版前必须跑通，记录到 release checklist
 
-### 7.3 YAML Schema 校验（CI 检查）
+### 7.3 `repo_registry` 数据完整性校验（CI 检查）
 
-`module_manifest.yaml` 在 CI 流水线（PR 检查阶段）必须通过 schema 校验，避免运行时才发现问题：
+> **取代原 YAML Schema 校验**：DB 单一真相源下，校验重点从"YAML 文件结构"转移到"DB 表数据完整性"。
 
-| 检查项                  | 校验规则                                                   | 失败行为          |
-| -------------------- | ------------------------------------------------------ | ------------- |
-| 必填字段存在              | `name` / `description` / `keywords` 三个字段全部存在           | PR 检查 fail    |
-| `name` 唯一性          | `repos[].name` 全集合无重复                                    | PR 检查 fail    |
-| `description` 长度     | ≥ 5 字符（避免空描述），≤ 200 字符（避免超长 prompt）                    | PR 检查 fail    |
-| `keywords` 非空       | 至少 1 个关键词，逗号分隔后去空                                       | PR 检查 fail    |
-| `tech_stack` 可选     | 缺失合法，填了则 ≤ 100 字符                                       | warning       |
-| 双数据源不变量             | `file_path_cache.repo_name` 集合 ⊇ `module_manifest.yaml` 的 `repos[].name` | PR 检查 fail    |
-| 与 DB `repo_registry` 一致 | 提示新增 / 删除 / 改名的仓库清单（informational）                       | warning       |
+`repo_registry` 表在 CI 流水线（PR 检查阶段，连接 staging DB）必须通过以下完整性校验，避免运行时才发现路由准确率问题：
 
-校验脚本可放在 `scripts/check_module_manifest.py`，通过 `pre-commit` 钩子或 GitHub Actions 触发。
+| 检查项                  | 校验规则（SQL / Python）                                                                                                              | 失败行为          |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| 必填字段非空              | `SELECT COUNT(*) FROM repo_registry WHERE enabled = true AND (description = '' OR tags = '{}' OR display_name = '')` = 0  | PR 检查 fail    |
+| `repo_name` 唯一性      | `repo_name` 上有 UNIQUE 约束（DDL 层保证）                                                                                              | DB 写入 fail    |
+| `description` 长度     | LENGTH(description) BETWEEN 5 AND 500                                                                                       | PR 检查 fail    |
+| `tags` 非空数组         | array_length(tags, 1) BETWEEN 1 AND 20                                                                                       | PR 检查 fail    |
+| `enabled=true` 仓库数  | `SELECT COUNT(*) FROM repo_registry WHERE enabled = true` ≥ N（环境变量阈值，dev/staging/prod 不同）                                  | PR 检查 fail（低于阈值）|
+| 与 `file_path_cache` 一致 | `repo_registry.repo_name` ⊆ `SELECT DISTINCT repo_name FROM file_path_cache`（repo_registry 不引用未索引仓库）                            | PR 检查 fail    |
+| `last_indexed_at` 时效 | `last_indexed_at IS NULL OR last_indexed_at > now() - interval '7 days'`（仅 informational）                                  | warning       |
+
+校验脚本可放在 `scripts/check_repo_registry_integrity.py`，通过 `pre-commit` 钩子或 GitHub Actions 触发（连接 staging DB，staging 与 prod schema 一致）。
 
 ## 八、风险与权衡
 
@@ -948,7 +999,9 @@ class VectorPreFilter:
 | ripgrep subprocess 失败 | `_rg_search` 进程崩溃、仓库无文件、权限不足                  | 单仓库失败仅跳过该仓库（不中断整轮）；返回非 0 / 1 退出码时记录 stderr 前 200 字符告警                                                                            |
 | ripgrep timeout       | 大仓库搜索超过 5s 阈值                                 | terminate → 2s grace → kill 三级兜底；超时计入 `searcher_timeout_total` 指标                                                                |
 | 文件 I/O 失败             | `read_files` 读不到文件（权限/不存在/编码错误）               | `errors="ignore"` 静默跳过；记录 `code_searcher_fail_total{op="read"}` 指标；额外黑名单过滤 `.env` / `secrets.*` / `.git/` 等敏感/无关路径（见 §9 适配表）                                                       |
-| YAML 配置漂移             | `module_manifest.yaml` 与实际仓库不一致（新增仓库未注册、字段缺失） | `RepoRegistry` 加载时严格校验（启动 fail-fast）；CI 增加 YAML schema 校验（见 §7.3）；可选 `MODULE_MANIFEST_OPTIONAL=true` 环境变量降级到 `file_path_cache`                                                                          |
+| **`repo_registry` 表字段缺失**    | 新增仓库时未填 `description` 或 `tags` 为空 → LLM 路由准确率下降                | DB 层 `description NOT NULL` + admin API 写入校验；CI 增加"任意 enabled=true 仓库的 description 长度 ≥ 5、tags 长度 ≥ 1"烟雾测试                                                                                                                  |
+| **seed 脚本未执行**             | `repo_registry` 表为空 → 启动失败（`MODULE_REGISTRY_OPTIONAL=false`）或路由准确率显著下降（降级路径） | `RepoRegistry._validate_startup()` 启动期 `SELECT COUNT(*) WHERE enabled=true` 必 ≥ 1；CI 增加"启动期烟雾测试"验证；可选 `MODULE_REGISTRY_OPTIONAL=true` 降级到 `file_path_cache.list_repos()`                                    |
+| **admin API 写入失败**           | 新增/更新仓库元数据时事务回滚或网络异常                          | admin API 端到端事务（`BEGIN` → UPSERT → `COMMIT`/rollback）+ audit log（写入 `repo_registry_audit` 表，记录 `op` / `actor` / `before` / `after`）+ idempotency key（基于 `repo_name` + `updated_at`）                                                |
 | 探索发散                  | 多轮探索陷入无效搜索（>6 轮）                              | `cap_reached` 硬截断（call\_depth ≥ max\_rounds）；`previous_new_files` 状态维护使 `stuck` / `regression` 模式尽早触发                                                       |
 | 敏感文件泄露                | `read_files` 可能读取 `.env` / `credentials` 等敏感文件         | 读取前过滤路径黑名单（`**/.env` / `**/secrets.*` / `**/.git/` / `**/*.pem` / `**/*.key`）；日志脱敏（`code_searcher_fail_total` 不记录文件内容）                                                       |
 
@@ -958,16 +1011,21 @@ class VectorPreFilter:
 
 | 现有代码                  | 方案需求              | 适配方式                                                                                                                                                                         |
 | --------------------- | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `router.py`           | route\_repos 透传查询 | 修改函数签名，新增 `query` + `repo_registry` 参数；`route_method` 增加 `llm_yaml_match` 枚举                                                                                                 |
+| `router.py`           | route\_repos 透传查询 | 修改函数签名，新增 `query` + `repo_registry` 参数；`route_method` 增加 `db_registry_match` 枚举（替代原 YAML 方案的 `db_registry_match`）；调用 `repo_registry.list_active_repos()` 注入到 LLM prompt |
 | `entity_extractor.py` | LLM 意图分析          | 复用现有实体抽取能力，作为路由辅助（当前 `code_refs` / `module` 仍可能为空）                                                                                                                           |
 | `searcher.py`         | Glob→Grep→Read    | 当前仅有 `search()`（[searcher.py:22-83](src/spma/agents/code/searcher.py#L22-L83)）4 层降级；v2 实施时**新增** `glob_files` / `read_files` 方法以供 `CodeExplorer` 调用；`glob_files` / `read_files` 内部对敏感路径做黑名单过滤（`**/.env` / `**/secrets.*` / `**/.git/` / `**/*.pem` / `**/*.key`），避免泄露机密 |
 | `completeness.py`     | 收敛判断              | 当前仅 3 级（`L1` / `L2` / `L3`）；v2 实施时**升级**为 5+2 模式（`goal_verified` / `stuck` / `regression` / `diminishing_returns` / `cap_reached` / `expand` / `llm_judged`），新增 `previous_new_files` / `max_files` / `max_rounds` 三个参数 |
 | `graph.py`（状态机）       | 多轮探索循环            | 当前 4 节点内联状态机（route / search / assess / expand）；v2 实施时**改造**为 3 节点薄包装（route / explore / finalize），多轮循环移至 `CodeExplorer`（见 §3.5） |
 | `explorer.py`（新增）       | 多轮探索引擎（独立类）       | v2 实施时新增；拥有 `ExplorerState`，暴露 `explore(state)` 一次性 API；通过 `on_round_complete` callback 暴露可观测事件；解决 P1/P2/P3 三类问题（见 §3.5.1） |
-| `repo_registry`（DB 表） | 仓库元数据             | **保留为兜底数据源**（`module_lookup` / `exact_file_match` 仍依赖 `file_path_cache`）；新增 `RepoRegistry` 从 YAML 加载作为主路径；双数据源不变量：`file_path_cache.repo_name ⊇ module_manifest.yaml.repos[].name`（CI 检查，§7.3） |
+| `repo_registry`（DB 表） | 仓库元数据             | **唯一真相源**（v1 落地后取代原 YAML 方案）；字段与 design-03 §3.6 spec 100% 对齐；由 `db/migrations/005_repo_registry.sql` 创建；不再依赖 YAML 配置；详见 §3.2 |
+| `repo_registry.py`（新增） | `RepoRegistry` 类（DB 查询版） | v1 实施时新增；构造接收 `asyncpg.Pool`，暴露 `list_active_repos()` / `get_repo_by_name()` 两个 async 方法；启动期 fail-fast 校验；可选降级到 `file_path_cache.list_repos()` |
+| `db/migrations/005_repo_registry.sql`（新增） | `repo_registry` 表 DDL | 创建表 + 索引 + COMMENT（详见 §3.2.1）；与 `001-004` migration 同目录，alembic 链路兼容 |
+| `scripts/seed_repo_registry.py`（新增）     | seed 脚本入口          | 从 `config/ingestion.yaml` 读仓库 URL；交互式录入 `display_name` / `description` / `tags`；预留 `--from-yaml` 兼容模式（v1 过渡期迁移路径）；幂等执行（重复运行不报错） |
+| `api/admin_router.py`（新增，v1.1 再实现） | admin API 三个 endpoint | `POST /admin/repos`、`PATCH /admin/repos/{name}`、`DELETE /admin/repos/{name}`；受 `code_repo_admin_enabled` feature flag 控制；本期仅占位接口契约，v1.1 落地 |
+| `repo_registry_audit`（DB 表，v1.1 新增）  | admin API 写入审计      | 记录 `op` / `actor` / `before` / `after` / `created_at`；与 §8 "admin API 写入失败"风险缓解对齐 |
 | `ASTParser`           | 结构提取              | 复用现有 TreeSitter 解析能力；`_expand_via_ast` 直接调用现有 `expand_via_ast()` 函数 + 增量追加到 `seen_files`                                                                    |
 | `GitManager`          | 变更检测              | 复用 `handle_webhook()` 的 changed\_files 提取                                                                                                                                    |
-| 路由层 feature flag       | 灰度比例实现            | 路由层读取 `code_route_strategy` feature flag（llm_yaml_match / fallback）；可按用户 ID 哈希分流，与 qr 系统的 `qr_weights_history` 思路一致（见 §10.4）                                                                                                            |
+| 路由层 feature flag       | 灰度比例实现            | 路由层读取 `code_route_strategy` feature flag（db_registry_match / fallback）；可按用户 ID 哈希分流，与 qr 系统的 `qr_weights_history` 思路一致（见 §10.4）                                                                                                            |
 
 ***
 
@@ -978,8 +1036,8 @@ class VectorPreFilter:
 | 当前问题                                           | 影响                 | 迁移目标                                                     |
 | ---------------------------------------------- | ------------------ | -------------------------------------------------------- |
 | `extract_entities` 返回空的 `code_refs` 和 `module` | 所有查询走 fallback 路由  | 实现单阶段路由，直接选仓库                                            |
-| `route_repos` 使用中文模块名进行路径匹配                    | 用户说"用户登录"但代码文件名为英文 | 通过中文 `description` 字段匹配                                  |
-| `repo_registry` 缺少业务域标签                        | 无法根据业务域进行精准路由      | 创建 `module_manifest.yaml`，补充 `description`、`keywords` 字段 |
+| `route_repos` 使用中文模块名进行路径匹配                    | 用户说"用户登录"但代码文件名为英文 | 通过 `repo_registry.description` 字段匹配                                  |
+| **`repo_registry` 表未落地**（仅在 design-03 spec 中）   | **没有任何结构化的仓库元数据可供 LLM 路由使用** | **提交 `db/migrations/005_repo_registry.sql` + `scripts/seed_repo_registry.py` 落地表与种子数据；详见 §3.2** |
 
 ### 10.2 迁移路线图
 
@@ -987,16 +1045,17 @@ class VectorPreFilter:
 
 | 任务                        | 描述                    | 依赖 |
 | ------------------------- | --------------------- | -- |
-| 创建 `module_manifest.yaml` | 声明式配置仓库元数据（唯一数据源）     | 无  |
-| 实现 `RepoRegistry` 类       | 从 YAML 加载仓库元数据，提供查询接口 | 无  |
+| 提交 `db/migrations/005_repo_registry.sql` | 落地 `repo_registry` 表（DDL + 索引 + COMMENT），alembic 链路可重放 | 无  |
+| 实现 `RepoRegistry` 类（DB 查询版）       | 从 `asyncpg.Pool` 查询，提供 `list_active_repos()` / `get_repo_by_name()` 两个 async 方法，启动期 fail-fast 校验 | 无  |
+| 编写 `scripts/seed_repo_registry.py`     | 从 `config/ingestion.yaml` 读仓库 URL 并交互式录入 description/tags；幂等；预留 `--from-yaml` 兼容模式 | 任务 1 |
 
 #### 阶段1：路由能力增强（第 1-3 周）
 
 | 任务               | 描述            | 风险 | 回滚方案              |
 | ---------------- | ------------- | -- | ----------------- |
-| 修改 `route_repos` | 添加 `query` 参数 | 低  | 保留原有逻辑作为 fallback |
-| 实现单阶段路由          | LLM 直接选择仓库    | 中  | 路由失败时返回所有仓库       |
-| A/B 测试           | 新路由与旧路由并行     | 低  | 切换回旧路由            |
+| 修改 `route_repos` | 添加 `query` + `repo_registry` 参数；`route_method` 改用 `db_registry_match` 枚举 | 低  | 保留原有 `module_lookup` / `exact_file_match` / `broad_search` 路径作为 fallback |
+| 实现单阶段路由          | LLM 直接从 `repo_registry` 选择的仓库元数据中选仓库    | 中  | DB 查询失败时降级到 `file_path_cache.list_repos()`（`MODULE_REGISTRY_OPTIONAL=true` 路径） |
+| A/B 测试           | DB 路由与旧路由并行     | 低  | 通过 `code_route_strategy` feature flag 切换 |
 
 **切换条件**：新路由准确率 ≥ 80%，持续 1 周
 
@@ -1013,15 +1072,17 @@ class VectorPreFilter:
 
 | 场景        | 操作                                          |
 | --------- | ------------------------------------------- |
-| 新路由导致严重错误 | 修改配置 `route.strategy = "fallback"`，切换回旧路由逻辑 |
-| LLM 服务不可用 | 启用关键词匹配作为 fallback，关闭 LLM 调用                |
+| 新路由导致严重错误 | `code_route_strategy = fallback`，切换回旧路由逻辑（`file_path_cache.module_lookup`） |
+| LLM 服务不可用 | 启用 `MODULE_REGISTRY_OPTIONAL=true` 降级到 `file_path_cache.list_repos()`（无元数据），关闭 LLM 调用                |
+| DB 不可用    | 同上（降级到 `file_path_cache`）                     |
 
 #### 完全回滚（1 小时内）
 
 | 操作   | 描述                                  |
 | ---- | ----------------------------------- |
-| 代码回滚 | 回滚 `router.py` 和 `RepoRegistry` 类修改 |
-| 配置回滚 | 删除 `module_manifest.yaml`           |
+| 代码回滚 | 回滚 `router.py` 与 `repo_registry.py`（DB 查询版）的修改 |
+| Migration 回滚 | `alembic downgrade -1` 删除 `repo_registry` 表 |
+| Seed 数据保留 | 不动 `repo_registry` 表中已有数据（保留作为下次重新激活的种子） |
 
 ### 10.4 灰度发布策略
 
@@ -1049,11 +1110,11 @@ class VectorPreFilter:
 # 伪代码：路由层入口根据 feature flag 决定使用哪种路由策略
 async def dispatch_route(user_id: str, query: str, ...) -> dict:
     """路由层根据 code_route_strategy 决定 LLM 主路径还是 fallback。"""
-    strategy = await feature_flag.get("code_route_strategy", default="llm_yaml_match")
+    strategy = await feature_flag.get("code_route_strategy", default="db_registry_match")
     # 按阶段比例（§10.4 表格）执行强制分流：内部测试=0% 用户；小流量=1%；...
     if not _in_rollout_bucket(user_id, rollout_percentage=_current_stage_percentage()):
         strategy = "fallback"  # 走 file_path_cache 的旧路径
-    if strategy == "llm_yaml_match":
+    if strategy == "db_registry_match":
         return await route_repos(query=query, entities=..., repo_registry=...)
     else:
         return await route_repos_legacy(entities=..., file_path_cache=...)
@@ -1076,7 +1137,7 @@ def _in_rollout_bucket(user_id: str, rollout_percentage: int) -> bool:
 | --------------- | ----------------------------------------------- | --------- |
 | LLM 服务不可用       | `code_route_strategy = fallback`                | 立即（下次请求） |
 | 新路由导致严重错误      | `code_route_strategy = fallback`                | 立即        |
-| 临时回滚到上一阶段（10%） | `code_route_strategy = llm_yaml_match` + rollout=10% | 立即        |
+| 临时回滚到上一阶段（10%） | `code_route_strategy = db_registry_match` + rollout=10% | 立即        |
 | 全量回滚（1 小时内）    | 关闭 feature flag（强制 fallback）+ 回滚 `router.py` 与 `RepoRegistry` | 5-10 分钟   |
 
 ***
@@ -1091,7 +1152,7 @@ def _in_rollout_bucket(user_id: str, rollout_percentage: int) -> bool:
 flowchart TD
     A[用户查询: '修改支付接口的认证逻辑'] --> B[route_repos 透传查询]
 
-    B --> C[加载 module_manifest.yaml]
+    B --> C[查询 repo_registry 表]
     C --> D[提取仓库列表: repo_name + description + keywords]
 
     D --> E[构建路由提示词]
@@ -1118,7 +1179,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A[用户查询] --> B[加载 module_manifest.yaml]
+    A[用户查询] --> B[查询 repo_registry 表]
     B --> C{仓库数量 > 100?}
 
     C -->|否| D[直接注入完整仓库列表]
@@ -1141,11 +1202,11 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A[route_repos 入口] --> B{主路径 llm_yaml_match}
+    A[route_repos 入口] --> B{主路径 db_registry_match}
     B -->|尝试| C[LLM 调用]
 
     C --> D{LLM 调用结果?}
-    D -->|成功 + 仓库名命中 Registry| E[route_method=llm_yaml_match<br/>confidence=high/medium]
+    D -->|成功 + 仓库名命中 Registry| E[route_method=db_registry_match<br/>confidence=high/medium]
     D -->|超时| F[降级: module_lookup]
     D -->|JSON 解析错误| F
     D -->|返回仓库不在 Registry| G[降级: broad_search]
@@ -1162,6 +1223,6 @@ flowchart TD
     style G fill:#ff9,stroke:#333
 ```
 
-> **降级路径优先级**：`llm_yaml_match` → `module_lookup`（`file_path_cache.dir_module_map`）→ `broad_search`（返回所有仓库）。
+> **降级路径优先级**：`db_registry_match` → `module_lookup`（`file_path_cache.query_files(module)`，与 design-03 §3.6 spec 中的 `dir_module_map` 字段对应——本次新 `repo_registry` 表未引入该列，`module_lookup` 仍走 `file_path_cache` 的 fallback 路径）→ `broad_search`（返回所有仓库）。
 > **降级指标**：`code_route_fallback_total{from_method, to_method}` 用于统计 LLM 不可用率（告警阈值见 §7.1）。
 
