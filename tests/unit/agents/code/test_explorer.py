@@ -18,6 +18,7 @@ class TestExplorerState:
         assert state.convergence is None
         assert state.query == ""
         assert state.entities == {}
+        assert state.candidate_repos == []
 
     def test_seen_files_initialized_as_set(self):
         """seen_files 必须是 set 而非 list（去重语义）。"""
