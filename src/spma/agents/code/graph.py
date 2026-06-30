@@ -14,7 +14,7 @@ def build_code_agent_graph(
     ripgrep_executor,
     ast_parser,
     llm,
-    max_rounds: int = 3,
+    max_rounds: int = 6,            # 改：默认从 3 升到 6（design-13 §3.4）
     timeout_ms: int = 2000,
     progress=None,
 ) -> StateGraph:
