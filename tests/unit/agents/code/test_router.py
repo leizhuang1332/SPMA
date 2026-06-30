@@ -1,5 +1,8 @@
 # tests/unit/agents/code/test_router.py
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
+
 from spma.agents.code.router import route_repos
 
 
@@ -98,3 +101,67 @@ class TestRouteReposQueryParam:
         # 没有 repo_registry 时，行为完全兼容旧实现 → broad_search
         assert result["route_method"] == "broad_search"
         assert result["route_confidence"] == "low"
+
+
+class MockRepoRegistry:
+    """Mock RepoRegistry for Stage 0/1/2 测试。"""
+    def __init__(self, repos, keyword_results=None):
+        self._repos = repos
+        self._keyword_results = keyword_results or []
+
+    async def list_active_repos(self):
+        return self._repos
+
+    async def list_repos_by_keyword(self, keyword, top_k=20, similarity_threshold=0.3):
+        return self._keyword_results
+
+    async def get_repo_by_name(self, name):
+        for r in self._repos:
+            if r.repo_name == name:
+                return r
+        return None
+
+
+def _make_repo(name, display="显示名", desc="描述", tags=None):
+    """构造 RepoMeta dataclass 模拟对象。"""
+    from spma.ingestion.code.repo_registry import RepoMeta
+    return RepoMeta(
+        repo_name=name,
+        display_name=display,
+        description=desc,
+        tags=tags or [],
+        repo_url=None,
+        local_path=f"/repos/{name}",
+        languages=["Python"],
+        enabled=True,
+    )
+
+
+class MockLLMResponse:
+    def __init__(self, content):
+        self._content = content
+    async def ainvoke(self, prompt):
+        return MagicMock(content=self._content)
+
+
+@pytest.mark.anyio
+class TestRouteReposStage0Single:
+    async def test_single_stage_llm_routes_correctly(self):
+        """仓库数 ≤ 5 走单阶段 LLM，route_method=db_registry_match_single。"""
+        repos = [
+            _make_repo("repo_auth", desc="用户认证"),
+            _make_repo("repo_payment", desc="支付服务"),
+        ]
+        reg = MockRepoRegistry(repos)
+        llm = MockLLMResponse('{"repo_names": ["repo_auth"], "reason": "匹配"}')
+        result = await route_repos(
+            query="用户登录",
+            entities={"code_refs": [], "module": ""},
+            file_path_cache=MockFilePathCache({}),
+            repo_registry=reg,
+            llm=llm,
+            two_stage_threshold=5,  # 2 ≤ 5 → 走单阶段
+        )
+        assert result["route_method"] == "db_registry_match_single"
+        assert result["candidate_repos"] == ["repo_auth"]
+        assert result["route_confidence"] == "high"
