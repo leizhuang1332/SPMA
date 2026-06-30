@@ -31,7 +31,7 @@
 | ~~G12~~ | ~~P7~~ | ~~QPSLimiter 未实现~~ | ✅ 已修复: QPSLimiter(Redis 滑动窗口 1s,tenant+user 粒度,VIP 白名单) (squash merge P7 commit chain) | - |
 | ~~G13~~ | ~~P7~~ | ~~PIIDetector 未实现~~ | ✅ 已修复: PIIDetector(5 种 PII 正则 + 脱敏 + should_bypass_llm) 🔴 P0 合规 (squash merge P7 commit chain) | - |
 | ~~G14~~ | ~~P7~~ | ~~PromptInjectionGuard 未实现~~ | ✅ 已修复: PromptInjectionGuard(5 种注入模式正则 + sanitize 不 reject) 🔴 P0 安全 (squash merge P7 commit chain) | - |
-| **G15** | P8 | `StrategyFeatureFlag` / `RollbackManager` 未实现 | 仅 `qr_state.bump_weights_version` / `write_weights_snapshot` | 🟡 P1 |
+| ~~G15~~ | ~~P8~~ | ~~`StrategyFeatureFlag` / `RollbackManager` 未实现~~ | ✅ 已修复: StrategyFeatureFlag(Redis 5s 缓存 + KILL SWITCH)+ RollbackManager(1 分钟回滚 + bump_weights_version)+ CanaryRelease(5 阶段灰度)+ 运维 API (squash merge P8 commit chain) | - |
 
 ### 1.2 已完成项(12 项,基于代码核查)
 
