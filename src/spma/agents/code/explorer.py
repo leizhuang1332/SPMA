@@ -112,28 +112,136 @@ class CodeExplorer:
         await self._assess(state)
 
     # ---- 6 阶段方法（占位实现，下一 Task 逐个填充）----
-    async def _refine_terms(self, state: ExplorerState) -> None: ...
-    async def _glob(self, state: ExplorerState) -> list[dict]: return []
-    async def _grep(self, state: ExplorerState) -> list[dict]: return []
-    async def _read(self, state: ExplorerState, candidates: list[dict]) -> None: ...
-    async def _expand_via_ast(self, state: ExplorerState) -> None: ...
-    async def _assess(self, state: ExplorerState) -> None:
-        """判断本轮是否收敛——用 legacy_levels=False 保留 v2 level 名（如 goal_verified）。"""
-        from spma.agents.code.completeness import assess_code_completeness
+    async def _refine_terms(self, state: ExplorerState) -> None:
+        """基于上轮 expanded_context 调 LLM 重组关键词（P3 对策）。
 
-        result = await assess_code_completeness(
-            ripgrep_results=state.ripgrep_results,
-            expanded_context=state.expanded_context,
-            entities=state.entities,
-            call_depth=state.call_depth,
-            new_files_this_round=state.new_files_this_round,
-            fallback_layer=state.fallback_layer,
-            llm=self._llm,
-            previous_new_files=state.previous_new_files,
-            max_files=self._max_files,
-            max_rounds=self._max_rounds,
-            round=state.round,
-            total_files=len(state.seen_files),
-            legacy_levels=False,
-        )
-        state.convergence = result
+        首轮（round=1 且 expanded_context 空）退化：用 query + entities 构造 search_terms。
+        后续轮：调 LLM 基于上轮 expanded_context 重组关键词；LLM 失败时 search_terms 保持上轮值。
+        """
+        if state.round == 1 and not state.expanded_context:
+            # 首轮退化：直接用 query + entities
+            state.search_terms = {
+                "query": state.query,
+                "entities_code_refs": list(state.entities.get("code_refs", []) or []),
+                "entities_module": state.entities.get("module", ""),
+                "refined_via": "degraded_query_entities",
+            }
+            return
+
+        if self._llm is None:
+            return  # 无 LLM，search_terms 保持上轮值
+
+        # 后续轮：调 LLM 重组
+        try:
+            from spma.agents.code.term_builder import build_search_terms
+            base = build_search_terms(state.entities)
+            prompt = (
+                f"基于以下上轮探索结果，重组更精准的代码搜索关键词。\n"
+                f"用户查询: {state.query}\n"
+                f"已有 expanded_context: {len(state.expanded_context)} 个文件\n"
+                f"已有 ripgrep_results: {len(state.ripgrep_results)} 个匹配\n"
+                f"输出 JSON: {{\"exact_terms\": [...], \"fuzzy_terms\": [...]}}"
+            )
+            resp = await self._llm.ainvoke(prompt)
+            import json, re
+            content = re.sub(r"^```(?:json)?\s*|\s*```$", "", resp.content.strip())
+            refined = json.loads(content)
+            state.search_terms = {
+                "exact_terms": refined.get("exact_terms", base.get("exact_terms", [])),
+                "fuzzy_terms": refined.get("fuzzy_terms", base.get("fuzzy_terms", [])),
+                "tag_terms": base.get("tag_terms", []),
+                "refined_via": "llm",
+            }
+        except Exception as e:
+            logger.warning(f"_refine_terms LLM 调用失败: {e}，保持上轮 search_terms")
+
+    async def _glob(self, state: ExplorerState) -> list[dict]:
+        """调 ripgrep_executor.glob_files。"""
+        try:
+            return await self._executor.glob_files("**/*.py", state.candidate_repos)
+        except Exception as e:
+            logger.warning(f"_glob failed: {e}")
+            return []
+
+    async def _grep(self, state: ExplorerState) -> list[dict]:
+        """调 ripgrep_executor.search（4 层降级由 fallback_layer 控制）。"""
+        try:
+            return await self._executor.search(
+                state.search_terms or {},
+                state.candidate_repos,
+                state.fallback_layer,
+            )
+        except Exception as e:
+            logger.warning(f"_grep failed: {e}")
+            return []
+
+    async def _read(self, state: ExplorerState, candidates: list[dict]) -> None:
+        """调 ripgrep_executor.read_files；新文件追加到 expanded_context。"""
+        # 过滤已 seen 的文件
+        new_files = [
+            c for c in candidates
+            if (c.get("repo"), c.get("file_path")) not in state.seen_files
+        ]
+        if not new_files:
+            state.new_files_this_round = 0
+            return
+        try:
+            read_results = await self._executor.read_files(new_files)
+        except Exception as e:
+            logger.warning(f"_read failed: {e}")
+            state.new_files_this_round = 0
+            return
+        added = 0
+        for r in read_results:
+            state.expanded_context.append(r)
+            state.seen_files.add((r["repo"], r["file_path"]))
+            added += 1
+        state.new_files_this_round = added
+
+    async def _expand_via_ast(self, state: ExplorerState) -> None:
+        """AST 辅助（增量追加到 expanded_context）。"""
+        from spma.agents.code.ast_expander import expand_via_ast
+        try:
+            new_expanded = await expand_via_ast(
+                ripgrep_results=state.ripgrep_results,
+                repo_paths=self._executor._repo_paths,
+                ast_parser=self._ast,
+            )
+        except Exception as e:
+            logger.warning(f"_expand_via_ast failed: {e}")
+            return
+        for f in new_expanded:
+            key = (f.get("repo", ""), f.get("file_path", ""))
+            if key not in state.seen_files:
+                state.expanded_context.append(f)
+                state.seen_files.add(key)
+                state.new_files_this_round += 1
+        # 维护 previous_new_files 给下一轮 stuck 判定
+        state.previous_new_files = state.new_files_this_round
+
+    async def _assess(self, state: ExplorerState) -> None:
+        """调 assess_code_completeness（P1 对策：放最后）。"""
+        from spma.agents.code.completeness import assess_code_completeness
+        try:
+            outcome = await assess_code_completeness(
+                ripgrep_results=state.ripgrep_results,
+                expanded_context=state.expanded_context,
+                entities=state.entities,
+                call_depth=state.call_depth,
+                new_files_this_round=state.new_files_this_round,
+                fallback_layer=state.fallback_layer,
+                llm=self._llm,
+                previous_new_files=state.previous_new_files,
+                max_files=self._max_files,
+                max_rounds=self._max_rounds,
+                round=state.round,
+                total_files=len(state.seen_files),
+                legacy_levels=False,
+            )
+            state.convergence = outcome
+        except Exception as e:
+            logger.warning(f"_assess failed: {e}，默认 expand")
+            from spma.agents.code.completeness import CodeCompletenessResult
+            state.convergence = CodeCompletenessResult(
+                verdict="expand", level="expand", reason=f"assess_error:{e}",
+            )

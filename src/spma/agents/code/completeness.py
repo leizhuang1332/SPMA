@@ -62,6 +62,11 @@ async def assess_code_completeness(
     if total_results >= min_results and code_refs and fallback_layer == 0:
         return _make_result("converge", "goal_verified", "deterministic_code_refs", legacy_levels)
 
+    # 确定性 5: cap_reached（硬约束优先于 stuck——max_rounds 是不可逾越的截断）
+    if call_depth >= max_rounds or total_files >= max_files:
+        reason = "max_rounds" if call_depth >= max_rounds else "max_files"
+        return _make_result("converge", "cap_reached", reason, legacy_levels)
+
     # 确定性 2: stuck（首轮豁免）
     if round >= 2 and new_files_this_round == 0 and previous_new_files == 0:
         return _make_result("converge", "stuck", "no_new_files_two_rounds", legacy_levels)
@@ -79,11 +84,6 @@ async def assess_code_completeness(
             return _make_result(
                 "converge", "diminishing_returns", f"rate={new_files_rate:.2f}", legacy_levels,
             )
-
-    # 确定性 5: cap_reached
-    if call_depth >= max_rounds or total_files >= max_files:
-        reason = "max_rounds" if call_depth >= max_rounds else "max_files"
-        return _make_result("converge", "cap_reached", reason, legacy_levels)
 
     # 向后兼容：legacy L2 条件（call_depth >= 2 或 no_new_files with sufficient results）
     # 仅在 legacy_levels=True 时生效，确保旧测试通过
