@@ -171,6 +171,11 @@ _LANG_TO_EXT = {
     "h": "h",
     "hpp": "hpp",
 }
+# WARNING: when adding new language keys, follow these rules:
+# 1. Short keys (e.g. 'py') must NOT be substrings of longer keys (e.g. 'python' is fine, but 'py' is short → matches first in alternation).
+# 2. _LANG_KEYS_SORTED sorts by length DESC, so longer keys are tried first.
+# 3. If two keys can match at the same position, the LEFTMOST in the alternation wins (regex alternation pitfall).
+# 4. Test new additions with the test_mixed_mode_position_order and test_mixed_mode_reverse_position_order cases.
 _LANG_KEYS_SORTED = sorted(_LANG_TO_EXT.keys(), key=len, reverse=True)  # 长在前
 # 显式 .ext 模式: .py / .xml / .yaml 等
 _EXT_DOT_PATTERN = re.compile(

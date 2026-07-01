@@ -14,3 +14,7 @@ _spec.loader.exec_module(_prompts_py)  # type: ignore[union-attr]
 
 REFINE_TERMS_PROMPT = _prompts_py.REFINE_TERMS_PROMPT  # noqa: F401
 del module_from_spec, spec_from_file_location, Path, _spec, _prompts_py
+
+# 注意：此处的 importlib.util 加载是 import-time 一次性的。如果 dev/test 期间
+# 需要 reload `prompts.py`（如 monkeypatch REFINE_TERMS_PROMPT），必须重启 Python 进程
+# 或重新 import 这个模块（不会自动重载底层的 prompts.py）。

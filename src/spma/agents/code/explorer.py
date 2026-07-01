@@ -273,6 +273,7 @@ class CodeExplorer:
                 if key not in seen:
                     seen.add(key)
                     merged.append(hit)
+        logger.info(f"_glob patterns={patterns} total_hits={len(merged)} deduped")
         return merged
 
     async def _grep(self, state: ExplorerState) -> list[dict]:

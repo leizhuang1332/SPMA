@@ -250,13 +250,29 @@ _round=2（反思后第二轮）, _refine_terms:
   ③ 现有 except 分支已捕获：logger.warning，保持上轮 search_terms
   ④ 但 state.glob_patterns_resolved 仍需更新
                 ↓
-  ★ 关键设计点：refine 失败的兜底链
+  ★ 关键设计点：refine 失败的兜底链（已修正）
   ┌────────────────────────────────────────────────────┐
-  │ 上一轮 state.glob_patterns_resolved == "llm"?       │
-  │   是 → 沿用上轮 patterns（不变）                    │
-  │       state.glob_patterns_resolved 也保持 "llm"     │
-  │   否 → 进入降级链（见下方）                         │
+  │ ★ 实施版决策：except 路径下**总是**设               │
+  │   state.glob_patterns_resolved = "fallback_wildcard" │
+  │   （不沿用上轮）                                     │
   └────────────────────────────────────────────────────┘
+
+> **【实施期决策 · 取代原 spec 草案】**
+>
+> 原 spec §4.2 草案描述"若上轮 resolved=='llm' 则沿用上轮 patterns"，
+> 但实施时改为：**except 路径下总是设置 `fallback_wildcard`**，**不沿用上轮**。
+>
+> **原因**：reflection 层 cap 机制依赖 `state.search_terms` 在 except 路径下保持不变
+> （参见 `src/spma/agents/code/explorer.py:152-154` 的 cap 判断）。若 except 路径
+> 主动写回 `glob_patterns_resolved="llm"` 但 search_terms 已发生其它键的更新，cap 判定
+> 与 search_terms 实际状态会出现不一致。
+>
+> 取舍：**可观测性优先于模式保留**。一次 LLM transient failure 会触发 `**/*.*` 全仓扫描，
+> 但 explorer 层有 `max_files=50` cap 兜底，不会失控；下轮 LLM 成功即恢复。
+>
+> 后续如需支持"沿用上轮"语义，必须先在 cap 机制中显式排除 `glob_patterns` 键的影响后
+> 再讨论。本决策已在 final-review 中标注为 I-1。
+
                 ↓ 假设上一轮也失败（resolved = "fallback_*"）
   ⑤ extract_extensions_from_query("查询订单服务相关代码")
      - regex: \.(java|py|go|ts|js|...)
