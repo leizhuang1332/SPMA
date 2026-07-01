@@ -1,0 +1,20 @@
+docs/superpowers/plans/2026-07-01-code-explorer-reflection-layer.md
+  s_ad7437354f4a60::t_06924d64a50d83 22-47
+  s_ad7437354f4a60::t_41e19ca6bb0e97 267,271
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "f4dfc054198843dbb9dcfa56e0d86ad482eeab2c",
+  "prompts": {},
+  "sessions": {
+    "s_ad7437354f4a60": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "20707f8b-2d84-4cac-9c8d-287f48bc7cc7",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "leizhuang <lorcan.lei@jtexpress.com>"
+    }
+  }
+}
