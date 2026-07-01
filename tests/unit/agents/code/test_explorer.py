@@ -805,12 +805,23 @@ class TestExploreEndToEndWithReflection:
         ripgrep.search.return_value = []
         ripgrep.read_files.return_value = []  # new_files_this_round 始终为 0
 
+        # 用 on_round_complete 回调捕获每轮后的 state
+        captured_states = []
+
+        async def capture_state(s):
+            captured_states.append({
+                "round": s.round,
+                "search_terms": dict(s.search_terms),
+                "reflection_count": s.reflection_count,
+            })
+
         explorer = CodeExplorer(
             ripgrep_executor=ripgrep,
             ast_parser=_AM(),
             llm=llm,
             repo_whitelist=fake_repo_whitelist,
             max_rounds=4,
+            on_round_complete=capture_state,
         )
 
         # 第 1 轮 _assess 返回 diminishing_returns（触发反思）
@@ -869,6 +880,25 @@ class TestExploreEndToEndWithReflection:
         assert result["rounds_used"] == 3
         assert assess_call["n"] == 3  # 跑了 3 轮
         assert result["convergence_reason"].endswith("goal_verified")
+
+        # Task 6 review I-2: 验证反思真的改写了 search_terms
+        # on_round_complete 回调在每轮结束后被调用，captured_states 包含 3 轮快照
+        assert len(captured_states) == 3, (
+            f"on_round_complete 应在 3 轮后调用 3 次，实际: {len(captured_states)}"
+        )
+        # 第 1 轮：触发反思前
+        assert captured_states[0]["round"] == 1
+        # 第 2 轮：反思已生效，reflection_count 应 >= 1 且 search_terms 应包含 "authorization"
+        assert captured_states[1]["round"] == 2
+        assert captured_states[1]["reflection_count"] >= 1, (
+            f"第 2 轮 reflection_count 应 >= 1，实际: {captured_states[1]['reflection_count']}"
+        )
+        # 验证反思后 search_terms["module"] 包含 LLM 返回的 "authorization"
+        round2_terms = captured_states[1]["search_terms"]
+        module_terms = round2_terms.get("module", [])
+        assert "authorization" in module_terms, (
+            f"反思后 search_terms.module 应包含 'authorization'，实际: {module_terms}"
+        )
 
 
 @pytest.mark.anyio

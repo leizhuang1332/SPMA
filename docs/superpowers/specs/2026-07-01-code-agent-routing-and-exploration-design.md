@@ -586,7 +586,7 @@ explore(graph_state)
 | RD-3 | 反思后 search_terms 全空强制 cap（`reason=reflection_empty_terms`，`outcome="capped"`） |
 | RD-4 | `explore()` 主循环在 `verdict ∈ {"converge", "cap", "stuck"}` 时终止（C1 修复） |
 | RD-5 | 现有 8 项 Explorer 单测 + 7 mode fixture + graph + searcher 全部 100% 保持通过 |
-| RD-6 | 反思相关 25 项新测试通过（5 reflection 单元 + 10 Explorer 集成含 4 cap 终止 + 2 e2e + 8 埋点真触发 + 5 metrics） |
+| RD-6 | 反思相关 ~30 项 unique test methods（含 7 reflection 单元 + 15 Explorer 集成 + 4 埋点真触发 + 5 metrics + 1 e2e），pytest 报告因 anyio 双 backend 翻倍为 ~60 个 test items |
 | RD-7 | 4 个反思 Prometheus 指标上线：`code_reflection_total` / `code_reflection_duration_seconds` / `code_reflection_search_terms_changed` / `code_reflection_consecutive_no_progress` |
 
 ---
