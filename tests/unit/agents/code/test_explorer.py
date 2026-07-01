@@ -6,6 +6,31 @@ import pytest
 from spma.agents.code.explorer import ExplorerState, CodeExplorer
 
 
+# ============================================================
+# Task 3：REFINE_TERMS_PROMPT 模板测试
+# ============================================================
+
+
+class TestRefineTermsPrompt:
+    """spec §3.1 #5：prompts.py 加 REFINE_TERMS_PROMPT 模板，要求 LLM 输出 glob_patterns。"""
+
+    def test_prompt_contains_glob_patterns_keyword(self):
+        from spma.agents.code.prompts import REFINE_TERMS_PROMPT
+        assert "glob_patterns" in REFINE_TERMS_PROMPT
+
+    def test_prompt_contains_json_schema(self):
+        from spma.agents.code.prompts import REFINE_TERMS_PROMPT
+        # 模板应明确要求输出 JSON 且含 4 个字段
+        for key in ("exact_terms", "fuzzy_terms", "tag_terms", "glob_patterns"):
+            assert key in REFINE_TERMS_PROMPT, f"missing key: {key}"
+
+    def test_prompt_instructs_language_inference(self):
+        """prompt 必须告诉 LLM 按用户意图/语言推断 glob。"""
+        from spma.agents.code.prompts import REFINE_TERMS_PROMPT
+        # 中英文指令都要含
+        assert any(kw in REFINE_TERMS_PROMPT.lower() for kw in ["language", "语言", "意图", "intent", "file type", "文件类型"])
+
+
 class TestExplorerState:
     def test_default_values(self):
         state = ExplorerState()
