@@ -187,7 +187,7 @@ _assess(state)               ← 7 mode 硬判定
                                               ├─ 解析为 ReflectionDecision
                                               ├─ 重写 state.search_terms（合并 drop + add）
                                               ├─ state.reflection_count += 1
-                                              ├─ 若 previous_new_files == 0
+                                              ├─ 若 new_files_this_round == 0（反思触发的那一轮累计为 0；与 §2.4 错误矩阵第 257 行一致）
                                               │    state.consecutive_no_progress_reflections += 1
                                               │    若 ≥2 → 强制 break（cap_reflect）
                                               └─ 走下轮 _refine_terms（用新 search_terms）
