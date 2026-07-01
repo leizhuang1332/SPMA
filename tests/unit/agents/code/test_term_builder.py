@@ -1,6 +1,10 @@
 # tests/unit/agents/code/test_term_builder.py
 import pytest
-from spma.agents.code.term_builder import build_search_terms
+from spma.agents.code.term_builder import (
+    build_search_terms,
+    validate_glob_pattern,
+    extract_extensions_from_query,
+)
 
 
 class TestTermBuilder:
@@ -68,3 +72,73 @@ class TestTermBuilder:
         assert "auth" not in terms["exact_terms"]
         assert "authentication" not in terms["exact_terms"]
         assert "认" in terms["fuzzy_terms"]
+
+
+class TestValidateGlobPattern:
+    """validate_glob_pattern 单元测试——spec §5.1 规则。"""
+
+    def test_valid_simple_star_ext(self):
+        assert validate_glob_pattern("**/*.py") is True
+
+    def test_valid_compound_path(self):
+        assert validate_glob_pattern("**/security/**/*.java") is True
+
+    def test_valid_with_question_mark(self):
+        """含 ? 也算合法 glob。"""
+        assert validate_glob_pattern("**/Test?.java") is True
+
+    def test_reject_path_traversal(self):
+        assert validate_glob_pattern("../../etc/passwd") is False
+
+    def test_reject_shell_injection(self):
+        """含 ; 是 shell 注入风险，必须拒绝。"""
+        assert validate_glob_pattern("**/*.py; rm -rf /") is False
+
+    def test_reject_absolute_unix(self):
+        assert validate_glob_pattern("/etc/passwd") is False
+
+    def test_reject_absolute_windows(self):
+        assert validate_glob_pattern("C:\\Windows\\system32") is False
+
+    def test_reject_empty_string(self):
+        assert validate_glob_pattern("") is False
+
+    def test_reject_no_glob_magic(self):
+        """不含 * 或 ? 的不是 glob。"""
+        assert validate_glob_pattern("src/main/java") is False
+
+    def test_reject_pipe_injection(self):
+        assert validate_glob_pattern("**/*.py|cat") is False
+
+    def test_reject_backtick_injection(self):
+        assert validate_glob_pattern("**/*.py`whoami`") is False
+
+
+class TestExtractExtensionsFromQuery:
+    """extract_extensions_from_query 单元测试——spec §6.2 case 1-5。"""
+
+    def test_chinese_java_query(self):
+        """query 含 Java 关键词 → 抽出 java glob。"""
+        result = extract_extensions_from_query("查找 Spring Java 控制器")
+        assert "**/*.java" in result
+
+    def test_multi_lang_query(self):
+        """query 含多种语言 → 按出现顺序。"""
+        result = extract_extensions_from_query("Python 脚本和 Go 微服务")
+        assert result == ["**/*.py", "**/*.go"]
+
+    def test_explicit_extension_in_query(self):
+        """query 含显式 pom.xml → 抽出 xml。"""
+        result = extract_extensions_from_query("改 pom.xml 依赖")
+        assert "**/*.xml" in result
+
+    def test_yaml_normalization(self):
+        """yaml 和 yml 都归一为 yaml。"""
+        result = extract_extensions_from_query("查看 deployment.yaml 配置")
+        assert "**/*.yaml" in result
+        assert "**/*.yml" not in result
+
+    def test_no_extension_in_query(self):
+        """query 无任何扩展名 → 返回空列表。"""
+        result = extract_extensions_from_query("查一下订单服务")
+        assert result == []

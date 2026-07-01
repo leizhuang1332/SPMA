@@ -7,6 +7,7 @@
 
 import logging
 import os
+import re
 from spma.agents.code.state import SearchTermSet
 
 logger = logging.getLogger(__name__)
@@ -116,3 +117,142 @@ def build_search_terms(
         "fuzzy_terms": fuzzy_deduped,
         "tag_terms": tag_deduped,
     }
+
+
+# 支持的扩展名 whitelist（spec §5 风险缓解 + §6.2 测试覆盖）
+_SUPPORTED_EXTS = {
+    "py", "java", "go", "ts", "tsx", "js", "jsx", "rs", "kt", "swift",
+    "rb", "php", "c", "cpp", "h", "hpp", "cs", "scala", "sh", "bash",
+    "yaml", "yml", "json", "xml", "md", "sql", "html", "css", "vue",
+}
+
+# shell 注入字符黑名单（spec §5.1）
+_SHELL_INJECTION_CHARS = re.compile(r"[;\|&\$\`\n\r]")
+
+# 提取扩展名的正则（spec §3.1 #1 + §3.2 example）
+# 两种匹配模式:
+#   1. 显式 .ext: "pom.xml"  / "deployment.yaml" — 用 (1) 模式
+#   2. 语言关键词(完整词)后跟非字母字符(中文/标点): "Java 服务" / "Python 脚本"
+#      — 用 (2) 模式,alternation 必须放完整语言名,否则 "Python" 会被 "py" 短前缀吃掉。
+#      \b 在 ASCII 与中文字符之间不工作,所以用 (?![A-Za-z0-9]) 替代 \b 收尾。
+# 语言名 → 扩展名映射（仅完整词匹配,避免 "py" 在 "python" 中误命中）
+_LANG_TO_EXT = {
+    "python": "py",
+    "py": "py",
+    "java": "java",
+    "go": "go",
+    "golang": "go",
+    "typescript": "ts",
+    "ts": "ts",
+    "tsx": "tsx",
+    "javascript": "js",
+    "js": "js",
+    "jsx": "jsx",
+    "rust": "rs",
+    "rs": "rs",
+    "kotlin": "kt",
+    "kt": "kt",
+    "swift": "swift",
+    "ruby": "rb",
+    "rb": "rb",
+    "php": "php",
+    "c": "c",
+    "cpp": "cpp",
+    "c++": "cpp",
+    "cs": "cs",
+    "csharp": "cs",
+    "scala": "scala",
+    "sh": "sh",
+    "bash": "bash",
+    "shell": "sh",
+    "yaml": "yaml",
+    "yml": "yaml",  # 归一化
+    "json": "json",
+    "xml": "xml",
+    "md": "md",
+    "markdown": "md",
+    "sql": "sql",
+    "html": "html",
+    "css": "css",
+    "vue": "vue",
+    "h": "h",
+    "hpp": "hpp",
+}
+_LANG_KEYS_SORTED = sorted(_LANG_TO_EXT.keys(), key=len, reverse=True)  # 长在前
+# 显式 .ext 模式: .py / .xml / .yaml 等
+_EXT_DOT_PATTERN = re.compile(
+    r"\.(py|java|go|ts|tsx|js|jsx|rs|kt|swift|rb|php|cpp|h|hpp|cs|scala|sh|bash|yaml|yml|json|xml|md|sql|html|css|vue)\b",
+    re.IGNORECASE,
+)
+# 语言关键词模式: 完整词 + 边界断言（(?![A-Za-z0-9]) 让中英文混排也工作）
+_LANG_PATTERN = re.compile(
+    r"\b(" + "|".join(re.escape(k) for k in _LANG_KEYS_SORTED) + r")(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+
+
+def extract_extensions_from_query(query: str) -> list[str]:
+    """从 query 中按出现顺序抽取文件扩展名，生成 glob patterns。
+
+    Args:
+        query: 用户原始查询字符串。
+
+    Returns:
+        list[str]: 形如 ["**/*.py", "**/*.java"] 的 glob pattern 列表。
+        yaml 和 yml 归一为 yaml（去重）。
+        顺序按首次出现的位置。
+
+    Examples:
+        >>> extract_extensions_from_query("Python 脚本")
+        ['**/*.py']
+        >>> extract_extensions_from_query("查一下订单")
+        []
+    """
+    if not query:
+        return []
+    seen: set[str] = set()
+    result: list[str] = []
+    # 模式 1: 显式 .ext
+    for match in _EXT_DOT_PATTERN.finditer(query):
+        ext = match.group(1).lower()
+        if ext == "yml":
+            ext = "yaml"
+        if ext not in seen:
+            seen.add(ext)
+            result.append(f"**/*.{ext}")
+    # 模式 2: 完整语言关键词
+    for match in _LANG_PATTERN.finditer(query):
+        ext = _LANG_TO_EXT[match.group(1).lower()]
+        if ext not in seen:
+            seen.add(ext)
+            result.append(f"**/*.{ext}")
+    return result
+
+
+def validate_glob_pattern(pattern: str) -> bool:
+    """校验单个 glob pattern 是否安全可传给 ripgrep --files。
+
+    规则（spec §5.1）：
+        1. 非空字符串
+        2. 不含 .. 路径穿越
+        3. 不含 shell 注入字符 (; | & $ ` \\n \\r)
+        4. 必须是 glob（含 * 或 ?）
+        5. 不以绝对路径开头（/ 或 Windows drive letter）
+
+    Args:
+        pattern: 待校验的 glob 字符串。
+
+    Returns:
+        bool: True 表示合法可传给 ripgrep。
+    """
+    if not pattern or not isinstance(pattern, str):
+        return False
+    if ".." in pattern:
+        return False
+    if _SHELL_INJECTION_CHARS.search(pattern):
+        return False
+    if not re.search(r"[\*\?]", pattern):
+        return False
+    if pattern.startswith("/") or re.match(r"^[a-zA-Z]:", pattern):
+        return False
+    return True
