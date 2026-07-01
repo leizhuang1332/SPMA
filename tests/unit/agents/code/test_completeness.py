@@ -69,16 +69,15 @@ def test_should_reflect_default_false():
     assert result.should_reflect is False
 
 
-def test_assess_sets_should_reflect_on_diminishing_returns():
+async def test_assess_sets_should_reflect_on_diminishing_returns():
     """diminishing_returns 模式触发时，assess_code_completeness 应设置 should_reflect=True。
 
     触发条件：new_files_rate < 0.10 且 new_files_this_round < 3。
     构造：total_files=20, new_files_this_round=1 → rate=0.05 < 0.10, < 3 → diminishing_returns。
     """
-    import asyncio
     from spma.agents.code.completeness import assess_code_completeness
     # 构造 diminishing_returns 场景：rate=1/20=0.05 < 0.10 且 new_files_this_round=1 < 3
-    result = asyncio.run(assess_code_completeness(
+    result = await assess_code_completeness(
         ripgrep_results=[{"repo": "r", "file_path": f"f{i}"} for i in range(1)],
         expanded_context=[],
         entities={"module": ["auth"]},  # 无 code_refs 避免 goal_verified
@@ -89,6 +88,6 @@ def test_assess_sets_should_reflect_on_diminishing_returns():
         round=2,
         total_files=20,
         legacy_levels=False,
-    ))
+    )
     assert result.level == "diminishing_returns", f"expected diminishing_returns, got {result.level}"
     assert result.should_reflect is True
