@@ -1,0 +1,21 @@
+src/spma/agents/code/term_builder.py
+  s_ae291d52f6a83e::t_0c17fe391b1326 206-207,213,217-223
+tests/unit/agents/code/test_term_builder.py
+  s_ae291d52f6a83e::t_daa839dfceb40e 145-160
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.8",
+  "base_commit_sha": "750126cc10e4d5c34611bb21f5070ae68b8e32ff",
+  "prompts": {},
+  "sessions": {
+    "s_ae291d52f6a83e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a1f754162d4e12f0b",
+        "model": "unknown"
+      },
+      "human_author": "leizhuang <lorcan.lei@jtexpress.com>"
+    }
+  }
+}
