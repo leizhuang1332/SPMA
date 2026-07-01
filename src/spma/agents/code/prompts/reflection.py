@@ -27,14 +27,11 @@ if TYPE_CHECKING:
 
 MAX_CONTEXT_SUMMARY_CHARS = 2000
 
-# 默认最大轮次（prompt 模板内显示用，应与 CodeExplorer 默认值一致）
-DEFAULT_MAX_ROUNDS = 6
 
-
-def build_reflection_prompt(state: "ExplorerState", max_rounds: int = DEFAULT_MAX_ROUNDS) -> str:
+def build_reflection_prompt(state: "ExplorerState") -> str:
     """构造反思 prompt。
 
-    包含：round/max_rounds/original_query/entities/current_search_terms/
+    包含：round/6（硬编码）/original_query/entities/current_search_terms/
     expanded_context 摘要 + 本轮新增文件数 + fallback_layer/candidate_repos。
 
     expanded_context 摘要被硬截断到 ``MAX_CONTEXT_SUMMARY_CHARS`` 字符，避免 LLM 上下文溢出。
@@ -52,7 +49,7 @@ def build_reflection_prompt(state: "ExplorerState", max_rounds: int = DEFAULT_MA
     if len(context_summary) > MAX_CONTEXT_SUMMARY_CHARS:
         context_summary = context_summary[:MAX_CONTEXT_SUMMARY_CHARS] + "\n... (truncated)"
 
-    prompt = f"""你是代码探索反思助手。当前 round={state.round}/{max_rounds}（第 {state.round}/{max_rounds} 轮），本轮新增 {state.new_files_this_round} 个文件（上一轮新增 {state.previous_new_files} 个）。
+    prompt = f"""你是代码探索反思助手。当前 round={state.round}/6（第 {state.round}/6 轮），本轮新增 {state.new_files_this_round} 个文件（上一轮新增 {state.previous_new_files} 个）。
 
 # 原始查询
 {state.query}

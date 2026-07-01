@@ -102,6 +102,14 @@ def test_parse_reflection_response_invalid_json():
         parse_reflection_response("not a json at all")
 
 
+def test_parse_reflection_response_missing_required_field():
+    """缺 new_search_terms 应抛出 ValueError（pydantic ValidationError 包装）。"""
+    from spma.agents.code.prompts.reflection import parse_reflection_response
+
+    with pytest.raises(ValueError):
+        parse_reflection_response('{"drop_terms": [], "add_repos": [], "reasoning": ""}')
+
+
 def test_parse_reflection_response_extra_fields_ignored():
     """LLM 输出额外字段应被 pydantic extra='ignore' 静默丢弃。"""
     from spma.agents.code.prompts.reflection import parse_reflection_response
