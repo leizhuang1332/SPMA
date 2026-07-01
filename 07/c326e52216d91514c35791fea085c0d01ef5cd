@@ -1,0 +1,29 @@
+src/spma/agents/code/explorer.py
+  s_8e2cc9c0516f13::t_b8e2078badd773 214-218,228,231-253,256-257
+tests/unit/agents/code/test_explorer.py
+  s_2f1c29a9546e8a::t_c4707ae2feef8b 181-313
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.8",
+  "base_commit_sha": "07c326e52216d91514c35791fea085c0d01ef5cd",
+  "prompts": {},
+  "sessions": {
+    "s_2f1c29a9546e8a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4c8a9ae9-4af2-4045-a777-13e54d60fde8",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "leizhuang <lorcan.lei@jtexpress.com>"
+    },
+    "s_8e2cc9c0516f13": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "338c88e9-e079-43af-beb3-c0b6176496cc",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "leizhuang <lorcan.lei@jtexpress.com>"
+    }
+  }
+}
