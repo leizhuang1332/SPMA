@@ -1,0 +1,28 @@
+src/spma/agents/code/explorer.py
+  s_ad7437354f4a60::t_60b8df0b478123 6,59,67
+  s_ad7437354f4a60::t_b0e602d1ca03f3 257-338
+tests/unit/agents/code/test_explorer.py
+  s_ad7437354f4a60::t_1c1956fac37093 2-3
+  s_ad7437354f4a60::t_577018b0d16d76 4
+  s_ad7437354f4a60::t_3a48c1625c5d9f 254-370
+src/spma/agents/code/graph.py
+  s_ad7437354f4a60::t_c534b8e58412ad 23,52
+src/spma/api/query_graph.py
+  s_ad7437354f4a60::t_4ebad6ca63ba0f 210,228-238,246
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "d57c1492610a0c4ee4fe68f06907c5540901b2e6",
+  "prompts": {},
+  "sessions": {
+    "s_ad7437354f4a60": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "20707f8b-2d84-4cac-9c8d-287f48bc7cc7",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "leizhuang <lorcan.lei@jtexpress.com>"
+    }
+  }
+}
