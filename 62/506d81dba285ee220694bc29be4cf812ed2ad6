@@ -1,0 +1,32 @@
+tests/unit/agents/code/test_term_builder.py
+  s_2f1c29a9546e8a::t_dc5347370b1dbd 3-5
+  s_2f1c29a9546e8a::t_7699c8c232cb9d 6-7,75
+  s_8e2cc9c0516f13::t_361b819785862d 76-144
+src/spma/agents/code/term_builder.py
+  s_2f1c29a9546e8a::t_80f32130078a07 10,120-140,180
+  s_8e2cc9c0516f13::t_e23ba661eb692b 141-179,181-258
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.8",
+  "base_commit_sha": "62506d81dba285ee220694bc29be4cf812ed2ad6",
+  "prompts": {},
+  "sessions": {
+    "s_2f1c29a9546e8a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4c8a9ae9-4af2-4045-a777-13e54d60fde8",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "leizhuang <lorcan.lei@jtexpress.com>"
+    },
+    "s_8e2cc9c0516f13": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "338c88e9-e079-43af-beb3-c0b6176496cc",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "leizhuang <lorcan.lei@jtexpress.com>"
+    }
+  }
+}
