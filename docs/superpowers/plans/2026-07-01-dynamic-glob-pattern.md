@@ -612,14 +612,12 @@ class TestCodeExplorerGlob:
         }
 
         # override glob_files to be pattern-aware
-        original_glob = executor.glob_files
         async def pattern_aware_glob(pattern, repos):
             return executor._glob_per_pattern.get(pattern, [])
         executor.glob_files = pattern_aware_glob
 
         ast = MockASTParserWithExpansion()
-        llm = NoOpLLM() if False else None  # 不调 LLM
-        explorer = CodeExplorer(ripgrep_executor=executor, ast_parser=ast, llm=llm, max_rounds=6)
+        explorer = CodeExplorer(ripgrep_executor=executor, ast_parser=ast, llm=None, max_rounds=6)
         state = ExplorerState(
             round=1,
             query="x",
