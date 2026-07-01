@@ -1,0 +1,29 @@
+src/spma/agents/code/state.py
+  s_2f1c29a9546e8a::t_7c8fe5adf84d58 8
+  s_2f1c29a9546e8a::t_944e902bbea0d8 9-11
+  s_baa84d661a4058::t_d7f2502929002b 12-15
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.8",
+  "base_commit_sha": "08612e685f6e3d1fd1cefe730a9c46100e5df81b",
+  "prompts": {},
+  "sessions": {
+    "s_2f1c29a9546e8a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4c8a9ae9-4af2-4045-a777-13e54d60fde8",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "leizhuang <lorcan.lei@jtexpress.com>"
+    },
+    "s_baa84d661a4058": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a21c9985fd9c781c3",
+        "model": "unknown"
+      },
+      "human_author": "leizhuang <lorcan.lei@jtexpress.com>"
+    }
+  }
+}
