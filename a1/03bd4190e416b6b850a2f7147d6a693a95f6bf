@@ -1,0 +1,20 @@
+tests/integration/code/test_glob_pattern_e2e.py
+  s_2f1c29a9546e8a::t_745d61df1a5e43 1-90,92,95-105
+  s_2f1c29a9546e8a::t_421a42ff942ce8 91,93-94
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.8",
+  "base_commit_sha": "a103bd4190e416b6b850a2f7147d6a693a95f6bf",
+  "prompts": {},
+  "sessions": {
+    "s_2f1c29a9546e8a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4c8a9ae9-4af2-4045-a777-13e54d60fde8",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "leizhuang <lorcan.lei@jtexpress.com>"
+    }
+  }
+}
