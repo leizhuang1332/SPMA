@@ -1,0 +1,34 @@
+tests/unit/observability/test_code_metrics.py
+  s_e11de98c10a97d::t_2d5c038380bed9 57-58,60-62,82,95,105
+  s_e11de98c10a97d::t_94db19851808ce 53-56
+  s_e11de98c10a97d::t_07268dc76b192d 59
+  s_30831aee585e02::t_eb8c191cd9bdc3 63-81,83-94,96-104,106-114
+src/spma/agents/code/explorer.py
+  s_30831aee585e02::t_2ff02d667033f8 124-127,129-134,159,170-173,181,185-186,328,336-340,343-344,350-354,358,363-364,370,372-373,378,393,396-400,405,408-415,423
+src/spma/observability/code_metrics.py
+  s_e11de98c10a97d::t_5504ac3b2ac7dc 129-167
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "c295324fab99f06cf4ac7757878d3dd540600142",
+  "prompts": {},
+  "sessions": {
+    "s_30831aee585e02": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "872165b7-60ac-4e5e-bd5b-4e4d71f03c7e",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "leizhuang <lorcan.lei@jtexpress.com>"
+    },
+    "s_e11de98c10a97d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "48dc1037-ff47-4b38-8993-2aee868afbab",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "leizhuang <lorcan.lei@jtexpress.com>"
+    }
+  }
+}
