@@ -36,6 +36,11 @@ class TestExplorerState:
         assert state.reflection_count == 0
         assert state.consecutive_no_progress_reflections == 0
 
+    def test_glob_patterns_resolved_default_empty(self):
+        """spec §2.2：glob_patterns_resolved 默认空字符串，运行时由 _refine_terms 写入。"""
+        state = ExplorerState()
+        assert state.glob_patterns_resolved == ""
+
 
 class MockRipgrepExecutor:
     """Mock RipgrepExecutor——所有方法返回空。"""

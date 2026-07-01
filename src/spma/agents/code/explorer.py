@@ -43,6 +43,8 @@ class ExplorerState:
     # Task 1: 反思层状态字段
     reflection_count: int = 0
     consecutive_no_progress_reflections: int = 0
+    # Task 8: glob pattern 解析来源——LLM 主导 + 3 层降级（spec §2.2）
+    glob_patterns_resolved: str = ""  # "llm" | "fallback_query" | "fallback_wildcard"
 
 
 class CodeExplorer:
