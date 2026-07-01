@@ -231,7 +231,7 @@ async def _run_worker(
                 registry = get_repo_registry()
                 active_repos = await registry.list_active_repos()
                 repo_whitelist = frozenset(r.repo_name for r in active_repos)
-            except (RuntimeError, Exception) as e:
+            except Exception as e:  # noqa: BLE001 — get_repo_registry() 未初始化（RuntimeError）或 DB 故障
                 logger.warning(
                     "Code worker 拉取 repo 白名单失败，反思层降级为 None: %s", e,
                 )

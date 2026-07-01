@@ -292,7 +292,7 @@ class CodeExplorer:
                 self._llm.ainvoke(prompt),
                 timeout=30.0,  # 30 秒超时
             )
-        except (asyncio.TimeoutError, Exception) as e:
+        except Exception as e:  # noqa: BLE001 — 软错误兜底（含 TimeoutError / 5xx / 任意 LLM SDK 异常）
             # 软错误：跳过反思
             logger.warning(
                 "reflection_llm_failed",
