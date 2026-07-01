@@ -45,6 +45,8 @@ htmlcov/
 .coverage.*
 coverage.xml
 *.lcov
+# pytest-cov coverage annotation files (created next to .py files)
+*.py,cover
 
 # MyPy
 .mypy_cache/
