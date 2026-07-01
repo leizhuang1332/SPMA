@@ -541,9 +541,34 @@ Expected: 新增 6 个 FAIL（旧的 1 个仍 PASS）
             )
 ```
 
-- [ ] **Step 4.4: 在 `_refine_terms` 末尾追加 6 步 glob 解析流水线**
+- [ ] **Step 4.4: 在 `_refine_terms` 加 glob_patterns 字段 + 末尾 6 步解析流水线**
 
-修改 `src/spma/agents/code/explorer.py:228-230`（现有 `except Exception` 之后）追加：
+**两个修改**：
+
+**(a)** 修改 `src/spma/agents/code/explorer.py:223-228`（`state.search_terms = {...}` 那个 dict 字面量），增加 `glob_patterns` 键：
+
+原代码：
+```python
+            state.search_terms = {
+                "exact_terms": refined.get("exact_terms", base.get("exact_terms", [])),
+                "fuzzy_terms": refined.get("fuzzy_terms", base.get("fuzzy_terms", [])),
+                "tag_terms": base.get("tag_terms", []),
+                "refined_via": "llm",
+            }
+```
+
+改为：
+```python
+            state.search_terms = {
+                "exact_terms": refined.get("exact_terms", base.get("exact_terms", [])),
+                "fuzzy_terms": refined.get("fuzzy_terms", base.get("fuzzy_terms", [])),
+                "tag_terms": base.get("tag_terms", []),
+                "glob_patterns": refined.get("glob_patterns", []),
+                "refined_via": "llm",
+            }
+```
+
+**(b)** 在 `src/spma/agents/code/explorer.py:230`（现有 `except Exception` 块之后）追加 6 步解析流水线：
 
 ```python
         except Exception as e:
