@@ -1,0 +1,19 @@
+tests/unit/agents/code/test_explorer.py
+  s_8e2cc9c0516f13::t_0bd05db20aef64 293-303,313-314,318,321-323,325-326
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.8",
+  "base_commit_sha": "feeec83bce22d7269f26a1aed52d3d32c86d9904",
+  "prompts": {},
+  "sessions": {
+    "s_8e2cc9c0516f13": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "338c88e9-e079-43af-beb3-c0b6176496cc",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "leizhuang <lorcan.lei@jtexpress.com>"
+    }
+  }
+}
