@@ -1,0 +1,19 @@
+docs/superpowers/plans/2026-07-01-dynamic-glob-pattern.md
+  s_2f1c29a9546e8a::t_8f9792191662e9 544,546-571
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.8",
+  "base_commit_sha": "4cb3fa01b8b5b8f5580fbdb37dac1293a676e7a4",
+  "prompts": {},
+  "sessions": {
+    "s_2f1c29a9546e8a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4c8a9ae9-4af2-4045-a777-13e54d60fde8",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "leizhuang <lorcan.lei@jtexpress.com>"
+    }
+  }
+}
