@@ -142,3 +142,19 @@ class TestExtractExtensionsFromQuery:
         """query 无任何扩展名 → 返回空列表。"""
         result = extract_extensions_from_query("查一下订单服务")
         assert result == []
+
+    def test_mixed_mode_position_order(self):
+        """混合模式: 语言关键词先出现, 显式 .ext 后出现 → 顺序按位置。
+
+        "Java pom.xml 服务" 中 Java 在位置 0, .xml 在位置 5 → 应为 ["java", "xml"]。
+        """
+        result = extract_extensions_from_query("Java pom.xml 服务")
+        assert result == ["**/*.java", "**/*.xml"]
+
+    def test_mixed_mode_reverse_position_order(self):
+        """混合模式: 显式 .ext 先出现, 语言关键词后出现 → 顺序按位置。
+
+        "deployment.yaml Java 解析" 中 .yaml 在位置 0, java 在位置 16 → 应为 ["yaml", "java"]。
+        """
+        result = extract_extensions_from_query("deployment.yaml Java 解析")
+        assert result == ["**/*.yaml", "**/*.java"]

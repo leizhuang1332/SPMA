@@ -119,13 +119,6 @@ def build_search_terms(
     }
 
 
-# 支持的扩展名 whitelist（spec §5 风险缓解 + §6.2 测试覆盖）
-_SUPPORTED_EXTS = {
-    "py", "java", "go", "ts", "tsx", "js", "jsx", "rs", "kt", "swift",
-    "rb", "php", "c", "cpp", "h", "hpp", "cs", "scala", "sh", "bash",
-    "yaml", "yml", "json", "xml", "md", "sql", "html", "css", "vue",
-}
-
 # shell 注入字符黑名单（spec §5.1）
 _SHELL_INJECTION_CHARS = re.compile(r"[;\|&\$\`\n\r]")
 
@@ -210,19 +203,24 @@ def extract_extensions_from_query(query: str) -> list[str]:
     """
     if not query:
         return []
-    seen: set[str] = set()
-    result: list[str] = []
+    # 收集所有候选 (position, ext) — 模式 1 显式 .ext + 模式 2 语言关键词
+    candidates: list[tuple[int, str]] = []
     # 模式 1: 显式 .ext
     for match in _EXT_DOT_PATTERN.finditer(query):
         ext = match.group(1).lower()
         if ext == "yml":
             ext = "yaml"
-        if ext not in seen:
-            seen.add(ext)
-            result.append(f"**/*.{ext}")
+        candidates.append((match.start(), ext))
     # 模式 2: 完整语言关键词
     for match in _LANG_PATTERN.finditer(query):
         ext = _LANG_TO_EXT[match.group(1).lower()]
+        candidates.append((match.start(), ext))
+    # 按首次出现的位置排序；同位置时显式 .ext (模式1) 优先于关键词 (模式2)
+    candidates.sort(key=lambda c: c[0])
+    # 去重,保留首次出现
+    seen: set[str] = set()
+    result: list[str] = []
+    for _pos, ext in candidates:
         if ext not in seen:
             seen.add(ext)
             result.append(f"**/*.{ext}")
