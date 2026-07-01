@@ -1,7 +1,7 @@
 # CodeExplorer 反思层设计 — 中立风险评估 + 方案 B 推荐
 
 | 字段 | 值 |
-|------|-----|
+| ------ | ----- |
 | 日期 | 2026-07-01 |
 | 类型 | 架构评估 + 推荐方案设计 |
 | 关联 spec | `2026-07-01-code-agent-routing-and-exploration-design.md` |
@@ -19,7 +19,7 @@
 ### 0.2 评估产出的关键事实
 
 | 维度 | 现状（已落地 12 commits） | 用户提出的改动 |
-|------|------------------------|--------------|
+| ------ | ------------------------ | -------------- |
 | 循环位置 | `CodeExplorer.explore()` 内 `while` | ReAct 由 LangGraph 工具节点驱动 |
 | 6 阶段定位 | 实例方法（`_` 前缀），按固定顺序串接 | 改为 LangChain `@tool`，LLM 自由选 |
 | 收敛判定 | 7 mode（5 确定性 + 2 LLM 路径），硬保证 | LLM 决定何时 `final_answer` |
@@ -32,11 +32,13 @@
 
 ### 0.3 三方案对比与推荐
 
-| 方案 | 颗粒度 | 6 阶段 @tool | 5 mode 硬保证 | 代码净增 | 测试破坏 | 推翻 §2.3 决策 |
-|------|--------|--------------|---------------|----------|----------|----------------|
+| 方案 | 颗粒度 | 6 阶段 @tool | 5 mode 硬保证 | 产品代码净增 | 测试破坏 | 推翻 §2.3 决策 |
+| ------ | -------- | -------------- | --------------- | -------------- | ---------- | ---------------- |
 | **A：纯 ReAct 单 Agent** | 激进 | ✅ | ❌ 丢失 | ~400 行 | 高 | 是 |
 | **B：保留状态机 + 反思层** ✅ 推荐 | 不暴露 | ❌ | ✅ 完整 | ~80 行 | 0 | 否 |
 | **C：Plan-ReAct-Reflect 子图** | 激进 + 结构化 | ✅ | ✅ 完整 | ~250 行 | 中 | 部分 |
+
+> 注："产品代码净增"指生产代码（不含测试代码）。方案 B 测试代码净增约 250 行（8 reflection 单元 + 8 Explorer 集成 + 1 e2e fixture）。
 
 ### 0.4 第一性原理 & 奥卡姆剃刀
 
@@ -111,19 +113,19 @@
 **关键不变量**：
 - ✅ 5 mode 硬判定（stuck / cap_reached / regression / goal_verified / diminishing_returns）保持原样
 - ✅ `max_rounds=6` 硬上限保持
-- ✅ LLM 调用上限：6 轮 × (1 refine + 0~1 reflect + 0~1 assess) ≈ 8 次/查询（**不变**）
+- ✅ LLM 调用上限：路由 1 + (6 轮 × 1 refine) + (反思触发时 ≤ 1 次/轮 × 反思轮数) + (assess 兜底 ≤ 1 次) = **8~10 次/查询**（vs 现状 8 次；仅反思触发的轮额外 +1 次）
 - ✅ 不引入 `@tool` / ToolNode / messages reducer
 - ✅ 不改动 graph.py 拓扑
 - ✅ 不改动 `ExplorerState` 核心字段
 
-**改动范围**：1 个新方法 + 1 个新 prompt + 1 个回调接口（可选）+ 3-5 个新单测。
+**改动范围**：1 个新方法 + 1 个新 prompt 模块（含 build/parse 2 个函数）+ 1 个 pydantic schema + 17 项新测试（8 reflection 单元 + 8 Explorer 集成 + 1 e2e fixture）。
 
 ### 2.2 组件与接口
 
 #### 新增
 
 | 模块 | 文件 | 接口 | 职责 |
-|------|------|------|------|
+| ------ | ------ | ------ | ------ |
 | `_reflect_and_replan` 方法 | `src/spma/agents/code/explorer.py` | `async def _reflect_and_replan(self, state: ExplorerState) -> None` | 调 LLM，解析响应，重写 `state.search_terms`；可能修改 `state.candidate_repos` |
 | 反思 prompt 模板 | `src/spma/agents/code/prompts/reflection.py`（新建） | `build_reflection_prompt(state) -> str` | 构造 prompt：包含当前 expanded_context 摘要 + search_terms + 本轮新增文件数 |
 | 反思响应解析 | `src/spma/agents/code/prompts/reflection.py` | `parse_reflection_response(llm_output) -> ReflectionDecision` | JSON 解析 + pydantic 校验 |
@@ -133,7 +135,7 @@
 #### 修改
 
 | 文件 | 变更 |
-|------|------|
+| ------ | ------ |
 | `src/spma/agents/code/explorer.py:CodeExplorer._run_one_round` | 在 `_assess(state)` 后，若 `state.convergence.should_reflect == True`，调 `_reflect_and_replan(state)`，再走下一轮 `_refine_terms` |
 | `src/spma/agents/code/explorer.py:ExplorerState` | 加字段 `reflection_count: int = 0`、`consecutive_no_progress_reflections: int = 0` |
 | `src/spma/agents/code/completeness.py:CodeCompletenessResult` | 加字段 `should_reflect: bool = False`；5 mode 判定时设置（diminishing_returns=True → should_reflect=True） |
@@ -245,7 +247,7 @@ _assess(state)               ← 7 mode 硬判定
 #### 错误矩阵
 
 | 错误源 | 失败模式 | 处理策略 | 失败后状态 |
-|--------|----------|----------|------------|
+| -------- | ---------- | ---------- | ------------ |
 | LLM 调用超时 | `asyncio.TimeoutError` / `anthropic.APITimeoutError` | 跳过反思，log warning，走下轮原 search_terms | `reflection_count` 不增，`consecutive_no_progress_reflections` 不增 |
 | LLM 5xx / rate limit | `anthropic.APIStatusError`（429/5xx） | 同上 + exponential backoff（最多 1 次重试），仍失败则跳过反思 | 同上 |
 | JSON 解析失败 | `json.JSONDecodeError` | 跳过反思，走下轮 | 同上 + log error（含 raw output 截断 500 字符） |
@@ -276,7 +278,7 @@ _assess(state)               ← 7 mode 硬判定
 #### 1. 新增单元测试（`tests/agents/code/test_reflection.py`，新建）
 
 | 测试项 | 类型 | 覆盖 |
-|--------|------|------|
+| -------- | ------ | ------ |
 | `test_reflection_prompt_builds_with_minimal_state` | 快照测试 | `build_reflection_prompt` 在最小 ExplorerState 下生成的 prompt 包含所有必需字段 |
 | `test_reflection_prompt_truncates_long_context` | 边界测试 | `expanded_context_summary > 2000 字符` → 截断到 ≤ 2000 |
 | `test_parse_reflection_response_valid_json` | 正常路径 | 标准 JSON 输入 → 正确 ReflectionDecision |
@@ -289,7 +291,7 @@ _assess(state)               ← 7 mode 硬判定
 #### 2. 新增集成测试（`tests/agents/code/test_explorer.py` 扩展）
 
 | 测试项 | 覆盖 |
-|--------|------|
+| -------- | ------ |
 | `test_explorer_triggers_reflection_on_diminishing_returns` | 注入 fake LLM + state 设 `new_files_this_round < previous_new_files / 2` → 验证 `_reflect_and_replan` 被调 |
 | `test_explorer_skips_reflection_on_stuck` | 5 mode 中 `stuck` 触发 → 不调反思（直接 break） |
 | `test_explorer_skips_reflection_on_goal_verified` | 5 mode 中 `goal_verified` → 不调反思 |
@@ -302,7 +304,7 @@ _assess(state)               ← 7 mode 硬判定
 #### 3. 现有测试回归（**必须不破坏**）
 
 | 测试文件 | 状态 |
-|----------|------|
+| ---------- | ------ |
 | `tests/agents/code/test_explorer.py` 8 项 Explorer 单测 | ✅ 保持通过（mock LLM 默认不返回 `should_reflect=True`） |
 | `tests/agents/code/test_completeness.py` 7 mode fixture | ✅ 保持通过（`should_reflect` 是新字段，默认 False） |
 | `tests/agents/code/test_graph.py` graph 拓扑测试 | ✅ 保持通过（无 graph 改动） |
@@ -311,7 +313,7 @@ _assess(state)               ← 7 mode 硬判定
 #### 4. 端到端测试（手动 + 现有 e2e）
 
 | 测试项 | 覆盖 |
-|--------|------|
+| -------- | ------ |
 | 现有 e2e `test_code_agent_e2e.py` 6 个 fixture | ✅ 保持通过；**新增 1 个 fixture** `test_code_agent_e2e_with_reflection.py` 验证反思路径 |
 
 #### 5. 可观测性指标（`src/spma/observability/code_metrics.py` 扩展）
@@ -423,11 +425,11 @@ _assess(state)               ← 7 mode 硬判定
 ## 5. 风险与缓解
 
 | 风险 | 概率 | 影响 | 缓解 |
-|------|------|------|------|
+| ------ | ------ | ------ | ------ |
 | LLM 反思推理不稳定，输出随机 | 中 | 中 | 用 fake LLM 测试覆盖所有错误路径；reasoning 字段不参与 state 回写 |
 | 反思空术语导致下轮浪费 | 中 | 高 | 强制 break 机制 + cap 机制 |
 | 反思 cap 触发过于频繁 | 低 | 中 | 通过 `consecutive_no_progress_reflections` 调参（默认 2） |
-| 反思 LLM 调用破坏 8 次/查询预算 | 低 | 高 | 反思每轮最多 1 次，max_rounds=6 → 上限 6 次反思（叠加 refine + assess 仍 < 8 次） |
+| 反思 LLM 调用超出 8 次/查询预算 | 低 | 高 | 反思每轮最多 1 次；反思触发时查询上调至 8~10 次（vs 现状 8 次）。可接受的边际成本（仅触发时 +1~2 次） |
 | 反思引入新故障模式 | 中 | 中 | 反思路径与现有路径隔离；现有 8 项 Explorer 单测不变 |
 | LLM 注入攻击（reasoning 含 prompt 注入） | 低 | 高 | reasoning 字段不进入 state 回写，仅 log 截断 |
 | `should_reflect` 字段被现有 fixture 误触发 | 低 | 中 | 默认 False；新增 fixture 显式开启 |
@@ -438,7 +440,7 @@ _assess(state)               ← 7 mode 硬判定
 ## 6. 决策记录
 
 | 决策项 | 选择 | 理由 |
-|--------|------|------|
+| -------- | ------ | ------ |
 | 是否替换 CodeExplorer | ❌ 否 | 7 mode 硬保证 + LLM 成本红线 + 12 commits 沉没成本 |
 | 是否引入 LangChain @tool | ❌ 否 | 奥卡姆剃刀：当前复杂度已足够 |
 | 是否引入 messages reducer | ❌ 否 | 与顶层 query_graph 的 messages 字段冲突 |
