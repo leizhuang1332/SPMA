@@ -629,3 +629,143 @@ class TestRunOneRoundCapMechanisms:
         # 应被强制 cap（empty terms）
         assert state.convergence.verdict == "cap"
         assert state.convergence.reason == "reflection_empty_terms"
+
+
+# ============================================================
+# Task 4 review fix（C1 + I4）：explore() 循环必须识别 cap verdict
+# ============================================================
+
+
+@pytest.mark.anyio
+class TestExploreLoopTerminatesOnCap:
+    """验证 explore() 主循环在 verdict="cap" 时真正停止（C1 修复）。
+
+    之前 _is_converged 只识别 "converge"，导致反思触发的 cap（empty_terms /
+    no_progress）在下一轮仍会跑，浪费 LLM/ripgrep 调用。这些测试直接覆盖
+    explore() 完整循环，验证 cap 后 rounds_used 不会超过触发 cap 的那一轮。
+    """
+
+    async def test_explore_loop_terminates_when_run_one_round_sets_cap(
+        self, fake_repo_whitelist,
+    ):
+        """直接 mock _run_one_round 让其设 verdict="cap"，验证 _is_converged 修复。"""
+        from unittest.mock import AsyncMock as _AM
+        from spma.agents.code.completeness import CodeCompletenessResult
+
+        llm = _AM()
+        ripgrep = _AM()
+        ripgrep.glob_files.return_value = []
+        ripgrep.search.return_value = []
+        ripgrep.read_files.return_value = []
+
+        explorer = CodeExplorer(
+            ripgrep_executor=ripgrep,
+            ast_parser=_AM(),
+            llm=llm,
+            repo_whitelist=fake_repo_whitelist,
+            max_rounds=6,
+        )
+
+        # 计数 + mock _run_one_round：第一次调用设 cap，第二次不应被调用
+        run_count = {"n": 0}
+
+        async def fake_run_one_round(state):
+            run_count["n"] += 1
+            state.round += 1
+            state.convergence = CodeCompletenessResult(
+                verdict="cap",
+                reason="reflection_empty_terms",
+                level="L1",
+            )
+
+        explorer._run_one_round = fake_run_one_round
+
+        graph_state = {
+            "query": "q",
+            "entities": {"module": ["auth"]},
+            "candidate_repos": ["core"],
+            "ripgrep_results": [],
+            "expanded_context": [],
+            "fallback_layer": 0,
+            "call_depth": 0,
+        }
+
+        result = await explorer.explore(graph_state)
+
+        # 关键断言（C1 修复点）
+        assert run_count["n"] == 1, (
+            f"explore() 必须在 verdict='cap' 后停止，但跑了 {run_count['n']} 轮"
+        )
+        assert result["rounds_used"] == 1
+        assert result["convergence_reason"].endswith("reflection_empty_terms"), (
+            f"应被 reflection_empty_terms cap，实际: {result['convergence_reason']}"
+        )
+
+    async def test_explore_loop_terminates_after_2_no_progress_reflections(
+        self, fake_repo_whitelist,
+    ):
+        """完整链路：连续 2 次反思无新增 → explore() 必须停止（C1 + C2 联合验证）。
+
+        关键点：mock _assess 让它返回 diminishing_returns + should_reflect=True，
+        这样反思链路被触发；同时 _read 不增加新文件（ripgrep.read_files=[]），
+        使 consecutive_no_progress_reflections 累计到 2。
+        """
+        from unittest.mock import AsyncMock as _AM
+        from langchain_core.messages import AIMessage
+        from spma.agents.code.completeness import CodeCompletenessResult
+
+        # 反思 LLM 返回合理的新 search_terms（不会触发 empty_terms cap）
+        llm = _AM()
+        llm.ainvoke.return_value = AIMessage(
+            content=(
+                '{"new_search_terms": {"module": ["authorization"]}, '
+                '"drop_terms": [], "add_repos": [], "reasoning": "trying synonyms"}'
+            )
+        )
+        ripgrep = _AM()
+        ripgrep.glob_files.return_value = []
+        ripgrep.search.return_value = []
+        ripgrep.read_files.return_value = []  # 关键：read_files 永远返回空
+
+        explorer = CodeExplorer(
+            ripgrep_executor=ripgrep,
+            ast_parser=_AM(),
+            llm=llm,
+            repo_whitelist=fake_repo_whitelist,
+            max_rounds=6,
+        )
+
+        # mock _assess 让它稳定返回 diminishing_returns + should_reflect=True
+        async def fake_assess(s):
+            s.convergence = CodeCompletenessResult(
+                verdict="progress",
+                reason="diminishing_returns",
+                level="L1",
+                should_reflect=True,
+            )
+
+        explorer._assess = fake_assess
+
+        # 构造 graph_state：previous_new_files > 0，让 _assess mock 的
+        # diminishing_returns 看起来合理（不依赖真实 _read 链路）
+        graph_state = {
+            "query": "q",
+            "entities": {"module": ["auth"]},
+            "candidate_repos": ["core"],
+            "ripgrep_results": [],
+            "expanded_context": [],
+            "fallback_layer": 0,
+            "call_depth": 0,
+        }
+
+        result = await explorer.explore(graph_state)
+
+        # 关键断言（C1 + C2 联合修复点）
+        # 第 1 轮：diminishing_returns + new_files=0 → consecutive_no_progress = 1
+        # 第 2 轮：再次 diminishing_returns + new_files=0 → consecutive = 2 → cap
+        assert result["rounds_used"] == 2, (
+            f"应在 2 轮反思无进展后 cap，实际跑了 {result['rounds_used']} 轮"
+        )
+        assert result["convergence_reason"].endswith("reflection_no_progress"), (
+            f"应被 reflection_no_progress cap，实际: {result['convergence_reason']}"
+        )

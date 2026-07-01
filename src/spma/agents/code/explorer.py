@@ -103,10 +103,16 @@ class CodeExplorer:
         return graph_state
 
     def _is_converged(self, state: ExplorerState) -> bool:
-        """收敛判定：cap_reached / goal_verified / stuck / regression / diminishing_returns / llm_judged 之一。"""
+        """收敛判定：verdict ∈ {"converge", "cap", "stuck"} 之一视为终止条件。
+
+        注意："cap" 也是终止条件 —— 反思空术语 / 连续 2 次反思无进展 /
+        max_rounds 到达都会把 verdict 设为 "cap"，explore() 主循环必须在
+        下一轮开始前停止（spec §2.4 错误矩阵 + plan 第 9 行）。
+        只识别 "converge" 会让 cap 设置后仍多跑一轮，浪费 LLM/ripgrep。
+        """
         if state.convergence is None:
             return False
-        return state.convergence.verdict == "converge"
+        return state.convergence.verdict in {"converge", "cap", "stuck"}
 
     async def _run_one_round(self, state: ExplorerState) -> None:
         """一轮 6 阶段：refine→glob→grep→read→expand→assess→reflect（Task 4 + P1/P2/P3 对策见 §3.5.1）。
@@ -142,7 +148,12 @@ class CodeExplorer:
                 )
                 return
 
-            # 反思后无进展（连续 ≥ 2 次 new_files_this_round==0） → 强制 cap
+            # 反思后无进展 → 强制 cap
+            # 语义：反思触发的那一轮累计新增文件为 0（即 read+AST 合计 = 0），
+            # 表示该轮探索未产出新内容。Spec §2.4 错误矩阵第 257 行
+            # "new_files_this_round == 0" 即此语义（与 §2.3 数据流图的
+            # previous_new_files==0 不一致，以 §2.4 错误矩阵为准）。
+            # 连续 ≥ 2 次触发即视为反思无效 → 强制 cap。
             if state.new_files_this_round == 0:
                 state.consecutive_no_progress_reflections += 1
                 if state.consecutive_no_progress_reflections >= 2:
@@ -262,6 +273,10 @@ class CodeExplorer:
                 state.seen_files.add(key)
                 state.new_files_this_round += 1
         # 维护 previous_new_files 给下一轮 stuck 判定
+        # 语义：new_files_this_round = _read 新增 + AST 扩展新增（合计）
+        # 这与"反思后无进展"（new_files_this_round == 0）的判定一致：
+        # read 和 AST 都未新增文件才计为无进展。spec §2.4 错误矩阵无明确
+        # 区分 read vs AST，故采用合计语义（Task 4 review C3 决策）。
         state.previous_new_files = state.new_files_this_round
 
     async def _assess(self, state: ExplorerState) -> None:
