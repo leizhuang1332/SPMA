@@ -6,7 +6,7 @@
 import asyncio
 import json
 import logging
-import time as time_module
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import AsyncGenerator

@@ -455,3 +455,6 @@ def main():
     """uvicorn 入口: uv run spma-api"""
     import uvicorn
     uvicorn.run("spma.api.app:create_app", host="0.0.0.0", port=8000, factory=True)
+
+if __name__ == "__main__":
+    main()
