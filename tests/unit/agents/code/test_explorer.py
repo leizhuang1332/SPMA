@@ -368,3 +368,264 @@ class TestReflectAndReplan:
         assert "authorization" in state.search_terms["module"]
         # reflection_count += 1
         assert state.reflection_count == 1
+
+
+# ============================================================
+# Task 4: _run_one_round 反思触发 + cap 机制
+# ============================================================
+
+
+@pytest.mark.anyio
+class TestRunOneRoundReflectionTrigger:
+    async def test_run_one_round_triggers_reflection_when_should_reflect_true(
+        self, fake_repo_whitelist,
+    ):
+        """_run_one_round 在 _assess 返回 should_reflect=True 时应调 _reflect_and_replan。"""
+        from unittest.mock import AsyncMock as _AM
+        from langchain_core.messages import AIMessage
+
+        llm = _AM()
+        llm.ainvoke.return_value = AIMessage(
+            content=(
+                '{"new_search_terms": {"module": ["authorization"]}, '
+                '"drop_terms": [], "add_repos": [], "reasoning": "ok"}'
+            )
+        )
+
+        ripgrep = _AM()
+        ripgrep.glob_files.return_value = []
+        ripgrep.search.return_value = []
+        ripgrep.read_files.return_value = []
+
+        ast_parser = _AM()
+
+        explorer = CodeExplorer(
+            ripgrep_executor=ripgrep,
+            ast_parser=ast_parser,
+            llm=llm,
+            repo_whitelist=fake_repo_whitelist,
+            max_rounds=6,
+        )
+
+        state = ExplorerState(
+            round=1,
+            query="how does auth work?",
+            entities={"module": ["auth"]},
+            candidate_repos=["core"],
+            search_terms={"module": ["auth"]},
+            new_files_this_round=2,
+            previous_new_files=10,
+        )
+
+        async def fake_assess(s):
+            s.convergence = CodeCompletenessResult(
+                verdict="progress",
+                reason="diminishing_returns",
+                level="L1",
+                should_reflect=True,
+            )
+
+        explorer._assess = fake_assess
+
+        await explorer._run_one_round(state)
+
+        # 反思被触发：reflection_count += 1
+        assert state.reflection_count == 1
+        # new_search_terms 被合并
+        assert "authorization" in state.search_terms["module"]
+
+    async def test_run_one_round_skips_reflection_on_stuck(
+        self, fake_repo_whitelist,
+    ):
+        """_assess 判定 stuck（should_reflect=False）时不应触发反思。"""
+        from unittest.mock import AsyncMock as _AM
+
+        llm = _AM()
+        ripgrep = _AM()
+        ripgrep.glob_files.return_value = []
+        ripgrep.search.return_value = []
+        ripgrep.read_files.return_value = []
+
+        explorer = CodeExplorer(
+            ripgrep_executor=ripgrep,
+            ast_parser=_AM(),
+            llm=llm,
+            repo_whitelist=fake_repo_whitelist,
+        )
+
+        state = ExplorerState(
+            round=1,
+            query="q",
+            search_terms={"module": ["x"]},
+            candidate_repos=["core"],
+        )
+
+        async def fake_assess(s):
+            s.convergence = CodeCompletenessResult(
+                verdict="stuck",
+                reason="no_progress_2_rounds",
+                level="L1",
+                should_reflect=False,
+            )
+
+        explorer._assess = fake_assess
+
+        await explorer._run_one_round(state)
+
+        # 反思未被触发
+        assert state.reflection_count == 0
+
+    async def test_run_one_round_skips_reflection_on_goal_verified(
+        self, fake_repo_whitelist,
+    ):
+        """_assess 判定 goal_verified（should_reflect=False）时不应触发反思（已收敛）。"""
+        from unittest.mock import AsyncMock as _AM
+
+        llm = _AM()
+        ripgrep = _AM()
+        ripgrep.glob_files.return_value = []
+        ripgrep.search.return_value = []
+        ripgrep.read_files.return_value = []
+
+        explorer = CodeExplorer(
+            ripgrep_executor=ripgrep,
+            ast_parser=_AM(),
+            llm=llm,
+            repo_whitelist=fake_repo_whitelist,
+        )
+
+        state = ExplorerState(
+            round=1,
+            query="q",
+            search_terms={"module": ["x"]},
+            candidate_repos=["core"],
+        )
+
+        async def fake_assess(s):
+            s.convergence = CodeCompletenessResult(
+                verdict="converge",
+                reason="goal_verified",
+                level="L1",
+                should_reflect=False,
+            )
+
+        explorer._assess = fake_assess
+
+        await explorer._run_one_round(state)
+
+        # 反思未被触发
+        assert state.reflection_count == 0
+
+
+@pytest.mark.anyio
+class TestRunOneRoundCapMechanisms:
+    async def test_run_one_round_caps_after_2_no_progress_reflections(
+        self, fake_repo_whitelist,
+    ):
+        """连续 2 次反思后 new_files_this_round==0 应触发 cap。"""
+        from unittest.mock import AsyncMock as _AM
+        from langchain_core.messages import AIMessage
+
+        llm = _AM()
+        llm.ainvoke.return_value = AIMessage(
+            content=(
+                '{"new_search_terms": {"module": ["auth"]}, '
+                '"drop_terms": [], "add_repos": [], "reasoning": "ok"}'
+            )
+        )
+
+        ripgrep = _AM()
+        ripgrep.glob_files.return_value = []
+        ripgrep.search.return_value = []
+        ripgrep.read_files.return_value = []
+
+        explorer = CodeExplorer(
+            ripgrep_executor=ripgrep,
+            ast_parser=_AM(),
+            llm=llm,
+            repo_whitelist=fake_repo_whitelist,
+            max_rounds=6,
+        )
+
+        state = ExplorerState(
+            round=2,
+            query="q",
+            entities={"module": ["auth"]},
+            candidate_repos=["core"],
+            search_terms={"module": ["auth"]},
+            new_files_this_round=0,  # 反思后无新增
+            previous_new_files=0,
+            consecutive_no_progress_reflections=1,  # 已累计 1 次
+        )
+
+        async def fake_assess(s):
+            s.convergence = CodeCompletenessResult(
+                verdict="progress",
+                reason="diminishing_returns",
+                level="L1",
+                should_reflect=True,
+            )
+
+        explorer._assess = fake_assess
+
+        await explorer._run_one_round(state)
+
+        # 应被强制 cap
+        assert state.convergence.verdict == "cap"
+        assert state.convergence.reason == "reflection_no_progress"
+        assert state.consecutive_no_progress_reflections == 2
+
+    async def test_run_one_round_caps_on_empty_reflected_terms(
+        self, fake_repo_whitelist,
+    ):
+        """反思后 search_terms 全空应强制 cap。"""
+        from unittest.mock import AsyncMock as _AM
+        from langchain_core.messages import AIMessage
+
+        llm = _AM()
+        # 反思 LLM 返回空 search_terms 并 drop 原 auth
+        llm.ainvoke.return_value = AIMessage(
+            content=(
+                '{"new_search_terms": {}, '
+                '"drop_terms": ["auth"], "add_repos": [], '
+                '"reasoning": "give up"}'
+            )
+        )
+
+        ripgrep = _AM()
+        ripgrep.glob_files.return_value = []
+        ripgrep.search.return_value = []
+        ripgrep.read_files.return_value = []
+
+        explorer = CodeExplorer(
+            ripgrep_executor=ripgrep,
+            ast_parser=_AM(),
+            llm=llm,
+            repo_whitelist=fake_repo_whitelist,
+        )
+
+        state = ExplorerState(
+            round=2,
+            query="q",
+            entities={"module": ["auth"]},
+            candidate_repos=["core"],
+            search_terms={"module": ["auth"]},  # 只有 auth
+            new_files_this_round=2,
+            previous_new_files=5,
+        )
+
+        async def fake_assess(s):
+            s.convergence = CodeCompletenessResult(
+                verdict="progress",
+                reason="diminishing_returns",
+                level="L1",
+                should_reflect=True,
+            )
+
+        explorer._assess = fake_assess
+
+        await explorer._run_one_round(state)
+
+        # 应被强制 cap（empty terms）
+        assert state.convergence.verdict == "cap"
+        assert state.convergence.reason == "reflection_empty_terms"

@@ -109,7 +109,13 @@ class CodeExplorer:
         return state.convergence.verdict == "converge"
 
     async def _run_one_round(self, state: ExplorerState) -> None:
-        """一轮 6 阶段：refine→glob→grep→read→expand→assess（P1/P2/P3 对策见 §3.5.1）。"""
+        """一轮 6 阶段：refine→glob→grep→read→expand→assess→reflect（Task 4 + P1/P2/P3 对策见 §3.5.1）。
+
+        反思触发条件：_assess 返回 should_reflect=True（diminishing_returns / borderline_progress）。
+        Cap 机制（硬错误）：
+            1. 反思后 search_terms 全空 → verdict="cap", reason="reflection_empty_terms"
+            2. 连续 2 次反思无新增文件 → verdict="cap", reason="reflection_no_progress"
+        """
         state.round += 1
         state.call_depth = state.round
         await self._refine_terms(state)
@@ -118,6 +124,37 @@ class CodeExplorer:
         await self._read(state, glob_hits + grep_hits)
         await self._expand_via_ast(state)
         await self._assess(state)
+
+        # Task 4：反思触发 + cap 机制
+        if state.convergence and state.convergence.should_reflect:
+            await self._reflect_and_replan(state)
+
+            # 反思后空术语 → 强制 cap（硬错误）
+            # 注意：必须在 _reflect_and_replan 之后，因为 drop_terms 可能清空整个集合。
+            if not state.search_terms or all(
+                not terms for terms in state.search_terms.values()
+            ):
+                from spma.agents.code.completeness import CodeCompletenessResult
+                state.convergence = CodeCompletenessResult(
+                    verdict="cap",
+                    reason="reflection_empty_terms",
+                    level="L1",
+                )
+                return
+
+            # 反思后无进展（连续 ≥ 2 次 new_files_this_round==0） → 强制 cap
+            if state.new_files_this_round == 0:
+                state.consecutive_no_progress_reflections += 1
+                if state.consecutive_no_progress_reflections >= 2:
+                    from spma.agents.code.completeness import CodeCompletenessResult
+                    state.convergence = CodeCompletenessResult(
+                        verdict="cap",
+                        reason="reflection_no_progress",
+                        level="L1",
+                    )
+                    return
+            else:
+                state.consecutive_no_progress_reflections = 0
 
     # ---- 6 阶段方法（占位实现，下一 Task 逐个填充）----
     async def _refine_terms(self, state: ExplorerState) -> None:
