@@ -1,0 +1,21 @@
+src/spma/agents/code/explorer.py
+  s_ad7437354f4a60::t_a9c7cd841f3316 295
+src/spma/api/query_graph.py
+  s_ad7437354f4a60::t_43c992d54195ff 234
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "d8cbc3a1cc2e7540bb4adcdcf19855033f6d44a0",
+  "prompts": {},
+  "sessions": {
+    "s_ad7437354f4a60": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "20707f8b-2d84-4cac-9c8d-287f48bc7cc7",
+        "model": "unknown"
+      },
+      "human_author": "leizhuang <lorcan.lei@jtexpress.com>"
+    }
+  }
+}
