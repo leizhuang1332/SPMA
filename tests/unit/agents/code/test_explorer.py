@@ -290,8 +290,17 @@ class TestCodeExplorerRefineTerms:
         assert state.search_terms["glob_patterns"] == ["**/*.xml"]
         assert state.glob_patterns_resolved == "fallback_query"
 
-    async def test_refine_llm_exception_uses_wildcard(self):
-        """LLM 抛 TimeoutError → 走兜底，resolved=fallback_wildcard。"""
+    async def test_refine_llm_exception_preserves_search_terms_and_resolves_wildcard(self):
+        """LLM 抛异常时保持 search_terms 不变（保留 cap 机制判定），仅设 resolved=fallback_wildcard。
+
+        关键不变量：spec §4.2 Trace 2 + 反射层 cap 机制 (explorer.py:152-154) 依赖
+        'if not state.search_terms or all(not terms for terms in state.search_terms.values())'。
+        如果 except 路径给 search_terms 写 ['**/*.*']，cap 永远不触发，破坏 7 mode 收敛保证。
+        因此本测试的正确语义是：
+        - state.search_terms 保持 LLM 调用前的值（不修改）
+        - state.glob_patterns_resolved == 'fallback_wildcard'（让下游 _glob 走全仓库扫描）
+        """
+        from unittest.mock import MagicMock
         executor = MockRipgrepExecutorWithData()
         ast = MockASTParserWithExpansion()
 
@@ -301,15 +310,20 @@ class TestCodeExplorerRefineTerms:
 
         llm = FailingLLM()
         explorer = CodeExplorer(ripgrep_executor=executor, ast_parser=ast, llm=llm, max_rounds=6)
+        # 构造一个 non-empty pre-existing search_terms（确保 except 路径不应改它）
+        initial_terms = {"exact_terms": ["old"]}
         state = ExplorerState(
             round=2, query="查订单服务",
             expanded_context=[{"repo": "r", "file_path": "a"}],
-            search_terms={"exact_terms": []},
+            search_terms=dict(initial_terms),  # copy to detect mutation
         )
         await explorer._refine_terms(state)
-        # LLM 失败 → 沿用上轮；上轮无 → 降级链 → wildcard
-        assert state.search_terms["glob_patterns"] == ["**/*.*"]
+        # 1. search_terms 必须保持 LLM 调用前的值（关键不变量）
+        assert state.search_terms == initial_terms
+        # 2. glob_patterns_resolved 必须被设为 fallback_wildcard
         assert state.glob_patterns_resolved == "fallback_wildcard"
+        # 3. 注意：search_terms 中没有 glob_patterns 键（保持上轮）
+        assert "glob_patterns" not in state.search_terms
 
 
 @pytest.mark.anyio
