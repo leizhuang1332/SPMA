@@ -50,3 +50,65 @@ def test_metric_names_constants():
     assert HISTOGRAM_ROUTE_TWO_STAGE_RESULTS == "code_route_two_stage_results"
     assert GAUGE_REPO_REGISTRY_COUNT == "code_repo_registry_count"
     assert COUNTER_ROUTE_CONFIDENCE == "code_route_confidence"
+
+
+# ============================================================
+# Task 5：4 个反思相关 Prometheus 指标注册测试
+# ============================================================
+
+
+def test_reflection_metrics_registered():
+    """4 个反思相关 Prometheus 指标必须已注册（Task 5）。"""
+    from spma.observability import code_metrics
+
+    # 访问指标（prometheus_client 在首次访问时注册）
+    assert code_metrics.code_reflection_total is not None
+    assert code_metrics.code_reflection_duration_seconds is not None
+    assert code_metrics.code_reflection_search_terms_changed is not None
+    assert code_metrics.code_reflection_consecutive_no_progress is not None
+
+
+def test_reflection_total_outcome_labels():
+    """code_reflection_total 必须支持 outcome 标签（triggered/skipped/failed/capped）。"""
+    from spma.observability.code_metrics import code_reflection_total
+
+    # 4 种 outcome 标签都能 labels().inc()，无 ValueError
+    for outcome in ("triggered", "skipped", "failed", "capped"):
+        code_reflection_total.labels(outcome=outcome).inc()
+
+
+def test_reflection_metrics_behavior():
+    """4 个指标的接口必须支持各自语义操作。"""
+    from spma.observability import code_metrics
+
+    # Counter: .inc()
+    code_metrics.code_reflection_search_terms_changed.inc()
+    # Histogram: .observe(seconds)
+    code_metrics.code_reflection_duration_seconds.observe(1.5)
+    # Gauge: .set(value)
+    code_metrics.code_reflection_consecutive_no_progress.set(2)
+
+
+def test_reflection_metric_types():
+    """4 个反思指标类型与 plan Task 5 设计一致：Counter/Histogram/Counter/Gauge。"""
+    from prometheus_client import Counter, Gauge, Histogram
+    from spma.observability import code_metrics
+
+    assert isinstance(code_metrics.code_reflection_total, Counter)
+    assert isinstance(code_metrics.code_reflection_duration_seconds, Histogram)
+    assert isinstance(code_metrics.code_reflection_search_terms_changed, Counter)
+    assert isinstance(code_metrics.code_reflection_consecutive_no_progress, Gauge)
+
+
+def test_reflection_metric_labels_and_buckets():
+    """code_reflection_total 必须有 outcome label；duration histogram 必须有合理 buckets。"""
+    from spma.observability import code_metrics
+
+    # Counter label 检查
+    assert code_metrics.code_reflection_total._labelnames == ("outcome",)
+    # Histogram buckets 检查（与 plan Step 5.3 一致；prometheus_client
+    # 自动追加 +Inf bucket，所以用 prefix 比对）
+    expected_prefix = [0.5, 1.0, 2.0, 5.0, 10.0, 30.0]
+    actual = code_metrics.code_reflection_duration_seconds._upper_bounds
+    assert actual[: len(expected_prefix)] == expected_prefix
+    assert actual[-1] == float("inf")  # prometheus 自动加 +Inf

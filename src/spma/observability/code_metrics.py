@@ -126,3 +126,42 @@ def build_code_metrics() -> CodeMetrics:
             registry=registry,
         ),
     )
+
+
+# ============================================================
+# Task 5：4 个反思相关模块级 Prometheus 指标
+#
+# 设计：模块级指标使用 prometheus_client 默认 registry（与 Task 3 的
+# `from spma.observability.code_metrics import code_reflection_total`
+# 兼容）。与上方 build_code_metrics() 工厂模式并存——
+# 16 个路由/搜索/registry 指标走工厂模式（多实例隔离），4 个反思指标
+# 走模块级（因为反思埋点固定只发生一次，不需要多实例）。
+# ============================================================
+
+
+# 反思触发总次数（按结果分类）
+# outcome ∈ {"triggered", "skipped", "failed", "capped"}
+code_reflection_total = Counter(
+    "code_reflection_total",
+    "Total reflection triggers",
+    labelnames=("outcome",),
+)
+
+# 反思耗时
+code_reflection_duration_seconds = Histogram(
+    "code_reflection_duration_seconds",
+    "Reflection LLM call duration in seconds",
+    buckets=(0.5, 1.0, 2.0, 5.0, 10.0, 30.0),
+)
+
+# 反思后 search_terms 是否变更
+code_reflection_search_terms_changed = Counter(
+    "code_reflection_search_terms_changed",
+    "Total reflections that changed search_terms",
+)
+
+# 连续无进展反思次数（gauge 反映当前状态）
+code_reflection_consecutive_no_progress = Gauge(
+    "code_reflection_consecutive_no_progress",
+    "Current count of consecutive no-progress reflections",
+)

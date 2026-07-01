@@ -121,7 +121,17 @@ class CodeExplorer:
         Cap 机制（硬错误）：
             1. 反思后 search_terms 全空 → verdict="cap", reason="reflection_empty_terms"
             2. 连续 2 次反思无新增文件 → verdict="cap", reason="reflection_no_progress"
+
+        Task 5 可观测性埋点：
+            - code_reflection_consecutive_no_progress Gauge：每次更新时 .set()
+            - code_reflection_total.labels(outcome="capped")：cap 触发时 inc()
         """
+        # Task 5 埋点：延迟导入（避免循环依赖）
+        from spma.observability.code_metrics import (
+            code_reflection_consecutive_no_progress,
+            code_reflection_total,
+        )
+
         state.round += 1
         state.call_depth = state.round
         await self._refine_terms(state)
@@ -146,6 +156,7 @@ class CodeExplorer:
                     reason="reflection_empty_terms",
                     level="L1",
                 )
+                code_reflection_total.labels(outcome="capped").inc()
                 return
 
             # 反思后无进展 → 强制 cap
@@ -156,6 +167,10 @@ class CodeExplorer:
             # 连续 ≥ 2 次触发即视为反思无效 → 强制 cap。
             if state.new_files_this_round == 0:
                 state.consecutive_no_progress_reflections += 1
+                # Task 5：更新 gauge
+                code_reflection_consecutive_no_progress.set(
+                    state.consecutive_no_progress_reflections,
+                )
                 if state.consecutive_no_progress_reflections >= 2:
                     from spma.agents.code.completeness import CodeCompletenessResult
                     state.convergence = CodeCompletenessResult(
@@ -163,9 +178,12 @@ class CodeExplorer:
                         reason="reflection_no_progress",
                         level="L1",
                     )
+                    code_reflection_total.labels(outcome="capped").inc()
                     return
             else:
                 state.consecutive_no_progress_reflections = 0
+                # Task 5：重置 gauge
+                code_reflection_consecutive_no_progress.set(0)
 
     # ---- 6 阶段方法（占位实现，下一 Task 逐个填充）----
     async def _refine_terms(self, state: ExplorerState) -> None:
@@ -307,7 +325,7 @@ class CodeExplorer:
             )
 
     async def _reflect_and_replan(self, state: ExplorerState) -> None:
-        """调 LLM 反思，重新生成 search_terms（Task 3：方案 B 第三阶段）。
+        """调 LLM 反思，重新生成 search_terms（Task 3：方案 B 第三阶段 + Task 5：可观测性埋点）。
 
         错误处理（按 spec §2.4）：
             - LLM 超时/5xx/JSON 解析失败：跳过反思（软错误），reflection_count 不增
@@ -315,43 +333,49 @@ class CodeExplorer:
             - 反思后 search_terms 为空：强制 cap（verdict="cap"）—— 由 Task 4 处理
             - reasoning 字段不进入 state 回写，仅 log 截断
 
+        可观测性埋点（Task 5）：
+            - code_reflection_duration_seconds.observe() — LLM 调用耗时（无论成败）
+            - code_reflection_total.labels(outcome=...).inc() — outcome ∈ {skipped/failed/triggered}
+            - code_reflection_search_terms_changed.inc() — search_terms 真的变更时
+
         注意：本方法不修改 expanded_context / seen_files / previous_new_files。
         """
+        import time
+
         from spma.agents.code.prompts.reflection import (
             apply_reflection_decision,
             build_reflection_prompt,
             parse_reflection_response,
         )
-
-        # Task 5 才会定义 code_reflection_total；先尝试导入并容错
-        try:
-            from spma.observability.code_metrics import code_reflection_total
-            _reflection_metric_available = True
-        except ImportError:
-            _reflection_metric_available = False
-            logger.debug("code_reflection_total 未定义（Task 5 才会添加），跳过 metric 上报")
+        from spma.observability.code_metrics import (
+            code_reflection_duration_seconds,
+            code_reflection_search_terms_changed,
+            code_reflection_total,
+        )
 
         if self._repo_whitelist is None:
             # 无 repo_whitelist 时跳过（防御性编程；正常调用路径不进入此分支）
-            if _reflection_metric_available:
-                code_reflection_total.labels(outcome="skipped").inc()
+            code_reflection_total.labels(outcome="skipped").inc()
             return
 
         prompt = build_reflection_prompt(state)
 
+        # Task 5：埋点 LLM 调用耗时（无论成败都 observe）
+        start = time.monotonic()
         try:
             llm_response = await asyncio.wait_for(
                 self._llm.ainvoke(prompt),
                 timeout=30.0,  # 30 秒超时
             )
+            code_reflection_duration_seconds.observe(time.monotonic() - start)
         except Exception as e:  # noqa: BLE001 — 软错误兜底（含 TimeoutError / 5xx / 任意 LLM SDK 异常）
-            # 软错误：跳过反思
+            # 软错误：跳过反思（仍记录耗时）
+            code_reflection_duration_seconds.observe(time.monotonic() - start)
             logger.warning(
                 "reflection_llm_failed",
                 extra={"error": str(e), "round": state.round},
             )
-            if _reflection_metric_available:
-                code_reflection_total.labels(outcome="failed").inc()
+            code_reflection_total.labels(outcome="failed").inc()
             return
 
         try:
@@ -366,17 +390,28 @@ class CodeExplorer:
                 "reflection_parse_failed",
                 extra={"error": str(e), "raw": str(raw_content)[:500]},
             )
-            if _reflection_metric_available:
-                code_reflection_total.labels(outcome="failed").inc()
+            code_reflection_total.labels(outcome="failed").inc()
             return
 
+        # Task 5：search_terms 变更埋点（记录 apply 前后的差异）
+        terms_before = {
+            k: list(v) if isinstance(v, list) else v
+            for k, v in state.search_terms.items()
+        }
         try:
             apply_reflection_decision(state, decision, self._repo_whitelist)
         except ValueError as e:
             logger.error("reflection_apply_failed", extra={"error": str(e)})
-            if _reflection_metric_available:
-                code_reflection_total.labels(outcome="failed").inc()
+            code_reflection_total.labels(outcome="failed").inc()
             return
+
+        # 比较 apply 后的 search_terms 与之前的差异
+        terms_after = {
+            k: list(v) if isinstance(v, list) else v
+            for k, v in state.search_terms.items()
+        }
+        if terms_after != terms_before:
+            code_reflection_search_terms_changed.inc()
 
         # reasoning 不进入 state，但记录到日志（截断 200 字符）
         if decision.reasoning:
@@ -385,8 +420,7 @@ class CodeExplorer:
                 extra={"reasoning": decision.reasoning[:200]},
             )
 
-        if _reflection_metric_available:
-            code_reflection_total.labels(outcome="triggered").inc()
+        code_reflection_total.labels(outcome="triggered").inc()
 
 
 class ReflectionDecision(BaseModel):
