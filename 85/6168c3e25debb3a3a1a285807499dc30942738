@@ -1,0 +1,24 @@
+src/spma/agents/code/prompts/__init__.py
+  s_ad7437354f4a60::t_453063719c6812 1
+tests/unit/agents/code/test_reflection.py
+  s_ad7437354f4a60::t_b29531e6bd0068 1-167
+src/spma/agents/code/prompts/reflection.py
+  s_ad7437354f4a60::t_1efcadd51dece7 55
+  s_ad7437354f4a60::t_cdae92522e090a 1-54,56-191
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "856168c3e25debb3a3a1a285807499dc30942738",
+  "prompts": {},
+  "sessions": {
+    "s_ad7437354f4a60": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "20707f8b-2d84-4cac-9c8d-287f48bc7cc7",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "leizhuang <lorcan.lei@jtexpress.com>"
+    }
+  }
+}
