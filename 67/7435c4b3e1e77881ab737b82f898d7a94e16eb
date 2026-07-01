@@ -1,0 +1,25 @@
+docs/superpowers/specs/2026-07-01-dynamic-glob-pattern-design.md
+  s_2f1c29a9546e8a::t_9a5fea90c16b54 253,255-257,259-275
+src/spma/agents/code/explorer.py
+  s_2f1c29a9546e8a::t_2eab1f690dceaf 276
+src/spma/agents/code/prompts/__init__.py
+  s_2f1c29a9546e8a::t_11f7e82448df06 16-20
+src/spma/agents/code/term_builder.py
+  s_2f1c29a9546e8a::t_fdf320bc360d2c 174-178
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.8",
+  "base_commit_sha": "677435c4b3e1e77881ab737b82f898d7a94e16eb",
+  "prompts": {},
+  "sessions": {
+    "s_2f1c29a9546e8a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4c8a9ae9-4af2-4045-a777-13e54d60fde8",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "leizhuang <lorcan.lei@jtexpress.com>"
+    }
+  }
+}
