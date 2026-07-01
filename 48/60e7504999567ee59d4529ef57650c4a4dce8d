@@ -1,0 +1,21 @@
+docs/superpowers/specs/2026-07-01-code-agent-routing-and-exploration-design.md
+  s_e11de98c10a97d::t_117c9ce99f7584 589
+tests/unit/agents/code/test_explorer.py
+  s_e11de98c10a97d::t_45df080ad0a984 808-817,824,884-902
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "4860e7504999567ee59d4529ef57650c4a4dce8d",
+  "prompts": {},
+  "sessions": {
+    "s_e11de98c10a97d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "48dc1037-ff47-4b38-8993-2aee868afbab",
+        "model": "unknown"
+      },
+      "human_author": "leizhuang <lorcan.lei@jtexpress.com>"
+    }
+  }
+}
