@@ -1,0 +1,19 @@
+docs/superpowers/specs/2026-07-01-code-explorer-reflection-layer-design.md
+  s_ad7437354f4a60::t_0ee5ae25d5b21d 1-477
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "1601be8ca8b812d84aa604b570d0ffdab7216db9",
+  "prompts": {},
+  "sessions": {
+    "s_ad7437354f4a60": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "20707f8b-2d84-4cac-9c8d-287f48bc7cc7",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "leizhuang <lorcan.lei@jtexpress.com>"
+    }
+  }
+}
