@@ -1297,3 +1297,76 @@ class TestReflectionMetricsActuallyFire:
             f"consecutive_no_progress gauge 应被 set 为 2，"
             f"before={before_gauge}, after={after_gauge}"
         )
+
+
+@pytest.mark.anyio
+class TestCodeExplorerGlob:
+    """spec §3.1 #7 + §6.4：_glob 多 pattern 循环、合并去重、异常隔离。"""
+
+    async def test_glob_multi_pattern_merge(self):
+        """2 个 pattern 各自返回不同 files → glob_files 被调 2 次，结果合并。"""
+        executor = MockRipgrepExecutorWithData()
+        executor._glob_per_pattern = {
+            "**/*.java": [{"repo": "r", "file_path": "a.java"}],
+            "**/*.kt": [{"repo": "r", "file_path": "b.kt"}],
+        }
+
+        # override glob_files to be pattern-aware
+        async def pattern_aware_glob(pattern, repos):
+            return executor._glob_per_pattern.get(pattern, [])
+        executor.glob_files = pattern_aware_glob
+
+        ast = MockASTParserWithExpansion()
+        explorer = CodeExplorer(ripgrep_executor=executor, ast_parser=ast, llm=None, max_rounds=6)
+        state = ExplorerState(
+            round=1,
+            query="x",
+            search_terms={"glob_patterns": ["**/*.java", "**/*.kt"]},
+            candidate_repos=["r"],
+        )
+        result = await explorer._glob(state)
+        assert len(result) == 2
+        paths = {r["file_path"] for r in result}
+        assert paths == {"a.java", "b.kt"}
+
+    async def test_glob_dedup_across_patterns(self):
+        """同一文件被 2 个 pattern 命中 → 结果去重为 1 条。"""
+        executor = MockRipgrepExecutorWithData()
+        async def dup_glob(pattern, repos):
+            return [{"repo": "r", "file_path": "a.java"}]  # 每个 pattern 都返回同一文件
+        executor.glob_files = dup_glob
+
+        ast = MockASTParserWithExpansion()
+        explorer = CodeExplorer(ripgrep_executor=executor, ast_parser=ast, llm=None, max_rounds=6)
+        state = ExplorerState(
+            round=1, query="x",
+            search_terms={"glob_patterns": ["**/*.java", "**/*Controller.java"]},
+            candidate_repos=["r"],
+        )
+        result = await explorer._glob(state)
+        assert len(result) == 1
+        assert result[0]["file_path"] == "a.java"
+
+    async def test_glob_one_pattern_fails_isolation(self):
+        """第 2 个 pattern 抛 RuntimeError → 第 1 个结果保留，不抛异常。"""
+        executor = MockRipgrepExecutorWithData()
+        call_count = {"n": 0}
+        async def flaky_glob(pattern, repos):
+            call_count["n"] += 1
+            if call_count["n"] == 2:
+                raise RuntimeError("ripgrep exploded")
+            return [{"repo": "r", "file_path": f"a_{pattern.replace('*', 'X')}.java"}]
+        executor.glob_files = flaky_glob
+
+        ast = MockASTParserWithExpansion()
+        explorer = CodeExplorer(ripgrep_executor=executor, ast_parser=ast, llm=None, max_rounds=6)
+        state = ExplorerState(
+            round=1, query="x",
+            search_terms={"glob_patterns": ["**/ok.java", "**/bad.java"]},
+            candidate_repos=["r"],
+        )
+        result = await explorer._glob(state)
+        # 第 1 个成功，第 2 个失败被吞
+        assert len(result) == 1
+        assert "ok" in result[0]["file_path"]
+        assert call_count["n"] == 2  # 两个 pattern 都尝试了

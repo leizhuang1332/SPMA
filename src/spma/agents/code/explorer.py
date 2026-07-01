@@ -257,12 +257,23 @@ class CodeExplorer:
             state.glob_patterns_resolved = "fallback_wildcard"
 
     async def _glob(self, state: ExplorerState) -> list[dict]:
-        """调 ripgrep_executor.glob_files。"""
-        try:
-            return await self._executor.glob_files("**/*.py", state.candidate_repos)
-        except Exception as e:
-            logger.warning(f"_glob failed: {e}")
-            return []
+        """多 pattern 循环 + 异常隔离 + 合并去重（spec §3.1 #7）。"""
+        patterns = state.search_terms.get("glob_patterns") or ["**/*.*"]
+        seen: set[tuple[str, str]] = set()
+        merged: list[dict] = []
+        for pattern in patterns:
+            try:
+                hits = await self._executor.glob_files(pattern, state.candidate_repos)
+            except Exception as e:
+                # 单 pattern 失败不影响其他 pattern（spec §5 #7）
+                logger.warning(f"_glob pattern={pattern} failed: {e}")
+                continue
+            for hit in hits:
+                key = (hit.get("repo", ""), hit.get("file_path", ""))
+                if key not in seen:
+                    seen.add(key)
+                    merged.append(hit)
+        return merged
 
     async def _grep(self, state: ExplorerState) -> list[dict]:
         """调 ripgrep_executor.search（4 层降级由 fallback_layer 控制）。"""
