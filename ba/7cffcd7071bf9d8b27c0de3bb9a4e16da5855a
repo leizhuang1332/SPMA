@@ -1,0 +1,39 @@
+src/spma/agents/code/prompts/__init__.py
+  s_2f1c29a9546e8a::t_66bc7bb41e4f68 3-7,9-10,14
+  s_2f1c29a9546e8a::t_4fab9dfdaa2611 8,11-13,16
+  s_2f1c29a9546e8a::t_9444ee23f441f6 15
+  s_2f1c29a9546e8a::t_1d1dd3595b9ffa 2
+tests/unit/agents/code/test_explorer.py
+  s_2f1c29a9546e8a::t_83164eef51c728 9-25,29
+  s_2f1c29a9546e8a::t_ee51b5242db81a 26-28
+  s_2f1c29a9546e8a::t_e06f080e6b64d1 30-32
+  s_a8f1fd140c6f41::t_ba162c9eb24b17 33
+src/spma/agents/code/prompts.py
+  s_2f1c29a9546e8a::t_3f53aa171a09ce 17-20
+  s_2f1c29a9546e8a::t_7d041169f637b6 21-23
+  s_a8f1fd140c6f41::t_5af7cf87260f42 24-36
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.8",
+  "base_commit_sha": "ba7cffcd7071bf9d8b27c0de3bb9a4e16da5855a",
+  "prompts": {},
+  "sessions": {
+    "s_2f1c29a9546e8a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4c8a9ae9-4af2-4045-a777-13e54d60fde8",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "leizhuang <lorcan.lei@jtexpress.com>"
+    },
+    "s_a8f1fd140c6f41": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a68febc075c50e9eb",
+        "model": "unknown"
+      },
+      "human_author": "leizhuang <lorcan.lei@jtexpress.com>"
+    }
+  }
+}
