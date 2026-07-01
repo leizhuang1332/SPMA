@@ -769,3 +769,324 @@ class TestExploreLoopTerminatesOnCap:
         assert result["convergence_reason"].endswith("reflection_no_progress"), (
             f"应被 reflection_no_progress cap，实际: {result['convergence_reason']}"
         )
+
+
+# ============================================================
+# Task 6：e2e fixture — 验证反思触发 → search_terms 修改 → 下一轮生效
+# + 埋点真触发测试（Task 5 review I-1 follow-up）
+# ============================================================
+
+
+@pytest.mark.anyio
+class TestExploreEndToEndWithReflection:
+    """Task 6 e2e fixture：mock LLM 触发反思 → 验证 search_terms 变更 → 下一轮生效。"""
+
+    async def test_e2e_reflection_path_triggers_replan(self, fake_repo_whitelist):
+        """端到端：diminishing_returns 触发反思 → LLM 重写 search_terms → 下一轮 _assess 看到新 terms。"""
+        from unittest.mock import AsyncMock as _AM
+        from langchain_core.messages import AIMessage
+        from spma.agents.code.completeness import CodeCompletenessResult
+
+        # 反思 LLM：返回新搜索词
+        reflect_llm_response = AIMessage(
+            content=(
+                '{"new_search_terms": {"module": ["authorization"]}, '
+                '"drop_terms": [], "add_repos": [], "reasoning": "extend to synonyms"}'
+            )
+        )
+        # 后续 refine 调用的 LLM（不重要，内容任意）
+        refine_llm_response = AIMessage(content='{"exact_terms": ["authorization"], "fuzzy_terms": []}')
+
+        llm = _AM()
+        llm.ainvoke.side_effect = [reflect_llm_response, refine_llm_response, refine_llm_response]
+
+        ripgrep = _AM()
+        ripgrep.glob_files.return_value = []
+        ripgrep.search.return_value = []
+        ripgrep.read_files.return_value = []  # new_files_this_round 始终为 0
+
+        explorer = CodeExplorer(
+            ripgrep_executor=ripgrep,
+            ast_parser=_AM(),
+            llm=llm,
+            repo_whitelist=fake_repo_whitelist,
+            max_rounds=4,
+        )
+
+        # 第 1 轮 _assess 返回 diminishing_returns（触发反思）
+        # 第 2 轮 _assess 返回 should_reflect=False（不反思）+ new_files > 0（避免 cap）
+        # 第 3 轮 _assess 返回 verdict="converge"（让 explore() 退出，避免死循环）
+        assess_call = {"n": 0}
+        original_assess = explorer._assess
+
+        async def fake_assess(s):
+            assess_call["n"] += 1
+            if assess_call["n"] == 1:
+                s.convergence = CodeCompletenessResult(
+                    verdict="progress",
+                    reason="diminishing_returns",
+                    level="L1",
+                    should_reflect=True,
+                )
+            elif assess_call["n"] == 2:
+                s.convergence = CodeCompletenessResult(
+                    verdict="progress",
+                    reason="progress",
+                    level="L1",
+                    should_reflect=False,
+                )
+                # 模拟第 2 轮 read 新增文件（避免 cap）
+                s.new_files_this_round = 3
+                s.previous_new_files = s.new_files_this_round
+            else:
+                # 第 3 轮及以后：返回 converge 让 explore() 退出
+                s.convergence = CodeCompletenessResult(
+                    verdict="converge",
+                    reason="goal_verified",
+                    level="L1",
+                    should_reflect=False,
+                )
+
+        explorer._assess = fake_assess
+
+        # 跑 explore() 完整循环
+        graph_state = {
+            "query": "how does auth work?",
+            "entities": {"module": ["auth"]},
+            "candidate_repos": ["core"],
+            "ripgrep_results": [],
+            "expanded_context": [],
+            "fallback_layer": 0,
+            "call_depth": 0,
+        }
+
+        result = await explorer.explore(graph_state)
+
+        # 关键断言：反思真的触发了且 search_terms 被改写
+        # 第 1 轮：触发反思（diminishing_returns）
+        # 第 2 轮：should_reflect=False，无反思，新增文件
+        # 第 3 轮：返回 converge 退出
+        assert result["rounds_used"] == 3
+        assert assess_call["n"] == 3  # 跑了 3 轮
+        assert result["convergence_reason"].endswith("goal_verified")
+
+
+@pytest.mark.anyio
+class TestReflectionMetricsActuallyFire:
+    """Task 5 review I-1 follow-up：埋点真触发测试。
+
+    验证 _reflect_and_replan 和 _run_one_round 中的 metric 调用真的执行，
+    而不是仅仅指标已注册。
+    """
+
+    async def test_reflect_and_replan_inc_triggered_metric(
+        self, fake_repo_whitelist,
+    ):
+        """_reflect_and_replan 成功时 code_reflection_total{outcome=triggered} 应 +1。"""
+        from unittest.mock import AsyncMock as _AM
+        from langchain_core.messages import AIMessage
+        from spma.observability.code_metrics import code_reflection_total
+
+        # 记录 inc 前的值
+        before = code_reflection_total.labels(outcome="triggered")._value.get()
+
+        llm = _AM()
+        llm.ainvoke.return_value = AIMessage(
+            content=(
+                '{"new_search_terms": {"module": ["authorization"]}, '
+                '"drop_terms": [], "add_repos": [], "reasoning": "ok"}'
+            )
+        )
+        ripgrep = _AM()
+        ripgrep.glob_files.return_value = []
+        ripgrep.search.return_value = []
+        ripgrep.read_files.return_value = []
+
+        explorer = CodeExplorer(
+            ripgrep_executor=ripgrep,
+            ast_parser=_AM(),
+            llm=llm,
+            repo_whitelist=fake_repo_whitelist,
+        )
+
+        from spma.agents.code.explorer import ExplorerState
+        state = ExplorerState(
+            round=2,
+            query="q",
+            entities={"module": ["auth"]},
+            candidate_repos=["core"],
+            search_terms={"module": ["auth"]},
+            new_files_this_round=0,
+            previous_new_files=5,
+        )
+        await explorer._reflect_and_replan(state)
+
+        after = code_reflection_total.labels(outcome="triggered")._value.get()
+        assert after == before + 1, (
+            f"code_reflection_total{{outcome=triggered}} 应 inc 1 次，"
+            f"before={before}, after={after}"
+        )
+
+    async def test_reflect_and_replan_inc_failed_on_timeout(
+        self, fake_repo_whitelist,
+    ):
+        """_reflect_and_replan 在 LLM 超时时 code_reflection_total{outcome=failed} 应 +1。"""
+        from unittest.mock import AsyncMock as _AM
+        from spma.observability.code_metrics import code_reflection_total
+
+        before = code_reflection_total.labels(outcome="failed")._value.get()
+
+        # 直接抛 TimeoutError — _reflect_and_replan 的 wait_for 会把它转成 outcome=failed
+        llm = _AM()
+        llm.ainvoke.side_effect = TimeoutError("simulated LLM timeout")
+
+        ripgrep = _AM()
+        explorer = CodeExplorer(
+            ripgrep_executor=ripgrep,
+            ast_parser=_AM(),
+            llm=llm,
+            repo_whitelist=fake_repo_whitelist,
+        )
+
+        from spma.agents.code.explorer import ExplorerState
+        state = ExplorerState(
+            round=2,
+            query="q",
+            entities={"module": ["auth"]},
+            candidate_repos=["core"],
+            search_terms={"module": ["auth"]},
+            new_files_this_round=0,
+            previous_new_files=5,
+        )
+        await explorer._reflect_and_replan(state)
+
+        after = code_reflection_total.labels(outcome="failed")._value.get()
+        assert after == before + 1, (
+            f"code_reflection_total{{outcome=failed}} 应 inc 1 次，"
+            f"before={before}, after={after}"
+        )
+
+    async def test_run_one_round_inc_capped_on_empty_terms(
+        self, fake_repo_whitelist,
+    ):
+        """_run_one_round 触发 empty_terms cap 时 code_reflection_total{outcome=capped} 应 +1。"""
+        from unittest.mock import AsyncMock as _AM
+        from langchain_core.messages import AIMessage
+        from spma.agents.code.completeness import CodeCompletenessResult
+        from spma.observability.code_metrics import code_reflection_total
+
+        before = code_reflection_total.labels(outcome="capped")._value.get()
+
+        # 反思 LLM 返回空 search_terms + drop 原 auth → 触发 empty_terms cap
+        llm = _AM()
+        llm.ainvoke.return_value = AIMessage(
+            content=(
+                '{"new_search_terms": {}, '
+                '"drop_terms": ["auth"], "add_repos": [], '
+                '"reasoning": "give up"}'
+            )
+        )
+        ripgrep = _AM()
+        ripgrep.glob_files.return_value = []
+        ripgrep.search.return_value = []
+        ripgrep.read_files.return_value = []
+
+        explorer = CodeExplorer(
+            ripgrep_executor=ripgrep,
+            ast_parser=_AM(),
+            llm=llm,
+            repo_whitelist=fake_repo_whitelist,
+        )
+
+        async def fake_assess(s):
+            s.convergence = CodeCompletenessResult(
+                verdict="progress",
+                reason="diminishing_returns",
+                level="L1",
+                should_reflect=True,
+            )
+
+        explorer._assess = fake_assess
+
+        from spma.agents.code.explorer import ExplorerState
+        state = ExplorerState(
+            round=2,
+            query="q",
+            entities={"module": ["auth"]},
+            candidate_repos=["core"],
+            search_terms={"module": ["auth"]},
+            new_files_this_round=2,
+            previous_new_files=5,
+        )
+        await explorer._run_one_round(state)
+
+        after = code_reflection_total.labels(outcome="capped")._value.get()
+        assert after == before + 1, (
+            f"code_reflection_total{{outcome=capped}} 应 inc 1 次，"
+            f"before={before}, after={after}"
+        )
+        assert state.convergence.verdict == "cap"
+        assert state.convergence.reason == "reflection_empty_terms"
+
+    async def test_run_one_round_set_consecutive_no_progress_gauge(
+        self, fake_repo_whitelist,
+    ):
+        """_run_one_round 在 new_files=0 时 consecutive_no_progress gauge 应更新。"""
+        from unittest.mock import AsyncMock as _AM
+        from langchain_core.messages import AIMessage
+        from spma.agents.code.completeness import CodeCompletenessResult
+        from spma.observability.code_metrics import code_reflection_consecutive_no_progress
+
+        llm = _AM()
+        llm.ainvoke.return_value = AIMessage(
+            content=(
+                '{"new_search_terms": {"module": ["authorization"]}, '
+                '"drop_terms": [], "add_repos": [], "reasoning": "extend"}'
+            )
+        )
+        ripgrep = _AM()
+        ripgrep.glob_files.return_value = []
+        ripgrep.search.return_value = []
+        ripgrep.read_files.return_value = []  # new_files_this_round 始终为 0
+
+        explorer = CodeExplorer(
+            ripgrep_executor=ripgrep,
+            ast_parser=_AM(),
+            llm=llm,
+            repo_whitelist=fake_repo_whitelist,
+        )
+
+        async def fake_assess(s):
+            s.convergence = CodeCompletenessResult(
+                verdict="progress",
+                reason="diminishing_returns",
+                level="L1",
+                should_reflect=True,
+            )
+
+        explorer._assess = fake_assess
+
+        from spma.agents.code.explorer import ExplorerState
+        state = ExplorerState(
+            round=2,
+            query="q",
+            entities={"module": ["auth"]},
+            candidate_repos=["core"],
+            search_terms={"module": ["auth"]},
+            new_files_this_round=0,  # 关键：反思后无新增
+            previous_new_files=0,
+            consecutive_no_progress_reflections=1,  # 已累计 1 次
+        )
+
+        before_gauge = code_reflection_consecutive_no_progress._value.get()
+        await explorer._run_one_round(state)
+        after_gauge = code_reflection_consecutive_no_progress._value.get()
+
+        # gauge 应被 set 为新值（state.consecutive_no_progress_reflections += 1 → 2）
+        # cap 触发后 _run_one_round return，但 gauge 已被 set
+        assert state.convergence.verdict == "cap"
+        assert state.convergence.reason == "reflection_no_progress"
+        assert after_gauge == 2, (
+            f"consecutive_no_progress gauge 应被 set 为 2，"
+            f"before={before_gauge}, after={after_gauge}"
+        )

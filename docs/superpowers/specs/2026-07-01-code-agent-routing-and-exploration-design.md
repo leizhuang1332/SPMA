@@ -577,6 +577,18 @@ explore(graph_state)
 | `test_max_rounds_cap` | round=7（call_depth=7 ≥ max_rounds=6）触发 `cap_reached` |
 | `test_callback_invoked` | 每轮结束触发 `on_round_complete` 回调 |
 
+### 反思层（CodeExplorer Reflection Layer）DoD — 见 [2026-07-01-code-explorer-reflection-layer-design.md](./2026-07-01-code-explorer-reflection-layer-design.md)
+
+| DoD 编号 | 验收项 |
+| --- | --- |
+| RD-1 | 反思触发时 LLM 调用 ≤ 1 次/轮（`code_reflection_total{outcome="triggered"}` 可观测） |
+| RD-2 | 连续 2 次反思无新增文件强制 cap（`reason=reflection_no_progress`，`outcome="capped"`） |
+| RD-3 | 反思后 search_terms 全空强制 cap（`reason=reflection_empty_terms`，`outcome="capped"`） |
+| RD-4 | `explore()` 主循环在 `verdict ∈ {"converge", "cap", "stuck"}` 时终止（C1 修复） |
+| RD-5 | 现有 8 项 Explorer 单测 + 7 mode fixture + graph + searcher 全部 100% 保持通过 |
+| RD-6 | 反思相关 25 项新测试通过（5 reflection 单元 + 10 Explorer 集成含 4 cap 终止 + 2 e2e + 8 埋点真触发 + 5 metrics） |
+| RD-7 | 4 个反思 Prometheus 指标上线：`code_reflection_total` / `code_reflection_duration_seconds` / `code_reflection_search_terms_changed` / `code_reflection_consecutive_no_progress` |
+
 ---
 
 ## §7 测试策略
