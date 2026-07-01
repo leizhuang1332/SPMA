@@ -214,8 +214,11 @@ explorer.py  ──→  term_builder.py  ──→  (无内部依赖，纯函数
 用户 query: "查找 Spring Boot 的用户认证 Controller"
                 ↓
 _round=1, _refine_terms:
-  ① expanded_context 为空 → 走"首轮退化"分支
-  ② LLM 收到 prompt（含 JSON schema 要求 glob_patterns）
+  ① expanded_context 为空 → 走"首轮退化"分支：
+     - state.search_terms 复用现有 build_search_terms(entities) 产出（exact/fuzzy/tag）
+     - state.search_terms["glob_patterns"] = extract_extensions_from_query(state.query) 或 ["**/*.*"]
+     - state.glob_patterns_resolved = "fallback_query" / "fallback_wildcard"
+  ② 后续轮（round ≥ 2）：LLM 收到 prompt（含 JSON schema 要求 glob_patterns）
   ③ LLM 返回：
      {
        "exact_terms": ["@RestController", "Authentication"],
@@ -248,12 +251,13 @@ _round=2（反思后第二轮）, _refine_terms:
   ④ 但 state.glob_patterns_resolved 仍需更新
                 ↓
   ★ 关键设计点：refine 失败的兜底链
-  ┌──────────────────────────────────────────┐
-  │ 上一轮 glob_patterns_resolved == "llm"?   │
-  │   是 → 沿用上轮 patterns（不变）          │
-  │   否 → 进入降级链                         │
-  └──────────────────────────────────────────┘
-                ↓ 假设上一轮也失败
+  ┌────────────────────────────────────────────────────┐
+  │ 上一轮 state.glob_patterns_resolved == "llm"?       │
+  │   是 → 沿用上轮 patterns（不变）                    │
+  │       state.glob_patterns_resolved 也保持 "llm"     │
+  │   否 → 进入降级链（见下方）                         │
+  └────────────────────────────────────────────────────┘
+                ↓ 假设上一轮也失败（resolved = "fallback_*"）
   ⑤ extract_extensions_from_query("查询订单服务相关代码")
      - regex: \.(java|py|go|ts|js|...)
      - 命中：无
@@ -318,7 +322,7 @@ round 1              round 2              round 3
 
 | # | 错误 | 检测点 | 恢复动作 | 副作用 |
 |---|------|--------|----------|--------|
-| 1 | LLM 调用超时/exception | `_refine_terms` try/except（已有） | 沿用上轮 `glob_patterns`；若上轮也无则走 #4 | `glob_patterns_resolved = "fallback_wildcard"`（若降级） |
+| 1 | LLM 调用超时/exception | `_refine_terms` try/except（已有） | 沿用上轮 `glob_patterns` 与 `glob_patterns_resolved`；若上轮 `resolved` 非 `"llm"` 则走 #4 | 保持上轮 `glob_patterns_resolved`（不重置） |
 | 2 | LLM 返回非 JSON | `_refine_terms` 的 `json.loads` 失败（已有 except） | 同 #1 | 同 #1 |
 | 3 | LLM JSON 缺 `glob_patterns` 字段 | `parsed.get("glob_patterns", [])` 返回 `[]` | 直接走降级链 #4/#5 | `resolved = "fallback_*"` |
 | 4 | `glob_patterns` 全非法（被 `validate_glob_pattern` 全部过滤） | `valid = []` 判定 | 调 `extract_extensions_from_query(state.query)` | 取决于 #5/#6 |
@@ -369,11 +373,11 @@ def validate_glob_pattern(pattern: str) -> bool:
         │ 6 个 _refine_terms 单测 │  ← mock LLM
         │ 3 个 _glob 单测         │  ← mock RipgrepExecutor
         ├──────────────────────┤
-        │ 9 个 term_builder 单测  │  ← 纯函数
+        │ 11 个 term_builder 单测  │  ← 纯函数
         └──────────────────────┘
 ```
 
-### 6.2 Unit — `term_builder.py`（9 个 case）
+### 6.2 Unit — `term_builder.py`（11 个 case）
 
 | Case | 输入 | 期望 |
 |------|------|------|
@@ -432,7 +436,7 @@ def validate_glob_pattern(pattern: str) -> bool:
 
 ### 6.8 测试约定
 
-- **fixture 复用**：直接用 `tests/unit/agents/code/test_explorer.py` 已有 `MockRipgrepExecutor` 模式（如果有）
+- **fixture 复用**：直接复用 `tests/unit/agents/code/test_explorer.py` 已有的 mock 模式（如 MockRipgrepExecutor / MagicMock）
 - **断言风格**：与项目一致，用 `assert ... == ...`，不用 `pytest.raises(match=...)` 之外的复杂 matcher
 - **测试名约定**：`test_<unit>_<scenario>_<expected>`，与项目现有命名一致
 
