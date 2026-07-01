@@ -7,6 +7,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, TYPE_CHECKING
 
+from pydantic import BaseModel, ConfigDict, Field
+
 if TYPE_CHECKING:
     from spma.agents.code.completeness import CodeCompletenessResult
     from spma.agents.code.state import CodeAgentState
@@ -37,6 +39,9 @@ class ExplorerState:
     query: str = ""
     entities: dict = field(default_factory=dict)
     candidate_repos: list[str] = field(default_factory=list)
+    # Task 1: 反思层状态字段
+    reflection_count: int = 0
+    consecutive_no_progress_reflections: int = 0
 
 
 class CodeExplorer:
@@ -245,3 +250,30 @@ class CodeExplorer:
             state.convergence = CodeCompletenessResult(
                 verdict="expand", level="expand", reason=f"assess_error:{e}",
             )
+
+
+class ReflectionDecision(BaseModel):
+    """LLM 反思输出结构（Task 1：数据契约）。
+
+    pydantic 严格校验，防止 LLM 输出污染 state。
+    extra="ignore" 容忍 LLM 输出额外字段（不被 schema 接收、不进入 state 回写）。
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    new_search_terms: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description="新生成的搜索词，按 entities key 分组（module/function/concept）",
+    )
+    drop_terms: list[str] = Field(
+        default_factory=list,
+        description="已知无结果的 term（必须 ⊆ 原始 search_terms）",
+    )
+    add_repos: list[str] = Field(
+        default_factory=list,
+        description="追加的候选 repo（必须 ∈ repo_registry 白名单）",
+    )
+    reasoning: str = Field(
+        default="",
+        description="反思 reasoning（不进入 state 回写，仅 log）",
+    )

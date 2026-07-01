@@ -27,6 +27,12 @@ class TestExplorerState:
         state.seen_files.add(("repo_a", "file.py"))  # 重复
         assert len(state.seen_files) == 1
 
+    def test_reflection_fields_default_zero(self):
+        """Task 1: reflection_count 与 consecutive_no_progress_reflections 默认 0。"""
+        state = ExplorerState(query="test")
+        assert state.reflection_count == 0
+        assert state.consecutive_no_progress_reflections == 0
+
 
 class MockRipgrepExecutor:
     """Mock RipgrepExecutor——所有方法返回空。"""

@@ -23,6 +23,7 @@ class CodeCompletenessResult:
     verdict: str          # "converge" | "expand"
     level: str            # 7 种之一 或 legacy "L1"/"L2"/"L3"
     reason: str
+    should_reflect: bool = False  # Task 1：diminishing_returns 时由 assess 设为 True，触发反思层
 
 
 # v2 模式 → 旧 L 级别映射（向后兼容用）
@@ -81,9 +82,12 @@ async def assess_code_completeness(
     if total_files > 0:
         new_files_rate = new_files_this_round / total_files
         if new_files_rate < 0.10 and new_files_this_round < 3:
-            return _make_result(
+            result = _make_result(
                 "converge", "diminishing_returns", f"rate={new_files_rate:.2f}", legacy_levels,
             )
+            # Task 1: 5 mode 未收敛但仍低效 → 触发反思层调整搜索策略
+            result.should_reflect = True
+            return result
 
     # 向后兼容：legacy L2 条件（call_depth >= 2 或 no_new_files with sufficient results）
     # 仅在 legacy_levels=True 时生效，确保旧测试通过
