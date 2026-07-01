@@ -19,6 +19,32 @@
 - **错误处理原则：** 反思失败是软错误（跳过走下轮），反思空术语是硬错误（强制 break）
 - **LLM 角色：** 反思用 `completeness` 角色（`deepseek-v4-flash`，max_tokens=1024），与现有 `_assess` 兜底路径同一角色（节省配置）
 
+## Pre-Flight 修正（必须应用）
+
+**冲突发现**：Plan 最初设计 `apply_reflection_decision` 接受 `repo_registry` 实例并调 `list_repos()`。**实际项目**：
+- `RepoRegistry` 类在 `src/spma/ingestion/code/repo_registry.py`
+- 构造函数需 `asyncpg.Pool`，没有无参构造
+- 接口方法为 `list_active_repos() -> list[RepoMeta]`（**不是** `list_repos()`）
+- `build_code_agent_graph` 是**同步函数**，不能在内部 `await`
+
+**修正方案（贯穿全部 Task）**：
+
+1. **接口降级**：将 `repo_registry` 实例替换为 `repo_whitelist: frozenset[str] | None`（同步纯数据）
+2. **应用层**：`apply_reflection_decision(state, decision, repo_whitelist: frozenset[str] | None)`
+3. **注入层**：
+   - `CodeExplorer.__init__` 接受 `repo_whitelist: frozenset[str] | None = None`
+   - `build_code_agent_graph` 接受 `repo_whitelist` 参数并传给 `CodeExplorer`
+   - `query_graph.py` 在调用 `build_code_agent_graph` **之前** 异步获取 whitelist（`get_repo_registry().list_active_repos()` → frozenset），失败时降级为 `None`（不过滤）
+
+**测试 fixture 修正**：
+- `FakeRegistry` 类替换为 `frozenset({"core", "auth-svc"})`
+- 原本调 `apply_reflection_decision(state, decision, FakeRegistry())` 改为 `apply_reflection_decision(state, decision, frozenset({"core", "auth-svc"}))`
+- `repo_whitelist=None` 表示跳过 add_repos 过滤（保留所有）
+
+**覆盖范围**：Task 2 Step 2.13-2.15（apply_reflection_decision 签名 + 实现）、Task 3 Step 3.1-3.5（fixture + __init__ + _reflect_and_replan + graph.py 注入）、Task 5 Step 5.x（埋点不动）、Task 6 Step 6.x（e2e fixture 用 frozenset）。
+
+**实施时核对**：worker 实施时应按本修正优先于原 Step 代码块。
+
 ---
 
 ## Task 1: 数据契约 — `should_reflect` 字段 + `ExplorerState` 新字段 + `ReflectionDecision` schema
@@ -238,11 +264,11 @@ git commit -m "feat(reflection): add data contract — should_reflect + reflecti
 - Test: `tests/agents/code/test_reflection.py`
 
 **Interfaces:**
-- Consumes: `explorer.ExplorerState` (Task 1)、`explorer.ReflectionDecision` (Task 1)、`repo_registry` 单例（已注入 app）
+- Consumes: `explorer.ExplorerState` (Task 1)、`explorer.ReflectionDecision` (Task 1)、`frozenset[str]` repo whitelist（同步纯数据，由 graph 调用方在 build 时传入）
 - Produces:
   - `prompts.reflection.build_reflection_prompt(state: ExplorerState) -> str`
   - `prompts.reflection.parse_reflection_response(llm_output: str) -> ReflectionDecision`
-  - `prompts.reflection.apply_reflection_decision(state: ExplorerState, decision: ReflectionDecision, repo_registry) -> None` (回写 state)
+  - `prompts.reflection.apply_reflection_decision(state: ExplorerState, decision: ReflectionDecision, repo_whitelist: frozenset[str] | None) -> None` (回写 state)
 
 ### Step 2.1: 创建 `prompts/__init__.py`
 
