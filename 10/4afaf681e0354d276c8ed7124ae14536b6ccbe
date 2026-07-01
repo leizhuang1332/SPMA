@@ -1,0 +1,19 @@
+tests/unit/agents/code/test_completeness.py
+  s_74253ee292dbd9::t_36274da8fbf35c 72,80,91
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "104afaf681e0354d276c8ed7124ae14536b6ccbe",
+  "prompts": {},
+  "sessions": {
+    "s_74253ee292dbd9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a6d909aeafa555ef0",
+        "model": "unknown"
+      },
+      "human_author": "leizhuang <lorcan.lei@jtexpress.com>"
+    }
+  }
+}
