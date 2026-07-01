@@ -211,12 +211,11 @@ class CodeExplorer:
         try:
             from spma.agents.code.term_builder import build_search_terms
             base = build_search_terms(state.entities)
-            prompt = (
-                f"基于以下上轮探索结果，重组更精准的代码搜索关键词。\n"
-                f"用户查询: {state.query}\n"
-                f"已有 expanded_context: {len(state.expanded_context)} 个文件\n"
-                f"已有 ripgrep_results: {len(state.ripgrep_results)} 个匹配\n"
-                f"输出 JSON: {{\"exact_terms\": [...], \"fuzzy_terms\": [...]}}"
+            from spma.agents.code.prompts import REFINE_TERMS_PROMPT
+            prompt = REFINE_TERMS_PROMPT.format(
+                query=state.query,
+                expanded_context_count=len(state.expanded_context),
+                ripgrep_results_count=len(state.ripgrep_results),
             )
             resp = await self._llm.ainvoke(prompt)
             import json, re
@@ -226,10 +225,36 @@ class CodeExplorer:
                 "exact_terms": refined.get("exact_terms", base.get("exact_terms", [])),
                 "fuzzy_terms": refined.get("fuzzy_terms", base.get("fuzzy_terms", [])),
                 "tag_terms": base.get("tag_terms", []),
+                "glob_patterns": refined.get("glob_patterns", []),
                 "refined_via": "llm",
             }
+
+            # ─── glob_patterns 解析（spec §4 Trace 1/2/3 + §5 错误矩阵）───
+            # 仅在 LLM 成功路径跑 6 步解析，保留"保持上轮 search_terms"语义
+            # （避免与 _run_one_round 的 cap 机制冲突——spec §2.2 风险评估 line 465）
+            from spma.agents.code.term_builder import (
+                extract_extensions_from_query,
+                validate_glob_pattern,
+            )
+
+            llm_patterns = state.search_terms.get("glob_patterns", []) or []
+            valid = [p for p in llm_patterns if validate_glob_pattern(p)]
+            if valid:
+                state.search_terms["glob_patterns"] = valid
+                state.glob_patterns_resolved = "llm"
+            else:
+                # 降级链：query 词法抽扩展名 → **/*.* 泛底
+                fallback = extract_extensions_from_query(state.query)
+                if fallback:
+                    state.search_terms["glob_patterns"] = fallback
+                    state.glob_patterns_resolved = "fallback_query"
+                else:
+                    state.search_terms["glob_patterns"] = ["**/*.*"]
+                    state.glob_patterns_resolved = "fallback_wildcard"
         except Exception as e:
             logger.warning(f"_refine_terms LLM 调用失败: {e}，保持上轮 search_terms")
+            # glob_patterns_resolved 兜底（spec §2.2: 永远 3 选 1，不允许空）
+            state.glob_patterns_resolved = "fallback_wildcard"
 
     async def _glob(self, state: ExplorerState) -> list[dict]:
         """调 ripgrep_executor.glob_files。"""

@@ -178,6 +178,139 @@ class TestCodeExplorerRefineTerms:
         assert state.search_terms.get("query") == "用户登录"
         assert "auth.py" in state.search_terms.get("entities_code_refs", [])
 
+    async def test_refine_llm_returns_valid_globs(self):
+        """LLM 返回合法 glob_patterns → resolved=llm，原样保留。"""
+        from unittest.mock import MagicMock
+        executor = MockRipgrepExecutorWithData()
+        ast = MockASTParserWithExpansion()
+
+        class FixedLLM:
+            async def ainvoke(self, prompt):
+                return MagicMock(content=(
+                    '{"exact_terms": ["x"], "fuzzy_terms": [], '
+                    '"tag_terms": [], '
+                    '"glob_patterns": ["**/*.java", "**/test/*.java"]}'
+                ))
+
+        llm = FixedLLM()
+        explorer = CodeExplorer(ripgrep_executor=executor, ast_parser=ast, llm=llm, max_rounds=6)
+        state = ExplorerState(
+            round=2,  # 后续轮
+            query="Java 服务",
+            expanded_context=[{"repo": "r", "file_path": "old.java"}],  # 非空 → 走 LLM
+            search_terms={"query": "x", "exact_terms": ["old"]},
+        )
+        await explorer._refine_terms(state)
+        assert state.search_terms["glob_patterns"] == ["**/*.java", "**/test/*.java"]
+        assert state.glob_patterns_resolved == "llm"
+
+    async def test_refine_llm_partial_invalid_keeps_valid(self):
+        """LLM 返回混合（合法+非法）→ 仅保留合法部分，resolved 仍 = llm。"""
+        from unittest.mock import MagicMock
+        executor = MockRipgrepExecutorWithData()
+        ast = MockASTParserWithExpansion()
+
+        class FixedLLM:
+            async def ainvoke(self, prompt):
+                return MagicMock(content=(
+                    '{"glob_patterns": ["**/*.java", ";rm", "../x", ""]}'
+                ))
+
+        llm = FixedLLM()
+        explorer = CodeExplorer(ripgrep_executor=executor, ast_parser=ast, llm=llm, max_rounds=6)
+        state = ExplorerState(
+            round=2, query="x",
+            expanded_context=[{"repo": "r", "file_path": "a"}],
+            search_terms={"exact_terms": []},
+        )
+        await explorer._refine_terms(state)
+        assert state.search_terms["glob_patterns"] == ["**/*.java"]
+        assert state.glob_patterns_resolved == "llm"
+
+    async def test_refine_llm_all_invalid_query_has_ext_uses_query_fallback(self):
+        """LLM 全非法 + query 含扩展名 → 用 query 词法，resolved=fallback_query。"""
+        from unittest.mock import MagicMock
+        executor = MockRipgrepExecutorWithData()
+        ast = MockASTParserWithExpansion()
+
+        class FixedLLM:
+            async def ainvoke(self, prompt):
+                return MagicMock(content='{"glob_patterns": ["../bad", ";"]}')
+
+        llm = FixedLLM()
+        explorer = CodeExplorer(ripgrep_executor=executor, ast_parser=ast, llm=llm, max_rounds=6)
+        state = ExplorerState(
+            round=2, query="改 pom.xml 依赖",
+            expanded_context=[{"repo": "r", "file_path": "a"}],
+            search_terms={"exact_terms": []},
+        )
+        await explorer._refine_terms(state)
+        assert state.search_terms["glob_patterns"] == ["**/*.xml"]
+        assert state.glob_patterns_resolved == "fallback_query"
+
+    async def test_refine_llm_all_invalid_query_no_ext_uses_wildcard(self):
+        """LLM 全非法 + query 无扩展名 → 用 **/*.*，resolved=fallback_wildcard。"""
+        from unittest.mock import MagicMock
+        executor = MockRipgrepExecutorWithData()
+        ast = MockASTParserWithExpansion()
+
+        class FixedLLM:
+            async def ainvoke(self, prompt):
+                return MagicMock(content='{"glob_patterns": ["../bad"]}')
+
+        llm = FixedLLM()
+        explorer = CodeExplorer(ripgrep_executor=executor, ast_parser=ast, llm=llm, max_rounds=6)
+        state = ExplorerState(
+            round=2, query="查订单服务",
+            expanded_context=[{"repo": "r", "file_path": "a"}],
+            search_terms={"exact_terms": []},
+        )
+        await explorer._refine_terms(state)
+        assert state.search_terms["glob_patterns"] == ["**/*.*"]
+        assert state.glob_patterns_resolved == "fallback_wildcard"
+
+    async def test_refine_llm_missing_glob_patterns_field(self):
+        """LLM JSON 缺 glob_patterns 键 → 走降级链。"""
+        from unittest.mock import MagicMock
+        executor = MockRipgrepExecutorWithData()
+        ast = MockASTParserWithExpansion()
+
+        class FixedLLM:
+            async def ainvoke(self, prompt):
+                return MagicMock(content='{"exact_terms": ["x"]}')
+
+        llm = FixedLLM()
+        explorer = CodeExplorer(ripgrep_executor=executor, ast_parser=ast, llm=llm, max_rounds=6)
+        state = ExplorerState(
+            round=2, query="改 pom.xml 依赖",
+            expanded_context=[{"repo": "r", "file_path": "a"}],
+            search_terms={"exact_terms": []},
+        )
+        await explorer._refine_terms(state)
+        assert state.search_terms["glob_patterns"] == ["**/*.xml"]
+        assert state.glob_patterns_resolved == "fallback_query"
+
+    async def test_refine_llm_exception_uses_wildcard(self):
+        """LLM 抛 TimeoutError → 走兜底，resolved=fallback_wildcard。"""
+        executor = MockRipgrepExecutorWithData()
+        ast = MockASTParserWithExpansion()
+
+        class FailingLLM:
+            async def ainvoke(self, prompt):
+                raise TimeoutError("LLM timeout")
+
+        llm = FailingLLM()
+        explorer = CodeExplorer(ripgrep_executor=executor, ast_parser=ast, llm=llm, max_rounds=6)
+        state = ExplorerState(
+            round=2, query="查订单服务",
+            expanded_context=[{"repo": "r", "file_path": "a"}],
+            search_terms={"exact_terms": []},
+        )
+        await explorer._refine_terms(state)
+        # LLM 失败 → 沿用上轮；上轮无 → 降级链 → wildcard
+        assert state.search_terms["glob_patterns"] == ["**/*.*"]
+        assert state.glob_patterns_resolved == "fallback_wildcard"
+
 
 @pytest.mark.anyio
 class TestCodeExplorerStuckDetection:
