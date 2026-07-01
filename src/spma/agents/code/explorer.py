@@ -3,6 +3,7 @@
 独立于 LangGraph：通过 explore() 一次性调用，也可注入 mock 状态做单测。
 6 阶段方法：refine / glob / grep / read / expand_via_ast / assess。
 """
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, TYPE_CHECKING
@@ -55,6 +56,7 @@ class CodeExplorer:
         on_round_complete: Callable[[ExplorerState], Awaitable[None]] | None = None,
         max_rounds: int = 6,
         max_files: int = 50,
+        repo_whitelist: frozenset[str] | None = None,
     ):
         self._executor = ripgrep_executor
         self._ast = ast_parser
@@ -62,6 +64,7 @@ class CodeExplorer:
         self._on_round_complete = on_round_complete
         self._max_rounds = max_rounds
         self._max_files = max_files
+        self._repo_whitelist = repo_whitelist
 
     async def explore(self, graph_state: "CodeAgentState") -> "CodeAgentState":
         """一次性跑完多轮探索，返回写回的 graph_state。"""
@@ -250,6 +253,88 @@ class CodeExplorer:
             state.convergence = CodeCompletenessResult(
                 verdict="expand", level="expand", reason=f"assess_error:{e}",
             )
+
+    async def _reflect_and_replan(self, state: ExplorerState) -> None:
+        """调 LLM 反思，重新生成 search_terms（Task 3：方案 B 第三阶段）。
+
+        错误处理（按 spec §2.4）：
+            - LLM 超时/5xx/JSON 解析失败：跳过反思（软错误），reflection_count 不增
+            - schema 违反（drop_terms 不在原 set）：ValueError，被捕获后跳过
+            - 反思后 search_terms 为空：强制 cap（verdict="cap"）—— 由 Task 4 处理
+            - reasoning 字段不进入 state 回写，仅 log 截断
+
+        注意：本方法不修改 expanded_context / seen_files / previous_new_files。
+        """
+        from spma.agents.code.prompts.reflection import (
+            apply_reflection_decision,
+            build_reflection_prompt,
+            parse_reflection_response,
+        )
+
+        # Task 5 才会定义 code_reflection_total；先尝试导入并容错
+        try:
+            from spma.observability.code_metrics import code_reflection_total
+            _reflection_metric_available = True
+        except ImportError:
+            _reflection_metric_available = False
+            logger.debug("code_reflection_total 未定义（Task 5 才会添加），跳过 metric 上报")
+
+        if self._repo_whitelist is None:
+            # 无 repo_whitelist 时跳过（防御性编程；正常调用路径不进入此分支）
+            if _reflection_metric_available:
+                code_reflection_total.labels(outcome="skipped").inc()
+            return
+
+        prompt = build_reflection_prompt(state)
+
+        try:
+            llm_response = await asyncio.wait_for(
+                self._llm.ainvoke(prompt),
+                timeout=30.0,  # 30 秒超时
+            )
+        except (asyncio.TimeoutError, Exception) as e:
+            # 软错误：跳过反思
+            logger.warning(
+                "reflection_llm_failed",
+                extra={"error": str(e), "round": state.round},
+            )
+            if _reflection_metric_available:
+                code_reflection_total.labels(outcome="failed").inc()
+            return
+
+        try:
+            raw_content = (
+                llm_response.content
+                if hasattr(llm_response, "content")
+                else str(llm_response)
+            )
+            decision = parse_reflection_response(raw_content)
+        except ValueError as e:
+            logger.error(
+                "reflection_parse_failed",
+                extra={"error": str(e), "raw": str(raw_content)[:500]},
+            )
+            if _reflection_metric_available:
+                code_reflection_total.labels(outcome="failed").inc()
+            return
+
+        try:
+            apply_reflection_decision(state, decision, self._repo_whitelist)
+        except ValueError as e:
+            logger.error("reflection_apply_failed", extra={"error": str(e)})
+            if _reflection_metric_available:
+                code_reflection_total.labels(outcome="failed").inc()
+            return
+
+        # reasoning 不进入 state，但记录到日志（截断 200 字符）
+        if decision.reasoning:
+            logger.info(
+                "reflection_reasoning",
+                extra={"reasoning": decision.reasoning[:200]},
+            )
+
+        if _reflection_metric_available:
+            code_reflection_total.labels(outcome="triggered").inc()
 
 
 class ReflectionDecision(BaseModel):

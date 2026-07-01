@@ -20,6 +20,7 @@ def build_code_agent_graph(
     progress=None,
     repo_registry=None,            # 新增（v2）：repo_registry 注入
     two_stage_threshold: int = 5,  # 新增（v2）：Stage 0 阈值
+    repo_whitelist: frozenset[str] | None = None,  # 新增（Task 3）：反思层 repo 白名单
 ) -> StateGraph:
     """Build Code Agent StateGraph v2: 3 nodes + thin wrapper."""
 
@@ -48,6 +49,7 @@ def build_code_agent_graph(
         llm=llm,
         on_round_complete=_make_on_round_callback(progress),
         max_rounds=max_rounds,
+        repo_whitelist=repo_whitelist,  # Task 3: 反思层 repo 白名单
     )
 
     async def explore_node(state: CodeAgentState) -> dict:

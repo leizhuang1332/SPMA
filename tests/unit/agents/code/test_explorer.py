@@ -1,4 +1,7 @@
 """Tests for CodeExplorer class (design-13 §3.5 + spec §4.5)."""
+import asyncio
+from unittest.mock import AsyncMock
+
 import pytest
 from spma.agents.code.explorer import ExplorerState, CodeExplorer
 
@@ -248,3 +251,120 @@ class TestCodeExplorerCallback:
         await explorer.explore(graph_state)
         # 至少触发 1 次（可能更多）
         assert call_count["n"] >= 1
+
+
+# ============================================================
+# Task 3: _reflect_and_replan 反思层测试
+# ============================================================
+
+from spma.agents.code.completeness import CodeCompletenessResult  # noqa: E402
+
+
+@pytest.fixture
+def fake_repo_whitelist():
+    """Task 3 测试用 repo 白名单——直接使用 frozenset 而非 FakeRegistry。"""
+    return frozenset({"core", "auth-svc"})
+
+
+@pytest.fixture
+def make_state():
+    """构造一个标准 ExplorerState——search_terms 含 module=auth, candidate_repos=[core]。"""
+    def _make(round_num: int = 2):
+        return ExplorerState(
+            round=round_num,
+            query="q",
+            search_terms={"module": ["auth"]},
+            candidate_repos=["core"],
+            convergence=CodeCompletenessResult(
+                verdict="progress",
+                reason="diminishing_returns",
+                level="L1",
+            ),
+        )
+    return _make
+
+
+@pytest.mark.anyio
+class TestReflectAndReplan:
+    async def test_reflect_and_replan_continues_on_llm_timeout(
+        self, make_state, fake_repo_whitelist,
+    ):
+        """LLM 超时时，反思应被跳过，state 不被修改。"""
+        from unittest.mock import AsyncMock as _AM
+
+        llm = _AM()
+        llm.ainvoke.side_effect = asyncio.TimeoutError("LLM timeout")
+
+        explorer = CodeExplorer(
+            ripgrep_executor=_AM(),
+            ast_parser=_AM(),
+            llm=llm,
+            repo_whitelist=fake_repo_whitelist,
+            max_rounds=6,
+        )
+        state = make_state(round_num=2)
+
+        # 不应抛错
+        await explorer._reflect_and_replan(state)
+
+        # state.search_terms 未变
+        assert state.search_terms == {"module": ["auth"]}
+        # reflection_count 未增
+        assert state.reflection_count == 0
+
+    async def test_reflect_and_replan_continues_on_json_parse_failure(
+        self, make_state, fake_repo_whitelist,
+    ):
+        """LLM 返回非 JSON 时，反思应被跳过。"""
+        from unittest.mock import AsyncMock as _AM
+        from langchain_core.messages import AIMessage
+
+        llm = _AM()
+        llm.ainvoke.return_value = AIMessage(content="this is not json at all")
+
+        explorer = CodeExplorer(
+            ripgrep_executor=_AM(),
+            ast_parser=_AM(),
+            llm=llm,
+            repo_whitelist=fake_repo_whitelist,
+            max_rounds=6,
+        )
+        state = make_state(round_num=2)
+
+        await explorer._reflect_and_replan(state)
+
+        # state.search_terms 未变
+        assert state.search_terms == {"module": ["auth"]}
+        assert state.reflection_count == 0
+
+    async def test_reflect_and_replan_updates_search_terms(
+        self, make_state, fake_repo_whitelist,
+    ):
+        """正常 LLM 响应应被解析并应用到 state。"""
+        from unittest.mock import AsyncMock as _AM
+        from langchain_core.messages import AIMessage
+
+        llm = _AM()
+        llm.ainvoke.return_value = AIMessage(
+            content=(
+                '{"new_search_terms": {"module": ["authorization"]}, '
+                '"drop_terms": [], "add_repos": [], '
+                '"reasoning": "missing authz"}'
+            )
+        )
+
+        explorer = CodeExplorer(
+            ripgrep_executor=_AM(),
+            ast_parser=_AM(),
+            llm=llm,
+            repo_whitelist=fake_repo_whitelist,
+            max_rounds=6,
+        )
+        state = make_state(round_num=2)
+
+        await explorer._reflect_and_replan(state)
+
+        # authorization 被合并
+        assert "authorization" in state.search_terms["module"]
+        # reflection_count += 1
+        assert state.reflection_count == 1

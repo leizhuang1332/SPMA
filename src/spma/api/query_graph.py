@@ -207,6 +207,7 @@ async def _run_worker(
                 get_ripgrep_executor,
                 get_ast_parser,
             )
+            from spma.api.app import get_repo_registry
             from spma.llm import get_langchain_client
 
             try:
@@ -224,6 +225,17 @@ async def _run_worker(
                     "error": f"worker_not_ready:{str(e)[:100]}",
                 }
 
+            # Task 3: 异步拉取 repo 白名单供反思层使用；失败时降级为 None（全保留）
+            repo_whitelist: frozenset[str] | None = None
+            try:
+                registry = get_repo_registry()
+                active_repos = await registry.list_active_repos()
+                repo_whitelist = frozenset(r.repo_name for r in active_repos)
+            except (RuntimeError, Exception) as e:
+                logger.warning(
+                    "Code worker 拉取 repo 白名单失败，反思层降级为 None: %s", e,
+                )
+
             llm = get_langchain_client(role="generation")
             g = build_code_agent_graph(
                 file_path_cache=file_path_cache,
@@ -231,6 +243,7 @@ async def _run_worker(
                 ast_parser=ast_parser,
                 llm=llm,
                 progress=progress,
+                repo_whitelist=repo_whitelist,
             )
             result = await g.ainvoke({
                 "original_query": original_query,
